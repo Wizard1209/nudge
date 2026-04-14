@@ -1,11 +1,10 @@
 /target
 *.exe
+.cargo/
+.claude/
+.env
 CLAUDE.local.md
+session-context.md
 .worktrees/
-
-
-# Added by cargo
-#
-# already existing elements were commented out
-
-#/target
+node_modules/
+dist/
