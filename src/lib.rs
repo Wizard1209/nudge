@@ -30,5 +30,6 @@ mod wasm_entry {
 }
 
 mod app;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod journal;
+pub mod nudge_state;
+pub mod timer;
