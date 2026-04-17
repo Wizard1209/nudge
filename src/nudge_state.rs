@@ -19,13 +19,13 @@ pub fn should_reset_timer(source: TriggerSource, action: Action) -> bool {
 }
 
 /// Parse the minutes field into a Duration, defaulting to 10 min.
-/// Values ≤ 0 become 1 second (useful for testing).
+/// Accepts floats (e.g. "0.1" = 6 seconds). Values ≤ 0 become 1 second.
 pub fn parse_interval(text: &str) -> Duration {
-    let minutes: u64 = text.trim().parse().unwrap_or(10);
-    if minutes == 0 {
+    let minutes: f64 = text.trim().parse().unwrap_or(10.0);
+    if minutes <= 0.0 {
         Duration::from_secs(1)
     } else {
-        Duration::from_secs(minutes * 60)
+        Duration::from_secs_f64(minutes * 60.0)
     }
 }
 
@@ -71,5 +71,15 @@ mod tests {
     #[test]
     fn parse_interval_zero_becomes_1_second() {
         assert_eq!(parse_interval("0"), Duration::from_secs(1));
+    }
+
+    #[test]
+    fn parse_interval_float() {
+        assert_eq!(parse_interval("0.1"), Duration::from_secs(6));
+    }
+
+    #[test]
+    fn parse_interval_negative_becomes_1_second() {
+        assert_eq!(parse_interval("-5"), Duration::from_secs(1));
     }
 }

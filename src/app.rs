@@ -16,36 +16,12 @@ pub struct NudgeApp {
     trigger_source: TriggerSource,
     popup_visible: bool,
 
-    // Native-only: tray communication
-    #[cfg(not(target_arch = "wasm32"))]
-    tray_show_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    #[cfg(not(target_arch = "wasm32"))]
-    exit_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    // Native window handle for Win32 API calls
+    #[cfg(target_os = "windows")]
+    hwnd: Option<isize>,
 }
 
 impl NudgeApp {
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn new(
-        cc: &eframe::CreationContext<'_>,
-        tray_show_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
-        exit_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    ) -> Self {
-        cc.egui_ctx.set_visuals(egui::Visuals::dark());
-        Self {
-            doing: String::new(),
-            bullshit: String::new(),
-            next_minutes: "10".to_string(),
-            focus_first: true,
-            center_once: true,
-            timer: Timer::new(std::time::Duration::from_secs(10 * 60)),
-            trigger_source: TriggerSource::Timer,
-            popup_visible: true, // show immediately on start
-            tray_show_flag,
-            exit_flag,
-        }
-    }
-
-    #[cfg(target_arch = "wasm32")]
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
         Self {
@@ -56,7 +32,9 @@ impl NudgeApp {
             center_once: true,
             timer: Timer::new(std::time::Duration::from_secs(10 * 60)),
             trigger_source: TriggerSource::Timer,
-            popup_visible: true, // show immediately on start
+            popup_visible: true,
+            #[cfg(target_os = "windows")]
+            hwnd: None,
         }
     }
 
@@ -67,7 +45,6 @@ impl NudgeApp {
 
     #[cfg(target_arch = "wasm32")]
     fn now_timestamp() -> String {
-        // Use js_sys::Date for WASM timestamp
         let date = js_sys::Date::new_0();
         format!(
             "{}-{:02}-{:02}T{:02}:{:02}:{:02}",
@@ -85,8 +62,16 @@ impl NudgeApp {
         self.popup_visible = true;
         self.focus_first = true;
 
-        #[cfg(not(target_arch = "wasm32"))]
-        _ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        #[cfg(target_os = "windows")]
+        if let Some(hwnd_val) = self.hwnd {
+            unsafe {
+                use windows::Win32::Foundation::HWND;
+                use windows::Win32::UI::WindowsAndMessaging::*;
+                let h = HWND(hwnd_val as *mut _);
+                let _ = ShowWindow(h, SW_RESTORE);
+                let _ = SetForegroundWindow(h);
+            }
+        }
     }
 
     fn hide_popup(&mut self, _ctx: &egui::Context, action: Action) {
@@ -112,7 +97,8 @@ impl NudgeApp {
         }
 
         // Shared: timer reset logic
-        if nudge_state::should_reset_timer(self.trigger_source, action) {
+        let should_reset = nudge_state::should_reset_timer(self.trigger_source, action);
+        if should_reset {
             let interval = nudge_state::parse_interval(&self.next_minutes);
             self.timer.reset(interval);
         }
@@ -123,9 +109,23 @@ impl NudgeApp {
         self.focus_first = true;
         self.popup_visible = false;
 
-        // Native-only: hide OS window
-        #[cfg(not(target_arch = "wasm32"))]
-        _ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        // Native-only: hide window + schedule background timer wakeup
+        #[cfg(target_os = "windows")]
+        {
+            if let Some(hwnd_val) = self.hwnd {
+                unsafe {
+                    use windows::Win32::Foundation::HWND;
+                    use windows::Win32::UI::WindowsAndMessaging::*;
+                    let _ = ShowWindow(HWND(hwnd_val as *mut _), SW_HIDE);
+                }
+            }
+
+            // SW_HIDE stops update() loop, so schedule a thread to wake us up
+            if should_reset {
+                let interval = nudge_state::parse_interval(&self.next_minutes);
+                crate::tray_bridge::schedule_timer_wakeup(interval);
+            }
+        }
     }
 
     fn draw_form(&mut self, ui: &mut egui::Ui) {
@@ -153,7 +153,7 @@ impl NudgeApp {
 
             ui.add_space(6.0);
 
-            ui.label(egui::RichText::new("Следующий nudge через (мин)").size(14.0).color(egui::Color32::from_gray(180)));
+            ui.label(egui::RichText::new("Следующий nudge через (мін)").size(14.0).color(egui::Color32::from_gray(180)));
             ui.add_sized(
                 [ui.available_width(), 28.0],
                 egui::TextEdit::singleline(&mut self.next_minutes).font(egui::TextStyle::Body),
@@ -197,25 +197,48 @@ impl eframe::App for NudgeApp {
                 ctx.send_viewport_cmd(cmd);
             }
 
+            // Extract native window handle and share with tray event handlers
+            #[cfg(target_os = "windows")]
+            {
+                use raw_window_handle::HasWindowHandle;
+                if let Ok(wh) = _frame.window_handle() {
+                    if let raw_window_handle::RawWindowHandle::Win32(h) = wh.as_raw() {
+                        let hwnd_val = h.hwnd.get();
+                        self.hwnd = Some(hwnd_val);
+                        crate::tray_bridge::store_hwnd(hwnd_val);
+                    }
+                }
+            }
+
             self.center_once = false;
         }
 
-        // === Native-only: check tray/exit flags ===
-        #[cfg(not(target_arch = "wasm32"))]
+        // === Native-only: check tray event flags ===
+        // Event handlers run on Windows message thread (set up in main.rs),
+        // they restore the window + set flags. We check flags here.
+        #[cfg(target_os = "windows")]
         {
-            if self.exit_flag.load(std::sync::atomic::Ordering::Relaxed) {
+            if crate::tray_bridge::is_exit_requested() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 return;
             }
 
-            if self.tray_show_flag.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            if crate::tray_bridge::take_tray_clicked() {
                 if !self.popup_visible {
                     self.show_popup(ctx, TriggerSource::Manual);
                 }
             }
+
+            // Background timer thread restored window + set flag
+            if crate::tray_bridge::take_timer_fired() {
+                if !self.popup_visible {
+                    self.show_popup(ctx, TriggerSource::Timer);
+                }
+            }
         }
 
-        // === Shared: timer check ===
+        // === WASM-only: timer check (update() always runs on WASM) ===
+        #[cfg(target_arch = "wasm32")]
         if !self.popup_visible && self.timer.is_expired() {
             self.show_popup(ctx, TriggerSource::Timer);
         }
@@ -243,6 +266,9 @@ impl eframe::App for NudgeApp {
             if self.popup_visible {
                 self.draw_form(ui);
             } else {
+                // WASM: show countdown + "Nudge now" button on canvas
+                // Native: window is SW_HIDE'd, nothing to render
+                #[cfg(target_arch = "wasm32")]
                 self.draw_tray_screen(ctx, ui);
             }
         });

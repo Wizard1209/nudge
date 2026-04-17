@@ -33,3 +33,5 @@ mod app;
 pub mod journal;
 pub mod nudge_state;
 pub mod timer;
+#[cfg(target_os = "windows")]
+pub mod tray_bridge;

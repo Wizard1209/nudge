@@ -5,22 +5,19 @@ mod app;
 mod journal;
 mod nudge_state;
 mod timer;
+#[cfg(target_os = "windows")]
+mod tray_bridge;
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
     use app::NudgeApp;
     use eframe::egui;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
-
-    let tray_show_flag = Arc::new(AtomicBool::new(false));
-    let exit_flag = Arc::new(AtomicBool::new(false));
 
     // === Tray icon (Windows only) ===
     #[cfg(target_os = "windows")]
-    let _tray = {
-        use tray_icon::menu::{Menu, MenuEvent, MenuItem};
-        use tray_icon::{TrayIconBuilder, TrayIconEvent};
+    let _tray_state = {
+        use tray_icon::menu::{Menu, MenuItem};
+        use tray_icon::TrayIconBuilder;
 
         let menu = Menu::new();
         let exit_item = MenuItem::new("Exit", true, None);
@@ -30,10 +27,10 @@ fn main() -> eframe::Result {
         let icon_rgba = {
             let mut data = vec![0u8; 16 * 16 * 4];
             for pixel in data.chunks_exact_mut(4) {
-                pixel[0] = 70;  // R
-                pixel[1] = 130; // G
-                pixel[2] = 230; // B
-                pixel[3] = 255; // A
+                pixel[0] = 70;
+                pixel[1] = 130;
+                pixel[2] = 230;
+                pixel[3] = 255;
             }
             data
         };
@@ -42,33 +39,44 @@ fn main() -> eframe::Result {
 
         let tray = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
+            .with_menu_on_left_click(false)
             .with_tooltip("Nudge")
             .with_icon(icon)
             .build()
             .expect("failed to build tray icon");
 
-        // Handle tray click
-        let flag_for_click = tray_show_flag.clone();
-        std::thread::spawn(move || loop {
-            if let Ok(event) = TrayIconEvent::receiver().recv() {
-                if matches!(event, TrayIconEvent::Click { .. }) {
-                    flag_for_click.store(true, Ordering::Relaxed);
+        // Set up event handlers that run on Windows message thread.
+        // These work even when window is SW_HIDE'd (unlike polling in update()).
+        tray_icon::TrayIconEvent::set_event_handler(Some(|event| {
+            // Only respond to left-click release (right-click opens context menu)
+            if matches!(
+                event,
+                tray_icon::TrayIconEvent::Click {
+                    button: tray_icon::MouseButton::Left,
+                    button_state: tray_icon::MouseButtonState::Up,
+                    ..
+                }
+            ) {
+                tray_bridge::set_tray_clicked();
+                // Restore window to wake up the eframe event loop
+                if let Some(hwnd_val) = tray_bridge::load_hwnd() {
+                    unsafe {
+                        use windows::Win32::Foundation::HWND;
+                        use windows::Win32::UI::WindowsAndMessaging::*;
+                        let h = HWND(hwnd_val as *mut _);
+                        let _ = ShowWindow(h, SW_RESTORE);
+                        let _ = SetForegroundWindow(h);
+                    }
                 }
             }
-        });
+        }));
 
-        // Handle menu exit
-        let exit_flag_for_menu = exit_flag.clone();
-        let exit_id = exit_item.id().clone();
-        std::thread::spawn(move || loop {
-            if let Ok(event) = MenuEvent::receiver().recv() {
-                if event.id() == &exit_id {
-                    exit_flag_for_menu.store(true, Ordering::Relaxed);
-                }
-            }
-        });
+        tray_icon::menu::MenuEvent::set_event_handler(Some(|_event| {
+            std::process::exit(0);
+        }));
 
-        tray // keep alive
+        // Keep tray alive for the lifetime of the app
+        (tray, exit_item)
     };
 
     let options = eframe::NativeOptions {
@@ -78,16 +86,13 @@ fn main() -> eframe::Result {
             .with_always_on_top()
             .with_resizable(false)
             .with_title("Nudge"),
-        // TODO: center on screen
         ..Default::default()
     };
 
-    let flag = tray_show_flag.clone();
-    let exit = exit_flag.clone();
     eframe::run_native(
         "Nudge",
         options,
-        Box::new(move |cc| Ok(Box::new(NudgeApp::new(cc, flag, exit)))),
+        Box::new(move |cc| Ok(Box::new(NudgeApp::new(cc)))),
     )
 }
 
