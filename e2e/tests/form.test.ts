@@ -156,8 +156,19 @@ test("Enter saves journal entry to localStorage", async ({ nudge }) => {
 
     expect(journal).not.toBeNull()
     const lines = journal!.split("\n")
-    expect(lines[0]).toBe("timestamp,doing,bullshit,next_minutes")
-    expect(lines[1]).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2},writing code,no,10$/)
+    expect(lines.length).toBe(1)
+
+    const entry = JSON.parse(lines[0])
+    expect(entry.schema_version).toBe(1)
+    expect(entry.event_type).toBe("submitted")
+    expect(entry.entry_id).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/) // ULID
+    expect(entry.captured_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2}$/)
+    expect(entry.implementation).toBe("rust")
+    // Initial popup on page load is timer-triggered by default
+    expect(entry.trigger_source).toBe("timer")
+    expect(entry.doing).toBe("writing code")
+    expect(entry.bullshit).toBe("no")
+    expect(entry.next_interval_minutes).toBe(10)
 })
 
 test("Esc does NOT save journal entry", async ({ nudge }) => {
@@ -208,14 +219,17 @@ test("Multiple submits append to journal", async ({ nudge }) => {
     await nudge.page.keyboard.press("Enter")
     await new Promise((r) => setTimeout(r, 500))
 
-    // Should have header + 2 entries
+    // Should have 2 NDJSON entries (no header)
     const journal = await nudge.page.evaluate(() => localStorage.getItem("journal"))
     console.log("Journal:", journal)
 
     expect(journal).not.toBeNull()
     const lines = journal!.split("\n")
-    expect(lines.length).toBe(3)
-    expect(lines[0]).toBe("timestamp,doing,bullshit,next_minutes")
-    expect(lines[1]).toContain("first entry")
-    expect(lines[2]).toContain("second entry")
+    expect(lines.length).toBe(2)
+
+    const first = JSON.parse(lines[0])
+    const second = JSON.parse(lines[1])
+    expect(first.doing).toBe("first entry")
+    expect(second.doing).toBe("second entry")
+    expect(first.entry_id).not.toBe(second.entry_id)
 })

@@ -1,6 +1,8 @@
 /target
 *.exe
-.cargo/
+journal*.ndjson
+.cargo/*
+!.cargo/config.toml
 .claude/
 .env
 CLAUDE.local.md

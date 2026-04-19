@@ -15,6 +15,7 @@ pub struct NudgeApp {
     timer: Timer,
     trigger_source: TriggerSource,
     popup_visible: bool,
+    error_message: Option<String>,
 
     // Native window handle for Win32 API calls
     #[cfg(target_os = "windows")]
@@ -33,6 +34,7 @@ impl NudgeApp {
             timer: Timer::new(std::time::Duration::from_secs(10 * 60)),
             trigger_source: TriggerSource::Timer,
             popup_visible: true,
+            error_message: None,
             #[cfg(target_os = "windows")]
             hwnd: None,
         }
@@ -40,20 +42,29 @@ impl NudgeApp {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn now_timestamp() -> String {
-        chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string()
+        chrono::Local::now()
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, false)
     }
 
     #[cfg(target_arch = "wasm32")]
     fn now_timestamp() -> String {
         let date = js_sys::Date::new_0();
+        let offset_total = -(date.get_timezone_offset() as i32); // minutes east of UTC
+        let sign = if offset_total >= 0 { '+' } else { '-' };
+        let offset_h = offset_total.abs() / 60;
+        let offset_m = offset_total.abs() % 60;
         format!(
-            "{}-{:02}-{:02}T{:02}:{:02}:{:02}",
+            "{}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}{}{:02}:{:02}",
             date.get_full_year(),
             date.get_month() + 1,
             date.get_date(),
             date.get_hours(),
             date.get_minutes(),
-            date.get_seconds()
+            date.get_seconds(),
+            date.get_milliseconds(),
+            sign,
+            offset_h,
+            offset_m
         )
     }
 
@@ -75,31 +86,50 @@ impl NudgeApp {
     }
 
     fn hide_popup(&mut self, _ctx: &egui::Context, action: Action) {
+        // Parse once so journal's minutes match the timer's actual interval
+        // (parse_interval clamps ≤0 to 1 second, which must also be reflected in the log)
+        let interval = nudge_state::parse_interval(&self.next_minutes);
+        let minutes: f64 = interval.as_secs_f64() / 60.0;
+
         // Write journal on submit
         if action == Action::Submit {
-            let minutes: u32 = self.next_minutes.trim().parse().unwrap_or(10);
-            let entry = crate::journal::JournalEntry {
-                timestamp: Self::now_timestamp(),
-                doing: self.doing.clone(),
-                bullshit: self.bullshit.clone(),
-                next_minutes: minutes,
+            let trigger = match self.trigger_source {
+                TriggerSource::Timer => "timer",
+                TriggerSource::Manual => "manual",
             };
+            let event = crate::journal::new_submitted_event(
+                Self::now_timestamp(),
+                trigger,
+                self.doing.clone(),
+                self.bullshit.clone(),
+                minutes,
+            );
 
             #[cfg(not(target_arch = "wasm32"))]
             {
-                // TODO: configurable path
-                let path = std::path::PathBuf::from("journal.csv");
-                crate::journal::write_entry(&path, &entry);
+                // TODO: resolve %USERPROFILE%\Documents\Nudge\journal-rust.ndjson
+                let path = std::path::PathBuf::from("journal.ndjson");
+                if let Err(e) = crate::journal::write_event(&path, &event) {
+                    self.error_message = Some(e.to_string());
+                    return; // keep popup open, don't reset timer
+                }
             }
 
             #[cfg(target_arch = "wasm32")]
-            crate::journal::write_entry_to_localstorage(&entry);
+            {
+                if let Err(e) = crate::journal::write_event_to_localstorage(&event) {
+                    self.error_message = Some(e.to_string());
+                    return;
+                }
+            }
         }
+
+        // Clear error on successful action
+        self.error_message = None;
 
         // Shared: timer reset logic
         let should_reset = nudge_state::should_reset_timer(self.trigger_source, action);
         if should_reset {
-            let interval = nudge_state::parse_interval(&self.next_minutes);
             self.timer.reset(interval);
         }
 
@@ -122,7 +152,6 @@ impl NudgeApp {
 
             // SW_HIDE stops update() loop, so schedule a thread to wake us up
             if should_reset {
-                let interval = nudge_state::parse_interval(&self.next_minutes);
                 crate::tray_bridge::schedule_timer_wakeup(interval);
             }
         }
@@ -158,6 +187,16 @@ impl NudgeApp {
                 [ui.available_width(), 28.0],
                 egui::TextEdit::singleline(&mut self.next_minutes).font(egui::TextStyle::Body),
             );
+
+            // Show error message if journal write failed
+            if let Some(err) = &self.error_message {
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new(err)
+                        .size(12.0)
+                        .color(egui::Color32::from_rgb(255, 80, 80)),
+                );
+            }
         });
     }
 

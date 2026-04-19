@@ -1,13 +1,13 @@
 # Nudge — interval journaling for focus
 
-Периодический spotlight-popup, который спрашивает тебя: "что ты делаешь?" и "не хуйню ли ты делаешь?". Ответы пишутся в CSV-журнал.
+Периодический spotlight-popup, который спрашивает тебя: "что ты делаешь?" и "не хуйню ли ты делаешь?". Ответы пишутся в append-only NDJSON-журнал.
 
 ## Как работает
 
 1. Nudge сидит в системном трее, тикает таймер
 2. Таймер истёк → появляется spotlight-popup по центру экрана (поверх всего, как Spotlight / Claude quick chat)
 3. Пользователь отвечает на вопросы → Enter → popup исчезает, таймер перезапускается
-4. Ответы записываются в `journal.csv`
+4. Ответы записываются в `journal-rust.ndjson`
 
 ## Popup
 
@@ -26,13 +26,14 @@
 
 ## Журнал
 
-CSV файл (`journal.csv`), append-only:
+NDJSON файл (`journal-rust.ndjson`), append-only, одна JSON-запись на строку:
 
+```jsonl
+{"schema_version":1,"event_type":"submitted","entry_id":"01JS1S8R5W4Y4S4M8Q6A8X7R2V","captured_at":"2026-04-08T14:30:00.000+03:00","implementation":"rust","trigger_source":"timer","doing":"пишу требования к nudge","bullshit":"нет вроде норм","next_interval_minutes":10}
+{"schema_version":1,"event_type":"submitted","entry_id":"01JS1S9FDRW4K4M7R4F5R9A5A2","captured_at":"2026-04-08T14:40:00.000+03:00","implementation":"rust","trigger_source":"timer","doing":"залип в ютуб","bullshit":"да","next_interval_minutes":5}
 ```
-timestamp,doing,bullshit,next_minutes
-2026-04-08T14:30:00,пишу требования к nudge,нет вроде норм,10
-2026-04-08T14:40:00,залип в ютуб,да,5
-```
+
+Полный контракт: [docs/journal-spec.md](docs/journal-spec.md)
 
 ## Трей
 
@@ -50,7 +51,7 @@ timestamp,doing,bullshit,next_minutes
 ## Дефолты
 
 - Интервал: **10 минут**
-- Журнал: `journal.csv` рядом с exe (или `%APPDATA%/nudge/`)
+- Журнал: `%USERPROFILE%\Documents\Nudge\journal-rust.ndjson`
 
 ## TODO (после MVP)
 
