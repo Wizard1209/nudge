@@ -1,6 +1,8 @@
 /target
 *.exe
 journal*.ndjson
+journal*.csv
+.codex
 .cargo/*
 !.cargo/config.toml
 .claude/

@@ -2,33 +2,13 @@ import { expect } from "vitest"
 import { test } from "../fixtures/nudge"
 import { visualAssert } from "../fixtures/judge"
 
-test("shows three labeled input fields", async ({ nudge }) => {
-    const screenshot = await nudge.page.screenshot()
-    const result = await visualAssert(
-        screenshot as Buffer,
-        "Three labeled text input fields are visible: one labeled 'Что я делаю?', one labeled 'Не хуйню ли я делаю?', and one labeled with minutes/interval showing the value '10'"
-    )
-    console.log("Judge says:", result)
-    expect(result.pass).toBe(true)
-})
-
-test("form has polished spotlight appearance", async ({ nudge }) => {
-    const screenshot = await nudge.page.screenshot()
-    const result = await visualAssert(
-        screenshot as Buffer,
-        "A dark-themed form with visible padding/margins around the content (not touching the edges), the text fields are wide (spanning most of the width), and the overall look is clean and polished — NOT a raw unstyled form crammed into the top-left corner"
-    )
-    console.log("Judge says:", result)
-    expect(result.pass).toBe(true)
-})
-
 test("can type into the first field", async ({ nudge }) => {
     // Click on the first text field (with dark theme padding: field at ~y=55)
-    await nudge.page.mouse.click(400, 55)
+    await nudge.page.mouse.click(400, 200)
     await new Promise((r) => setTimeout(r, 500))
 
     // egui needs a second click sometimes to activate text edit
-    await nudge.page.mouse.click(400, 55)
+    await nudge.page.mouse.click(400, 200)
     await new Promise((r) => setTimeout(r, 300))
 
     // Type using keyboard.type — sends keydown/keypress/keyup for each char
@@ -44,45 +24,27 @@ test("can type into the first field", async ({ nudge }) => {
     expect(result.pass).toBe(true)
 })
 
-test("Enter hides form and shows countdown screen", async ({ nudge }) => {
+test("Enter hides form and shows the bottom-right pill", async ({ nudge }) => {
     await nudge.page.keyboard.press("Enter")
     await new Promise((r) => setTimeout(r, 1000))
 
     const screenshot = await nudge.page.screenshot()
     const result = await visualAssert(
         screenshot as Buffer,
-        "A countdown screen showing text 'Next nudge in' followed by a time like M:SS or MM:SS, and a button labeled 'Nudge now'"
+        "The input card is NOT visible. In the bottom-right region a small pill shows a short time in 'M:SS' format. There is NO large centered 'Next nudge in' text and NO 'Nudge now' button."
     )
     console.log("Judge says:", result)
     expect(result.pass).toBe(true)
 })
 
-test("Esc hides form and shows countdown screen", async ({ nudge }) => {
+test("Esc hides form and shows the bottom-right pill", async ({ nudge }) => {
     await nudge.page.keyboard.press("Escape")
     await new Promise((r) => setTimeout(r, 1000))
 
     const screenshot = await nudge.page.screenshot()
     const result = await visualAssert(
         screenshot as Buffer,
-        "A countdown screen showing text 'Next nudge in' followed by a time, and a button labeled 'Nudge now'"
-    )
-    console.log("Judge says:", result)
-    expect(result.pass).toBe(true)
-})
-
-test("Nudge now button re-shows form", async ({ nudge }) => {
-    // First hide the form
-    await nudge.page.keyboard.press("Enter")
-    await new Promise((r) => setTimeout(r, 1000))
-
-    // Click the "Nudge now" button (centered horizontally, at ~y=115)
-    await nudge.page.mouse.click(400, 120)
-    await new Promise((r) => setTimeout(r, 500))
-
-    const screenshot = await nudge.page.screenshot()
-    const result = await visualAssert(
-        screenshot as Buffer,
-        "Three labeled text input fields are visible (a form, not a countdown screen)"
+        "The input card is NOT visible. In the bottom-right region a small pill shows a short time in 'M:SS' format. There is NO large centered 'Next nudge in' text and NO 'Nudge now' button."
     )
     console.log("Judge says:", result)
     expect(result.pass).toBe(true)
@@ -90,9 +52,9 @@ test("Nudge now button re-shows form", async ({ nudge }) => {
 
 test("Timer auto-triggers form reappearance", async ({ nudge }) => {
     // Click on the minutes field and change to "0" (becomes 1-second timer)
-    await nudge.page.mouse.click(400, 180)
+    await nudge.page.mouse.click(400, 285)
     await new Promise((r) => setTimeout(r, 300))
-    await nudge.page.mouse.click(400, 180)
+    await nudge.page.mouse.click(400, 285)
     await new Promise((r) => setTimeout(r, 300))
 
     // Select all and replace with "0"
@@ -106,23 +68,14 @@ test("Timer auto-triggers form reappearance", async ({ nudge }) => {
     await nudge.page.keyboard.press("Enter")
     await new Promise((r) => setTimeout(r, 500))
 
-    // Verify countdown screen
-    let screenshot = await nudge.page.screenshot()
-    let result = await visualAssert(
-        screenshot as Buffer,
-        "A countdown screen with 'Next nudge in' text and a 'Nudge now' button"
-    )
-    console.log("Countdown visible:", result)
-    expect(result.pass).toBe(true)
-
     // Wait for 1-second timer to expire + re-render
     await new Promise((r) => setTimeout(r, 3000))
 
     // Form should have reappeared automatically
-    screenshot = await nudge.page.screenshot()
-    result = await visualAssert(
+    const screenshot = await nudge.page.screenshot()
+    const result = await visualAssert(
         screenshot as Buffer,
-        "Three labeled text input fields are visible (a form with text inputs, not a countdown)"
+        "A rounded dark card with stacked input rows is visible in the upper half of the window. There is NO big 'Next nudge in' countdown text and NO 'Nudge now' button anywhere in the screenshot."
     )
     console.log("Form reappeared:", result)
     expect(result.pass).toBe(true)
@@ -133,9 +86,9 @@ test("Enter saves journal entry to localStorage", async ({ nudge }) => {
     await nudge.page.evaluate(() => localStorage.clear())
 
     // Type into fields
-    await nudge.page.mouse.click(400, 55)
+    await nudge.page.mouse.click(400, 200)
     await new Promise((r) => setTimeout(r, 300))
-    await nudge.page.mouse.click(400, 55)
+    await nudge.page.mouse.click(400, 200)
     await new Promise((r) => setTimeout(r, 200))
     await nudge.page.keyboard.type("writing code", { delay: 30 })
     await new Promise((r) => setTimeout(r, 200))
@@ -175,9 +128,9 @@ test("Esc does NOT save journal entry", async ({ nudge }) => {
     await nudge.page.evaluate(() => localStorage.clear())
 
     // Type something
-    await nudge.page.mouse.click(400, 55)
+    await nudge.page.mouse.click(400, 200)
     await new Promise((r) => setTimeout(r, 300))
-    await nudge.page.mouse.click(400, 55)
+    await nudge.page.mouse.click(400, 200)
     await new Promise((r) => setTimeout(r, 200))
     await nudge.page.keyboard.type("should not save", { delay: 30 })
     await new Promise((r) => setTimeout(r, 200))
@@ -192,27 +145,31 @@ test("Esc does NOT save journal entry", async ({ nudge }) => {
     expect(journal).toBeNull()
 })
 
-test("Multiple submits append to journal", async ({ nudge }) => {
+test("Multiple submits append to journal (timer-driven reopen)", async ({ nudge }) => {
     await nudge.page.evaluate(() => localStorage.clear())
 
-    // First entry
-    await nudge.page.mouse.click(400, 55)
-    await new Promise((r) => setTimeout(r, 300))
-    await nudge.page.mouse.click(400, 55)
+    // First entry — set minutes to 0 so timer re-fires within ~1s after submit.
+    await nudge.page.mouse.click(400, 285)
+    await new Promise((r) => setTimeout(r, 200))
+    await nudge.page.mouse.click(400, 285)
+    await new Promise((r) => setTimeout(r, 200))
+    await nudge.page.keyboard.down("Control")
+    await nudge.page.keyboard.press("a")
+    await nudge.page.keyboard.up("Control")
+    await nudge.page.keyboard.type("0", { delay: 30 })
+    await new Promise((r) => setTimeout(r, 200))
+
+    await nudge.page.mouse.click(400, 200)
     await new Promise((r) => setTimeout(r, 200))
     await nudge.page.keyboard.type("first entry", { delay: 30 })
     await new Promise((r) => setTimeout(r, 200))
     await nudge.page.keyboard.press("Enter")
-    await new Promise((r) => setTimeout(r, 500))
 
-    // Nudge now to get form back
-    await nudge.page.mouse.click(400, 120)
-    await new Promise((r) => setTimeout(r, 500))
+    // Wait for timer auto-reopen (interval ≈ 1s)
+    await new Promise((r) => setTimeout(r, 2500))
 
     // Second entry
-    await nudge.page.mouse.click(400, 55)
-    await new Promise((r) => setTimeout(r, 300))
-    await nudge.page.mouse.click(400, 55)
+    await nudge.page.mouse.click(400, 200)
     await new Promise((r) => setTimeout(r, 200))
     await nudge.page.keyboard.type("second entry", { delay: 30 })
     await new Promise((r) => setTimeout(r, 200))

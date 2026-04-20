@@ -5,8 +5,19 @@
     <meta charset="utf-8">
     <title>Nudge</title>
     <style>
-        html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #1a1a1a; }
-        canvas { display: block; width: 100%; height: 100%; }
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background:
+                radial-gradient(circle at 20% 20%, #3b4f6b 0%, transparent 45%),
+                radial-gradient(circle at 80% 60%, #5a3e6b 0%, transparent 50%),
+                radial-gradient(circle at 50% 100%, #1f3a5f 0%, transparent 55%),
+                linear-gradient(135deg, #14171f 0%, #1c1e26 100%);
+            background-color: #14171f;
+        }
+        canvas { display: block; width: 100%; height: 100%; background: transparent; }
     </style>
 </head>
 <body>
