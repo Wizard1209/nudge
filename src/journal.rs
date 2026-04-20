@@ -79,6 +79,26 @@ pub fn serialize_event(event: &JournalEvent) -> Result<String, JournalError> {
     })
 }
 
+/// Build the journal file path under a Documents-style root per spec §File location:
+/// `<documents>/Nudge/journal-<impl>.ndjson`. Pure — caller resolves the
+/// Documents directory via `resolve_default_journal_path` (or a test stub).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn journal_path(documents_dir: &std::path::Path, implementation: &str) -> std::path::PathBuf {
+    documents_dir
+        .join("Nudge")
+        .join(format!("journal-{implementation}.ndjson"))
+}
+
+/// Resolve the default Rust-implementation journal path for the current host.
+/// Uses the OS-provided Documents folder (on Windows this calls the Known
+/// Folder API internally via the `dirs` crate). Falls back to the current
+/// working directory if the OS can't report a Documents folder.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn resolve_default_journal_path() -> std::path::PathBuf {
+    let docs = dirs::document_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+    journal_path(&docs, "rust")
+}
+
 /// Append a journal event to an NDJSON file.
 /// Creates parent directories if needed. Validates before write.
 #[cfg(not(target_arch = "wasm32"))]
@@ -120,18 +140,33 @@ pub fn write_event(path: &std::path::Path, event: &JournalEvent) -> Result<(), J
 }
 
 /// Append a journal event to localStorage (WASM).
+/// Returns `JournalError::Io` on any browser-side failure (no `window`, no
+/// localStorage, JS exception during read/write — e.g. `QuotaExceededError`).
 #[cfg(target_arch = "wasm32")]
 pub fn write_event_to_localstorage(event: &JournalEvent) -> Result<(), JournalError> {
+    fn io(detail: impl Into<String>) -> JournalError {
+        JournalError::Io {
+            path: "localStorage:journal".to_string(),
+            detail: detail.into(),
+        }
+    }
+    fn js_err_to_string(e: wasm_bindgen::JsValue) -> String {
+        e.as_string()
+            .unwrap_or_else(|| format!("{:?}", e))
+    }
+
     validate_event(event)?;
     let line = serialize_event(event)?;
 
-    let window = web_sys::window().expect("no window");
+    let window = web_sys::window().ok_or_else(|| io("no window"))?;
     let storage = window
         .local_storage()
-        .expect("localStorage error")
-        .expect("no localStorage");
+        .map_err(|e| io(js_err_to_string(e)))?
+        .ok_or_else(|| io("localStorage unavailable"))?;
 
-    let existing = storage.get_item("journal").unwrap_or(None);
+    let existing = storage
+        .get_item("journal")
+        .map_err(|e| io(js_err_to_string(e)))?;
     let ndjson = match existing {
         Some(data) if !data.is_empty() => format!("{data}\n{line}"),
         _ => line,
@@ -139,7 +174,7 @@ pub fn write_event_to_localstorage(event: &JournalEvent) -> Result<(), JournalEr
 
     storage
         .set_item("journal", &ndjson)
-        .expect("failed to write localStorage");
+        .map_err(|e| io(js_err_to_string(e)))?;
 
     Ok(())
 }
@@ -297,6 +332,30 @@ mod tests {
         let json = r#"{"schema_version":1,"event_type":"submitted","entry_id":"test","captured_at":"2026-04-17T14:30:00.000+02:00","implementation":"rust","trigger_source":"timer","doing":"test","bullshit":"no","next_interval_minutes":10,"future_field":"hello"}"#;
         let parsed: Result<JournalEvent, _> = serde_json::from_str(json);
         assert!(parsed.is_ok(), "should tolerate unknown fields");
+    }
+
+    // === Path resolution tests ===
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn journal_path_joins_documents_and_nudge_subdir() {
+        use std::path::{Path, PathBuf};
+        let docs = Path::new("/Users/wizard/Documents");
+        assert_eq!(
+            journal_path(docs, "rust"),
+            PathBuf::from("/Users/wizard/Documents/Nudge/journal-rust.ndjson"),
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn journal_path_uses_per_impl_filename() {
+        use std::path::{Path, PathBuf};
+        let docs = Path::new("/d");
+        assert_eq!(
+            journal_path(docs, "electron"),
+            PathBuf::from("/d/Nudge/journal-electron.ndjson"),
+        );
     }
 
     // === File tests ===

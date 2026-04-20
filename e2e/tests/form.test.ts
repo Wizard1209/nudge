@@ -51,17 +51,17 @@ test("Esc hides form and shows the bottom-right pill", async ({ nudge }) => {
 })
 
 test("Timer auto-triggers form reappearance", async ({ nudge }) => {
-    // Click on the minutes field and change to "0" (becomes 1-second timer)
+    // Click on the minutes field and change to "0.02" (~1.2 s timer — must
+    // be > 0 because the journal spec forbids non-positive intervals).
     await nudge.page.mouse.click(400, 285)
     await new Promise((r) => setTimeout(r, 300))
     await nudge.page.mouse.click(400, 285)
     await new Promise((r) => setTimeout(r, 300))
 
-    // Select all and replace with "0"
     await nudge.page.keyboard.down("Control")
     await nudge.page.keyboard.press("a")
     await nudge.page.keyboard.up("Control")
-    await nudge.page.keyboard.type("0", { delay: 50 })
+    await nudge.page.keyboard.type("0.02", { delay: 50 })
     await new Promise((r) => setTimeout(r, 300))
 
     // Submit — form hides, timer starts with 1-second interval
@@ -148,7 +148,8 @@ test("Esc does NOT save journal entry", async ({ nudge }) => {
 test("Multiple submits append to journal (timer-driven reopen)", async ({ nudge }) => {
     await nudge.page.evaluate(() => localStorage.clear())
 
-    // First entry — set minutes to 0 so timer re-fires within ~1s after submit.
+    // First entry — set minutes to 0.02 (~1.2 s) so timer re-fires quickly
+    // after submit. Zero is rejected now (spec requires positive interval).
     await nudge.page.mouse.click(400, 285)
     await new Promise((r) => setTimeout(r, 200))
     await nudge.page.mouse.click(400, 285)
@@ -156,7 +157,7 @@ test("Multiple submits append to journal (timer-driven reopen)", async ({ nudge 
     await nudge.page.keyboard.down("Control")
     await nudge.page.keyboard.press("a")
     await nudge.page.keyboard.up("Control")
-    await nudge.page.keyboard.type("0", { delay: 30 })
+    await nudge.page.keyboard.type("0.02", { delay: 30 })
     await new Promise((r) => setTimeout(r, 200))
 
     await nudge.page.mouse.click(400, 200)

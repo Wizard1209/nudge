@@ -18,15 +18,38 @@ pub fn should_reset_timer(source: TriggerSource, action: Action) -> bool {
     !matches!((source, action), (TriggerSource::Manual, Action::Dismiss))
 }
 
-/// Parse the minutes field into a Duration, defaulting to 10 min.
-/// Accepts floats (e.g. "0.1" = 6 seconds). Values ≤ 0 become 1 second.
-pub fn parse_interval(text: &str) -> Duration {
-    let minutes: f64 = text.trim().parse().unwrap_or(10.0);
-    if minutes <= 0.0 {
-        Duration::from_secs(1)
-    } else {
-        Duration::from_secs_f64(minutes * 60.0)
+/// Error returned by `parse_interval` when the user typed a number that is
+/// invalid per spec (`next_interval_minutes` must be finite and > 0).
+#[derive(Debug, Clone, PartialEq)]
+pub struct IntervalError {
+    pub input: String,
+}
+
+impl std::fmt::Display for IntervalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Interval must be a positive number of minutes (got \"{}\")", self.input)
     }
+}
+
+/// Parse the minutes field into a Duration.
+///
+/// - Empty / whitespace / unparseable text → default of 10 minutes (user
+///   didn't provide an explicit number, so we fall back silently).
+/// - Parsed number ≤ 0 or non-finite → `Err(IntervalError)` — the user
+///   explicitly typed something invalid and should be told, not silently
+///   clamped (journal would otherwise record a number that doesn't match
+///   what the user intended).
+pub fn parse_interval(text: &str) -> Result<Duration, IntervalError> {
+    let trimmed = text.trim();
+    let Ok(minutes) = trimmed.parse::<f64>() else {
+        return Ok(Duration::from_secs(10 * 60));
+    };
+    if !minutes.is_finite() || minutes <= 0.0 {
+        return Err(IntervalError {
+            input: trimmed.to_string(),
+        });
+    }
+    Ok(Duration::from_secs_f64(minutes * 60.0))
 }
 
 /// Format a tray tooltip string rounded UP to the next minute.
@@ -76,32 +99,45 @@ mod tests {
 
     #[test]
     fn parse_interval_valid() {
-        assert_eq!(parse_interval("15"), Duration::from_secs(15 * 60));
+        assert_eq!(parse_interval("15").unwrap(), Duration::from_secs(15 * 60));
     }
 
     #[test]
-    fn parse_interval_invalid_defaults_to_10() {
-        assert_eq!(parse_interval("abc"), Duration::from_secs(10 * 60));
+    fn parse_interval_gibberish_defaults_to_10() {
+        assert_eq!(parse_interval("abc").unwrap(), Duration::from_secs(10 * 60));
+    }
+
+    #[test]
+    fn parse_interval_empty_defaults_to_10() {
+        assert_eq!(parse_interval("").unwrap(), Duration::from_secs(10 * 60));
+        assert_eq!(parse_interval("   ").unwrap(), Duration::from_secs(10 * 60));
     }
 
     #[test]
     fn parse_interval_whitespace() {
-        assert_eq!(parse_interval("  5  "), Duration::from_secs(5 * 60));
+        assert_eq!(parse_interval("  5  ").unwrap(), Duration::from_secs(5 * 60));
     }
 
     #[test]
-    fn parse_interval_zero_becomes_1_second() {
-        assert_eq!(parse_interval("0"), Duration::from_secs(1));
+    fn parse_interval_zero_is_error() {
+        assert!(parse_interval("0").is_err());
     }
 
     #[test]
     fn parse_interval_float() {
-        assert_eq!(parse_interval("0.1"), Duration::from_secs(6));
+        assert_eq!(parse_interval("0.1").unwrap(), Duration::from_secs(6));
     }
 
     #[test]
-    fn parse_interval_negative_becomes_1_second() {
-        assert_eq!(parse_interval("-5"), Duration::from_secs(1));
+    fn parse_interval_negative_is_error() {
+        assert!(parse_interval("-5").is_err());
+        let err = parse_interval("-5").unwrap_err();
+        assert_eq!(err.input, "-5");
+    }
+
+    #[test]
+    fn parse_interval_nan_is_error() {
+        assert!(parse_interval("NaN").is_err());
     }
 
     #[test]

@@ -24,6 +24,13 @@ fn install_blur_listener() {
     closure.forget();
 }
 
+
+/// Framebuffer clear color for the transparent spotlight window. Using an
+/// opaque value (even dark grey) breaks native transparency — Windows DWM
+/// composites the alpha channel straight from the framebuffer, so anything
+/// non-zero produces the grey box halo seen in early builds.
+pub const CLEAR_COLOR_TRANSPARENT: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
+
 pub struct NudgeApp {
     // Form fields
     doing: String,
@@ -40,6 +47,11 @@ pub struct NudgeApp {
     card_rect: Option<egui::Rect>,
     pill_rect: Option<egui::Rect>,
     was_focused: bool,
+    /// True once the user has typed a key or clicked inside the popup.
+    /// Blur/focus-loss events only dismiss the popup after this is set —
+    /// OS-level blurs that fire during page setup (noisy in automated tests)
+    /// should not dismiss a popup the user has never interacted with.
+    user_engaged: bool,
 
     // Native window handle for Win32 API calls
     #[cfg(target_os = "windows")]
@@ -52,6 +64,11 @@ impl NudgeApp {
         // Transparent panel background so the card sits on top of wallpaper/desktop
         visuals.panel_fill = egui::Color32::TRANSPARENT;
         visuals.window_fill = egui::Color32::TRANSPARENT;
+        // Placeholder / hint text colour: egui's dark default is ~gray(120),
+        // which washes out against the translucent card. Bump to ~gray(170)
+        // so hints like "Что я делаю?" are comfortably legible.
+        visuals.widgets.noninteractive.fg_stroke.color = egui::Color32::from_gray(170);
+        visuals.widgets.inactive.fg_stroke.color = egui::Color32::from_gray(170);
         cc.egui_ctx.set_visuals(visuals);
 
         #[cfg(target_arch = "wasm32")]
@@ -70,6 +87,7 @@ impl NudgeApp {
             card_rect: None,
             pill_rect: None,
             was_focused: false,
+            user_engaged: false,
             #[cfg(target_os = "windows")]
             hwnd: None,
         }
@@ -107,6 +125,7 @@ impl NudgeApp {
         self.trigger_source = source;
         self.popup_visible = true;
         self.focus_first = true;
+        self.user_engaged = false;
 
         #[cfg(target_os = "windows")]
         if let Some(hwnd_val) = self.hwnd {
@@ -121,9 +140,21 @@ impl NudgeApp {
     }
 
     fn hide_popup(&mut self, _ctx: &egui::Context, action: Action) {
-        // Parse once so journal's minutes match the timer's actual interval
-        // (parse_interval clamps ≤0 to 1 second, which must also be reflected in the log)
-        let interval = nudge_state::parse_interval(&self.next_minutes);
+        // Parse the interval field. A parse error means the user typed an
+        // explicit non-positive number (e.g. "-5" or "0"). On Submit that is
+        // a validation error — surface it and keep the popup open. On
+        // Dismiss we silently fall back to the 10-minute default so Esc
+        // still works even with garbage in the field.
+        let interval = match nudge_state::parse_interval(&self.next_minutes) {
+            Ok(d) => d,
+            Err(e) => {
+                if action == Action::Submit {
+                    self.error_message = Some(e.to_string());
+                    return;
+                }
+                std::time::Duration::from_secs(10 * 60)
+            }
+        };
         let minutes: f64 = interval.as_secs_f64() / 60.0;
 
         // Write journal on submit
@@ -142,8 +173,7 @@ impl NudgeApp {
 
             #[cfg(not(target_arch = "wasm32"))]
             {
-                // TODO: resolve %USERPROFILE%\Documents\Nudge\journal-rust.ndjson
-                let path = std::path::PathBuf::from("journal.ndjson");
+                let path = crate::journal::resolve_default_journal_path();
                 if let Err(e) = crate::journal::write_event(&path, &event) {
                     self.error_message = Some(e.to_string());
                     return; // keep popup open, don't reset timer
@@ -246,20 +276,31 @@ impl NudgeApp {
         );
         let is_focused = ui.ctx().memory(|m| m.has_focus(field_id));
         if is_focused {
+            // Subtle row tint, inset from the card edge and softly rounded
+            // so it visually sits INSIDE the card instead of butting up
+            // against the stroke/rounded corners. Alpha 2 (~0.8% white)
+            // keeps the tint from looking like a solid block over the
+            // semi-transparent card fill.
+            let inset_rect = row_rect.shrink2(egui::vec2(8.0, 4.0));
             ui.painter().rect_filled(
-                row_rect,
-                0.0,
-                egui::Color32::from_white_alpha(10),
+                inset_rect,
+                egui::CornerRadius::same(6),
+                egui::Color32::from_white_alpha(2),
             );
         }
         ui.put(
             row_rect,
             egui::TextEdit::singleline(value)
                 .id(field_id)
-                .hint_text(hint)
+                .hint_text(
+                    egui::RichText::new(hint)
+                        .size(16.0)
+                        .color(egui::Color32::from_gray(170)),
+                )
                 .frame(false)
                 .margin(egui::Margin::symmetric(20, 12))
-                .font(egui::FontId::proportional(16.0)),
+                .font(egui::FontId::proportional(16.0))
+                .text_color(egui::Color32::from_rgb(235, 235, 240)),
         )
     }
 
@@ -361,6 +402,10 @@ impl NudgeApp {
 }
 
 impl eframe::App for NudgeApp {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        CLEAR_COLOR_TRANSPARENT
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // === First frame setup ===
         if self.center_once {
@@ -466,21 +511,38 @@ impl eframe::App for NudgeApp {
             // Window focus-loss → dismiss (same as Esc).
             // Native: egui fills viewport().focused from winit events.
             // WASM: eframe doesn't populate it; we poll a DOM-blur flag instead.
+            // Note any user engagement this frame: a key press, or a click
+            // landing inside the card. Gates the blur-dismiss below.
+            let engaged_this_frame = ctx.input(|i| {
+                let any_key = i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. }));
+                let click_in_card = match (self.card_rect, i.pointer.interact_pos()) {
+                    (Some(rect), Some(p)) => i.pointer.any_click() && rect.contains(p),
+                    _ => false,
+                };
+                any_key || click_in_card
+            });
+            if engaged_this_frame {
+                self.user_engaged = true;
+            }
+
             #[cfg(not(target_arch = "wasm32"))]
             {
                 let focused_now = ctx.input(|i| i.viewport().focused);
                 if focused_now == Some(true) {
                     self.was_focused = true;
                 }
-                if self.was_focused && focused_now == Some(false) {
+                if self.user_engaged && self.was_focused && focused_now == Some(false) {
                     self.hide_popup(ctx, Action::Dismiss);
                     return;
                 }
             }
             #[cfg(target_arch = "wasm32")]
-            if WEB_BLUR_FIRED.swap(false, Ordering::Relaxed) {
-                self.hide_popup(ctx, Action::Dismiss);
-                return;
+            {
+                let fired = WEB_BLUR_FIRED.swap(false, Ordering::Relaxed);
+                if fired && self.user_engaged {
+                    self.hide_popup(ctx, Action::Dismiss);
+                    return;
+                }
             }
         }
 
@@ -498,5 +560,15 @@ impl eframe::App for NudgeApp {
             #[cfg(target_arch = "wasm32")]
             self.draw_pill(ctx);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clear_color_is_fully_transparent() {
+        assert_eq!(CLEAR_COLOR_TRANSPARENT, [0.0, 0.0, 0.0, 0.0]);
     }
 }
