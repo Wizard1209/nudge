@@ -5,7 +5,6 @@ use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering};
 
 static HWND_STORE: AtomicIsize = AtomicIsize::new(0);
 static TRAY_CLICKED: AtomicBool = AtomicBool::new(false);
-static EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 static TIMER_FIRED: AtomicBool = AtomicBool::new(false);
 static TIMER_GENERATION: AtomicU64 = AtomicU64::new(0);
 
@@ -24,14 +23,6 @@ pub fn set_tray_clicked() {
 
 pub fn take_tray_clicked() -> bool {
     TRAY_CLICKED.swap(false, Ordering::SeqCst)
-}
-
-pub fn set_exit_requested() {
-    EXIT_REQUESTED.store(true, Ordering::SeqCst);
-}
-
-pub fn is_exit_requested() -> bool {
-    EXIT_REQUESTED.load(Ordering::SeqCst)
 }
 
 pub fn take_timer_fired() -> bool {

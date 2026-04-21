@@ -452,11 +452,6 @@ impl eframe::App for NudgeApp {
         // they restore the window + set flags. We check flags here.
         #[cfg(target_os = "windows")]
         {
-            if crate::tray_bridge::is_exit_requested() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                return;
-            }
-
             if crate::tray_bridge::take_tray_clicked() {
                 if !self.popup_visible {
                     self.show_popup(ctx, TriggerSource::Manual);
