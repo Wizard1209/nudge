@@ -477,8 +477,19 @@ impl eframe::App for NudgeApp {
             self.show_popup(ctx, TriggerSource::Timer);
         }
 
-        // === Shared: periodic repaint for timer ===
+        // === Periodic repaint ===
+        // WASM: always repaint — update() polls timer expiry here (no
+        // background thread to ShowWindow us awake).
+        // Native: only while popup is visible. When hidden, tray clicks
+        // and the timer-expiry thread wake the event loop via ShowWindow,
+        // so a standing 1 Hz wakeup would just burn CPU compositing the
+        // transparent layered window through DWM.
+        #[cfg(target_arch = "wasm32")]
         ctx.request_repaint_after(std::time::Duration::from_secs(1));
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(d) = nudge_state::repaint_interval(self.popup_visible) {
+            ctx.request_repaint_after(d);
+        }
 
         // === Shared: keyboard handling ===
         if self.popup_visible {

@@ -63,6 +63,19 @@ pub fn tooltip_for_remaining(d: Duration) -> String {
 /// Labels for the tray context menu, in order. Spec §5: "Show Nudge", "Quit".
 pub const TRAY_MENU_LABELS: [&str; 2] = ["Show Nudge", "Quit"];
 
+/// How often `update()` should re-run. `None` when the popup is hidden:
+/// tray clicks and the timer-expiry thread wake the event loop via
+/// `ShowWindow`, so no periodic wakeup is required. Returning `Some` in
+/// the hidden state is expensive because the transparent always-on-top
+/// window composites through DWM on every swap.
+pub fn repaint_interval(popup_visible: bool) -> Option<Duration> {
+    if popup_visible {
+        Some(Duration::from_secs(1))
+    } else {
+        None
+    }
+}
+
 /// Screen position for the spotlight window: horizontally centered, vertically
 /// placed so the window's center sits at 40% of screen height (spec §1).
 pub fn window_position(screen: (u32, u32), window: (u32, u32)) -> (i32, i32) {
@@ -157,6 +170,20 @@ mod tests {
     #[test]
     fn tray_menu_labels_match_spec() {
         assert_eq!(TRAY_MENU_LABELS, ["Show Nudge", "Quit"]);
+    }
+
+    #[test]
+    fn repaint_interval_visible_ticks_every_second() {
+        assert_eq!(repaint_interval(true), Some(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn repaint_interval_hidden_is_none() {
+        // When popup is hidden, no periodic repaint should be scheduled.
+        // Tray clicks and the timer-expiry thread wake update() via
+        // ShowWindow — a 1 Hz wakeup would just burn CPU redrawing a
+        // transparent layered window through DWM.
+        assert_eq!(repaint_interval(false), None);
     }
 
     #[test]
