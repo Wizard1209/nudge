@@ -10,7 +10,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 static WEB_BLUR_FIRED: AtomicBool = AtomicBool::new(false);
 
 /// Attach a window `blur` listener that sets a flag when the window loses focus.
-/// Called once from `NudgeApp::new`; subsequent frames poll the flag.
+/// Called once from `NudgeApp::new`; subsequent frames poll the flag. Native
+/// builds use `viewport().focused` from winit events instead.
 #[cfg(target_arch = "wasm32")]
 fn install_blur_listener() {
     use wasm_bindgen::prelude::Closure;
@@ -23,7 +24,6 @@ fn install_blur_listener() {
         .add_event_listener_with_callback("blur", closure.as_ref().unchecked_ref());
     closure.forget();
 }
-
 
 /// Framebuffer clear color for the transparent spotlight window. Using an
 /// opaque value (even dark grey) breaks native transparency — Windows DWM
@@ -44,13 +44,18 @@ pub struct NudgeApp {
     trigger_source: TriggerSource,
     popup_visible: bool,
     error_message: Option<String>,
+    /// Last known card bounding rect, used to detect clicks outside the card.
+    /// Populated by `draw_card` once per frame.
     card_rect: Option<egui::Rect>,
     pill_rect: Option<egui::Rect>,
+    /// Tracks whether the egui window has ever been focused. Without this,
+    /// the focus-loss check would fire on the very first frame before the
+    /// window is even handed focus by the OS.
     was_focused: bool,
     /// True once the user has typed a key or clicked inside the popup.
-    /// Blur/focus-loss events only dismiss the popup after this is set —
-    /// OS-level blurs that fire during page setup (noisy in automated tests)
-    /// should not dismiss a popup the user has never interacted with.
+    /// Switch-away (blur / outside click) only hides the popup after this is
+    /// set — OS-level blurs that fire during page setup (noisy in automated
+    /// tests) shouldn't hide a popup the user has never interacted with.
     user_engaged: bool,
 
     // Native window handle for Win32 API calls
@@ -198,11 +203,20 @@ impl NudgeApp {
             self.timer.reset(interval);
         }
 
-        // Shared: reset form
-        self.doing.clear();
-        self.bullshit.clear();
+        // Shared: reset form. SwitchAway preserves doing/bullshit per spec §4
+        // — that's its whole point versus Esc.
+        if action != Action::SwitchAway {
+            self.doing.clear();
+            self.bullshit.clear();
+        }
         self.focus_first = true;
         self.popup_visible = false;
+        // Drop the cached card bounds. Without this, a stale rect from the
+        // previous show survives across hide/show — and the next click that
+        // reopens the popup (e.g. a pill click) is then mis-detected as
+        // "outside the card" on the very next frame, instantly switching us
+        // back away.
+        self.card_rect = None;
 
         // Native-only: hide window + schedule background timer wakeup
         #[cfg(target_os = "windows")]
@@ -500,7 +514,8 @@ impl eframe::App for NudgeApp {
                 return;
             }
 
-            // Click outside card → dismiss (same as Esc)
+            // Click outside card → switch away (spec §4): hide popup, reset
+            // timer, but KEEP doing/bullshit so the next open resumes here.
             if let Some(rect) = self.card_rect {
                 let clicked_outside = ctx.input(|i| {
                     i.pointer.any_click()
@@ -509,16 +524,16 @@ impl eframe::App for NudgeApp {
                             .map_or(false, |p| !rect.contains(p))
                 });
                 if clicked_outside {
-                    self.hide_popup(ctx, Action::Dismiss);
+                    self.hide_popup(ctx, Action::SwitchAway);
                     return;
                 }
             }
 
-            // Window focus-loss → dismiss (same as Esc).
+            // Window focus-loss → switch away.
             // Native: egui fills viewport().focused from winit events.
             // WASM: eframe doesn't populate it; we poll a DOM-blur flag instead.
-            // Note any user engagement this frame: a key press, or a click
-            // landing inside the card. Gates the blur-dismiss below.
+            // Gate on user_engaged so a noisy OS-level blur during page setup
+            // (common in automated tests) doesn't hide an untouched popup.
             let engaged_this_frame = ctx.input(|i| {
                 let any_key = i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. }));
                 let click_in_card = match (self.card_rect, i.pointer.interact_pos()) {
@@ -538,7 +553,7 @@ impl eframe::App for NudgeApp {
                     self.was_focused = true;
                 }
                 if self.user_engaged && self.was_focused && focused_now == Some(false) {
-                    self.hide_popup(ctx, Action::Dismiss);
+                    self.hide_popup(ctx, Action::SwitchAway);
                     return;
                 }
             }
@@ -546,7 +561,7 @@ impl eframe::App for NudgeApp {
             {
                 let fired = WEB_BLUR_FIRED.swap(false, Ordering::Relaxed);
                 if fired && self.user_engaged {
-                    self.hide_popup(ctx, Action::Dismiss);
+                    self.hide_popup(ctx, Action::SwitchAway);
                     return;
                 }
             }

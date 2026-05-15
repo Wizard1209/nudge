@@ -10,10 +10,16 @@ pub enum TriggerSource {
 pub enum Action {
     Submit,
     Dismiss,
+    /// User briefly looked away (clicked outside the card or focused another
+    /// window). Per spec §4: hide popup, restart timer, but keep `doing` /
+    /// `bullshit` text so the next open resumes where the user left off.
+    SwitchAway,
 }
 
 /// Decides whether the timer should be reset after a popup interaction.
-/// Manual dismiss (tray-triggered Esc) keeps the existing timer running.
+/// Manual dismiss (tray-triggered Esc) is the only case that keeps the
+/// existing timer running — the user opened the popup ad-hoc and changed
+/// their mind. Submit, Dismiss-from-timer, and any SwitchAway all reset.
 pub fn should_reset_timer(source: TriggerSource, action: Action) -> bool {
     !matches!((source, action), (TriggerSource::Manual, Action::Dismiss))
 }
@@ -108,6 +114,12 @@ mod tests {
     #[test]
     fn manual_dismiss_does_not_reset() {
         assert!(!should_reset_timer(TriggerSource::Manual, Action::Dismiss));
+    }
+
+    #[test]
+    fn switch_away_always_resets() {
+        assert!(should_reset_timer(TriggerSource::Timer, Action::SwitchAway));
+        assert!(should_reset_timer(TriggerSource::Manual, Action::SwitchAway));
     }
 
     #[test]
