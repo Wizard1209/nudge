@@ -58,7 +58,9 @@ pub struct NudgeApp {
     /// tests) shouldn't hide a popup the user has never interacted with.
     user_engaged: bool,
 
-    // Native window handle for Win32 API calls
+    // Native window handle for Win32 API calls.
+    // The tray icon itself lives on a dedicated thread (see tray_bridge);
+    // NudgeApp only signals popup state changes to it.
     #[cfg(target_os = "windows")]
     hwnd: Option<isize>,
 }
@@ -131,6 +133,11 @@ impl NudgeApp {
         self.popup_visible = true;
         self.focus_first = true;
         self.user_engaged = false;
+
+        // Park the icon animator: with the popup on screen the icon
+        // shouldn't keep ticking down. It'll restart on hide_popup.
+        #[cfg(target_os = "windows")]
+        crate::tray_bridge::set_popup_visible(true);
 
         #[cfg(target_os = "windows")]
         if let Some(hwnd_val) = self.hwnd {
@@ -229,10 +236,14 @@ impl NudgeApp {
                 }
             }
 
-            // SW_HIDE stops update() loop, so schedule a thread to wake us up
+            // The tray thread handles both icon animation and the
+            // popup-fire wakeup (it ShowWindow's our HWND once the timer
+            // expires). Hand it the new deadline so it knows when.
             if should_reset {
-                crate::tray_bridge::schedule_timer_wakeup(interval);
+                let deadline = std::time::Instant::now() + interval;
+                crate::tray_bridge::set_timer_state(deadline, interval);
             }
+            crate::tray_bridge::set_popup_visible(false);
         }
     }
 
@@ -478,6 +489,7 @@ impl eframe::App for NudgeApp {
                     self.show_popup(ctx, TriggerSource::Timer);
                 }
             }
+
         }
 
         // === WASM-only: timer check (update() always runs on WASM) ===
