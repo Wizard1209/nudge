@@ -30,7 +30,7 @@ async function launchNudge(): Promise<NudgeContext> {
     return { browser, page }
 }
 
-export const test = base.extend<{ nudge: NudgeContext }>({
+export const test = base.extend<{ nudge: NudgeContext; nudgeFile: NudgeContext }>({
     nudge: [
         async ({}, use) => {
             const ctx = await launchNudge()
@@ -38,5 +38,18 @@ export const test = base.extend<{ nudge: NudgeContext }>({
             await ctx.browser.close()
         },
         { scope: "test" },
+    ],
+    // Shared per-file browser. Use this ONLY for tests that observe a static
+    // initial state without mutating DOM/localStorage/popup state — pixel or
+    // judge asserts on the fresh-load screenshot. Anything that types, clicks
+    // into fields, dismisses the popup, or writes localStorage MUST use
+    // `nudge` so it gets a fresh browser per test.
+    nudgeFile: [
+        async ({}, use) => {
+            const ctx = await launchNudge()
+            await use(ctx)
+            await ctx.browser.close()
+        },
+        { scope: "file" },
     ],
 })

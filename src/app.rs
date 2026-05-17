@@ -269,7 +269,7 @@ impl NudgeApp {
     fn draw_card(&mut self, ctx: &egui::Context) {
         let screen = ctx.screen_rect();
         let card_width = 480.0_f32.min(screen.width() - 48.0);
-        let top_offset = screen.height() * 0.30;
+        let top_offset = screen.height() * 0.25;
 
         let inner = egui::Area::new(egui::Id::new("nudge_card"))
             .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, top_offset))

@@ -58,12 +58,30 @@ pub fn parse_interval(text: &str) -> Result<Duration, IntervalError> {
     Ok(Duration::from_secs_f64(minutes * 60.0))
 }
 
-/// Format a tray tooltip string rounded UP to the next minute.
-/// Spec: tray tooltip reads "Nudge in N min", updated no more often than once a minute.
+/// Tray tooltip text for the time remaining until the next nudge.
+/// Spec §5: `~N min` rounded UP to the next whole minute; `now` once the
+/// timer has expired (showing `~0 min` would read as a bug rather than
+/// "popup is about to appear").
 pub fn tooltip_for_remaining(d: Duration) -> String {
     let secs = d.as_secs();
+    if secs == 0 {
+        return "now".to_string();
+    }
     let mins = (secs + 59) / 60;
-    format!("Nudge in {} min", mins)
+    format!("~{} min", mins)
+}
+
+/// Minute number that `tooltip_for_remaining` would render for this
+/// duration. The tray loop uses this to dedupe `set_tooltip` calls so the
+/// tooltip is only refreshed when the displayed number changes (spec §5:
+/// "обновляется раз в минуту"). The "now" state maps to 0.
+pub fn displayed_minutes(d: Duration) -> u64 {
+    let secs = d.as_secs();
+    if secs == 0 {
+        0
+    } else {
+        (secs + 59) / 60
+    }
 }
 
 /// Labels for the tray context menu, in order. Spec §5: "Show Nudge", "Quit".
@@ -82,13 +100,14 @@ pub fn repaint_interval(popup_visible: bool) -> Option<Duration> {
     }
 }
 
-/// Screen position for the spotlight window: horizontally centered, vertically
-/// placed so the window's center sits at 40% of screen height (spec §1).
+/// Screen position for the spotlight window: horizontally centered; the top
+/// of the window sits at 25% of screen height (spec §1 — верхняя треть, на
+/// уровне естественного взгляда). Window height is irrelevant to the y anchor.
 pub fn window_position(screen: (u32, u32), window: (u32, u32)) -> (i32, i32) {
     let (sw, sh) = (screen.0 as i32, screen.1 as i32);
-    let (ww, wh) = (window.0 as i32, window.1 as i32);
+    let (ww, _wh) = (window.0 as i32, window.1 as i32);
     let x = (sw - ww) / 2;
-    let y = sh * 40 / 100 - wh / 2;
+    let y = sh * 25 / 100;
     (x, y)
 }
 
@@ -167,16 +186,30 @@ mod tests {
 
     #[test]
     fn tooltip_rounds_up_to_next_minute() {
-        assert_eq!(tooltip_for_remaining(Duration::from_secs(30)), "Nudge in 1 min");
-        assert_eq!(tooltip_for_remaining(Duration::from_secs(60)), "Nudge in 1 min");
-        assert_eq!(tooltip_for_remaining(Duration::from_secs(61)), "Nudge in 2 min");
-        assert_eq!(tooltip_for_remaining(Duration::from_secs(9 * 60)), "Nudge in 9 min");
-        assert_eq!(tooltip_for_remaining(Duration::from_secs(9 * 60 + 1)), "Nudge in 10 min");
+        assert_eq!(tooltip_for_remaining(Duration::from_secs(30)), "~1 min");
+        assert_eq!(tooltip_for_remaining(Duration::from_secs(60)), "~1 min");
+        assert_eq!(tooltip_for_remaining(Duration::from_secs(61)), "~2 min");
+        assert_eq!(tooltip_for_remaining(Duration::from_secs(9 * 60)), "~9 min");
+        assert_eq!(tooltip_for_remaining(Duration::from_secs(9 * 60 + 1)), "~10 min");
+        assert_eq!(tooltip_for_remaining(Duration::from_secs(30 * 60)), "~30 min");
     }
 
     #[test]
-    fn tooltip_zero_remaining_is_zero_min() {
-        assert_eq!(tooltip_for_remaining(Duration::from_secs(0)), "Nudge in 0 min");
+    fn tooltip_zero_remaining_says_now() {
+        // Past expiry — the popup is about to appear, "0 min" reads as a bug.
+        assert_eq!(tooltip_for_remaining(Duration::from_secs(0)), "now");
+    }
+
+    #[test]
+    fn displayed_minutes_matches_tooltip_count() {
+        // The tray loop dedupes set_tooltip calls by this value. It must
+        // change exactly when the rendered string's minute number changes,
+        // and collapse the "now" state to 0.
+        assert_eq!(displayed_minutes(Duration::from_secs(0)), 0);
+        assert_eq!(displayed_minutes(Duration::from_secs(1)), 1);
+        assert_eq!(displayed_minutes(Duration::from_secs(60)), 1);
+        assert_eq!(displayed_minutes(Duration::from_secs(61)), 2);
+        assert_eq!(displayed_minutes(Duration::from_secs(30 * 60)), 30);
     }
 
     #[test]
@@ -199,12 +232,16 @@ mod tests {
     }
 
     #[test]
-    fn window_position_horizontally_centered_40pct_vertical() {
-        assert_eq!(window_position((1920, 1080), (520, 320)), (700, 272));
+    fn window_position_top_at_25pct_full_hd() {
+        // 1920×1080, window 520×320 → x centered = (1920-520)/2 = 700;
+        // top of window at 25% of 1080 = 270.
+        assert_eq!(window_position((1920, 1080), (520, 320)), (700, 270));
     }
 
     #[test]
-    fn window_position_small_screen() {
-        assert_eq!(window_position((1366, 768), (480, 280)), (443, 167));
+    fn window_position_top_at_25pct_small_screen() {
+        // 1366×768, window 480×280 → x centered = (1366-480)/2 = 443;
+        // top of window at 25% of 768 = 192.
+        assert_eq!(window_position((1366, 768), (480, 280)), (443, 192));
     }
 }

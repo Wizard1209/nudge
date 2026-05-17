@@ -145,13 +145,15 @@ fn tray_thread_main() {
     let initial_icon =
         tray_icon::Icon::from_rgba(initial_rgba, daisy::ICON_SIZE, daisy::ICON_SIZE)
             .expect("failed to create initial tray icon");
-    let initial_tooltip =
-        nudge_state::tooltip_for_remaining(Duration::from_secs(600));
+    // Tooltip will be refreshed by the loop below as soon as eframe pushes
+    // a timer via set_timer_state. Until then the popup is visible (first
+    // launch), so the user never sees this placeholder anyway.
+    let initial_tooltip = "Nudge";
 
     let tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_menu_on_left_click(false)
-        .with_tooltip(&initial_tooltip)
+        .with_tooltip(initial_tooltip)
         .with_icon(initial_icon)
         .build()
         .expect("failed to build tray icon");
@@ -190,6 +192,10 @@ fn tray_thread_main() {
     // We dedupe identical icon updates so set_icon isn't called every loop.
     // State key: (petals_remaining, drift_progress_x100, drift_active).
     let mut last_state_key: (u8, u16, bool) = (255, 0, false);
+    // Dedupe tooltip updates the same way — only call set_tooltip when the
+    // rendered minute number changes (spec §5: "обновляется раз в минуту").
+    // `None` forces a refresh on the first loop iteration after a new timer.
+    let mut last_tooltip_minutes: Option<u64> = None;
     // Latch so a single timer instance fires the popup at most once.
     let mut fired_for_deadline: Option<Instant> = None;
 
@@ -258,6 +264,17 @@ fn tray_thread_main() {
                 let _ = tray.set_icon(Some(icon));
             }
             last_state_key = key;
+        }
+
+        // Tooltip — refresh only when the displayed minute number changes.
+        // `remaining` saturates at zero past the deadline, so `tooltip_for_remaining`
+        // produces "now" during the drift-to-fire window.
+        let remaining = timer.deadline.saturating_duration_since(now);
+        let mins_now = nudge_state::displayed_minutes(remaining);
+        if last_tooltip_minutes != Some(mins_now) {
+            let text = nudge_state::tooltip_for_remaining(remaining);
+            let _ = tray.set_tooltip(Some(&text));
+            last_tooltip_minutes = Some(mins_now);
         }
 
         // Time to fire the popup? Wait for the very last drift to finish so
