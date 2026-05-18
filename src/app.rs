@@ -171,8 +171,10 @@ impl NudgeApp {
         };
         let minutes: f64 = interval.as_secs_f64() / 60.0;
 
-        // Write journal on submit
-        if action == Action::Submit {
+        // Spec §4: Submit with both text fields empty is the "update timer
+        // without journaling" path — skip the write but still reset the
+        // timer below.
+        if nudge_state::should_write_journal(action, &self.doing, &self.bullshit) {
             let trigger = match self.trigger_source {
                 TriggerSource::Timer => "timer",
                 TriggerSource::Manual => "manual",

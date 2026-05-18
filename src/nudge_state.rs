@@ -17,11 +17,25 @@ pub enum Action {
 }
 
 /// Decides whether the timer should be reset after a popup interaction.
-/// Manual dismiss (tray-triggered Esc) is the only case that keeps the
-/// existing timer running — the user opened the popup ad-hoc and changed
-/// their mind. Submit, Dismiss-from-timer, and any SwitchAway all reset.
+///
+/// Spec §4: Esc and Switch on a manually-opened popup leave the timer alone
+/// (the user looked at the popup and put it away — there is no reason to
+/// punish them by rescheduling). Submit always resets, regardless of how
+/// the popup was opened: the user explicitly chose a new interval. And if
+/// the popup was triggered by the timer expiring, *any* close must reset,
+/// otherwise the now-zero deadline would refire the popup on the next
+/// frame.
 pub fn should_reset_timer(source: TriggerSource, action: Action) -> bool {
-    !matches!((source, action), (TriggerSource::Manual, Action::Dismiss))
+    matches!(source, TriggerSource::Timer) || matches!(action, Action::Submit)
+}
+
+/// Spec §4: Submit writes a journal entry only if at least one of the
+/// free-text fields is non-empty. An "Enter with empty fields" press is the
+/// dedicated path for «обновить интервал, ничего не записывая» — it still
+/// resets the timer (that's `should_reset_timer`'s job), but skips the
+/// journal write.
+pub fn should_write_journal(action: Action, doing: &str, bullshit: &str) -> bool {
+    action == Action::Submit && !(doing.trim().is_empty() && bullshit.trim().is_empty())
 }
 
 /// Error returned by `parse_interval` when the user typed a number that is
@@ -122,23 +136,61 @@ mod tests {
 
     #[test]
     fn timer_dismiss_resets() {
+        // Structural: timer-fired popup has a deadline in the past — any
+        // close MUST set a new one, otherwise the popup refires.
         assert!(should_reset_timer(TriggerSource::Timer, Action::Dismiss));
     }
 
     #[test]
+    fn timer_switch_away_resets() {
+        // Same structural reason as timer_dismiss_resets.
+        assert!(should_reset_timer(TriggerSource::Timer, Action::SwitchAway));
+    }
+
+    #[test]
     fn manual_submit_resets() {
+        // User explicitly chose a new interval — apply it.
         assert!(should_reset_timer(TriggerSource::Manual, Action::Submit));
     }
 
     #[test]
     fn manual_dismiss_does_not_reset() {
+        // User opened the popup, changed their mind — don't reschedule.
         assert!(!should_reset_timer(TriggerSource::Manual, Action::Dismiss));
     }
 
     #[test]
-    fn switch_away_always_resets() {
-        assert!(should_reset_timer(TriggerSource::Timer, Action::SwitchAway));
-        assert!(should_reset_timer(TriggerSource::Manual, Action::SwitchAway));
+    fn manual_switch_away_does_not_reset() {
+        // User looked away from a manually-opened popup. State is preserved
+        // (see hide_popup) and the still-live timer keeps counting.
+        assert!(!should_reset_timer(TriggerSource::Manual, Action::SwitchAway));
+    }
+
+    #[test]
+    fn submit_with_content_writes_journal() {
+        assert!(should_write_journal(Action::Submit, "doing thing", ""));
+        assert!(should_write_journal(Action::Submit, "", "yes"));
+        assert!(should_write_journal(Action::Submit, "x", "y"));
+    }
+
+    #[test]
+    fn submit_with_empty_fields_skips_journal() {
+        // The "change interval without journaling" path: Enter on empty
+        // fields updates the timer but writes nothing.
+        assert!(!should_write_journal(Action::Submit, "", ""));
+        assert!(!should_write_journal(Action::Submit, "   ", "\t\n"));
+    }
+
+    #[test]
+    fn dismiss_never_writes_journal() {
+        assert!(!should_write_journal(Action::Dismiss, "doing", "bullshit"));
+        assert!(!should_write_journal(Action::Dismiss, "", ""));
+    }
+
+    #[test]
+    fn switch_away_never_writes_journal() {
+        assert!(!should_write_journal(Action::SwitchAway, "doing", ""));
+        assert!(!should_write_journal(Action::SwitchAway, "", ""));
     }
 
     #[test]
