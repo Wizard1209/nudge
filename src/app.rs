@@ -148,13 +148,8 @@ impl NudgeApp {
 
         #[cfg(target_os = "windows")]
         if let Some(hwnd_val) = self.hwnd {
-            unsafe {
-                use windows::Win32::Foundation::HWND;
-                use windows::Win32::UI::WindowsAndMessaging::*;
-                let h = HWND(hwnd_val as *mut _);
-                let _ = ShowWindow(h, SW_RESTORE);
-                let _ = SetForegroundWindow(h);
-            }
+            use windows::Win32::Foundation::HWND;
+            crate::tray_bridge::force_foreground(HWND(hwnd_val as *mut _));
         }
     }
 
@@ -280,6 +275,10 @@ impl NudgeApp {
 
         let inner = egui::Area::new(egui::Id::new("nudge_card"))
             .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, top_offset))
+            // Without this the Area itself registers a focusable click widget
+            // (Sense::click() implies FOCUSABLE) and shows up as a phantom
+            // 4th Tab stop between row_minutes and row_doing.
+            .interactable(false)
             .show(ctx, |ui| {
                 ui.set_width(card_width);
                 Self::card_frame()

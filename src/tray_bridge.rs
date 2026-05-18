@@ -25,11 +25,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-use windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE,
-    PeekMessageW, PostThreadMessageW, QS_ALLINPUT, SW_RESTORE, SetForegroundWindow, ShowWindow,
-    TranslateMessage, WM_USER,
+    BringWindowToTop, DispatchMessageW, GetForegroundWindow, GetWindowThreadProcessId, MSG,
+    MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, PostThreadMessageW,
+    QS_ALLINPUT, SW_RESTORE, SetForegroundWindow, ShowWindow, TranslateMessage, WM_USER,
 };
 
 use crate::daisy;
@@ -75,6 +75,43 @@ pub fn store_hwnd(hwnd: isize) {
 pub fn load_hwnd() -> Option<isize> {
     let val = HWND_STORE.load(Ordering::SeqCst);
     if val != 0 { Some(val) } else { None }
+}
+
+/// Force `hwnd` to become the actual foreground window (visible AND focused).
+///
+/// `SetForegroundWindow` alone is restricted by Win32: it silently no-ops
+/// when the caller isn't already the foreground process or hasn't received
+/// recent input. For a timer-fired popup that's exactly the failure case —
+/// the window appears layered-on-top but gets no input focus, so click-outside
+/// and focus-loss detection never see anything to fire on.
+///
+/// Workaround: attach the window's owning thread's input queue to the
+/// current foreground thread's. While attached, Win32 treats SetForegroundWindow
+/// as if it came from the foreground process and grants the activation.
+pub fn force_foreground(hwnd: HWND) {
+    unsafe {
+        let _ = ShowWindow(hwnd, SW_RESTORE);
+
+        let fg = GetForegroundWindow();
+        let fg_tid = if fg.0.is_null() {
+            0
+        } else {
+            GetWindowThreadProcessId(fg, None)
+        };
+        let window_tid = GetWindowThreadProcessId(hwnd, None);
+
+        let attached = fg_tid != 0
+            && window_tid != 0
+            && fg_tid != window_tid
+            && AttachThreadInput(window_tid, fg_tid, true).as_bool();
+
+        let _ = BringWindowToTop(hwnd);
+        let _ = SetForegroundWindow(hwnd);
+
+        if attached {
+            let _ = AttachThreadInput(window_tid, fg_tid, false);
+        }
+    }
 }
 
 pub fn set_tray_clicked() {
@@ -285,11 +322,7 @@ fn tray_thread_main() {
             fired_for_deadline = Some(timer.deadline);
             TIMER_FIRED.store(true, Ordering::SeqCst);
             if let Some(hwnd_val) = load_hwnd() {
-                unsafe {
-                    let h = HWND(hwnd_val as *mut _);
-                    let _ = ShowWindow(h, SW_RESTORE);
-                    let _ = SetForegroundWindow(h);
-                }
+                force_foreground(HWND(hwnd_val as *mut _));
             }
             // Park; eframe will flip POPUP_VISIBLE shortly and wake us.
             wait_for_message(u32::MAX);
@@ -314,11 +347,7 @@ fn tray_thread_main() {
 
 fn wake_eframe() {
     if let Some(hwnd_val) = load_hwnd() {
-        unsafe {
-            let h = HWND(hwnd_val as *mut _);
-            let _ = ShowWindow(h, SW_RESTORE);
-            let _ = SetForegroundWindow(h);
-        }
+        force_foreground(HWND(hwnd_val as *mut _));
     }
 }
 
