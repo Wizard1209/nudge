@@ -89,7 +89,10 @@ impl NudgeApp {
             next_minutes: "10".to_string(),
             focus_first: true,
             center_once: true,
-            timer: Timer::new(std::time::Duration::from_secs(10 * 60)),
+            // Spec §4: timer is frozen until the user closes the popup for
+            // the first time (Submit / Esc / Switch). hide_popup → reset()
+            // unfreezes it with the interval the user chose.
+            timer: Timer::frozen(),
             trigger_source: TriggerSource::Timer,
             popup_visible: true,
             error_message: None,
