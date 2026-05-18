@@ -4,8 +4,11 @@
 mod app;
 #[cfg(target_os = "windows")]
 mod daisy;
+#[cfg(not(target_arch = "wasm32"))]
 mod journal;
+#[cfg(not(target_arch = "wasm32"))]
 mod nudge_state;
+#[cfg(not(target_arch = "wasm32"))]
 mod timer;
 #[cfg(target_os = "windows")]
 mod tray_bridge;

@@ -47,10 +47,12 @@ pub struct NudgeApp {
     /// Last known card bounding rect, used to detect clicks outside the card.
     /// Populated by `draw_card` once per frame.
     card_rect: Option<egui::Rect>,
+    #[cfg(target_arch = "wasm32")]
     pill_rect: Option<egui::Rect>,
     /// Tracks whether the egui window has ever been focused. Without this,
     /// the focus-loss check would fire on the very first frame before the
     /// window is even handed focus by the OS.
+    #[cfg(not(target_arch = "wasm32"))]
     was_focused: bool,
     /// True once the user has typed a key or clicked inside the popup.
     /// Switch-away (blur / outside click) only hides the popup after this is
@@ -92,7 +94,9 @@ impl NudgeApp {
             popup_visible: true,
             error_message: None,
             card_rect: None,
+            #[cfg(target_arch = "wasm32")]
             pill_rect: None,
+            #[cfg(not(target_arch = "wasm32"))]
             was_focused: false,
             user_engaged: false,
             #[cfg(target_os = "windows")]
@@ -368,6 +372,7 @@ impl NudgeApp {
         }
     }
 
+    #[cfg(target_arch = "wasm32")]
     fn pill_frame(hovered: bool) -> egui::Frame {
         let fill = if hovered {
             egui::Color32::from_rgba_unmultiplied(40, 40, 44, 240)
@@ -390,6 +395,7 @@ impl NudgeApp {
             .inner_margin(egui::Margin::symmetric(14, 8))
     }
 
+    #[cfg(target_arch = "wasm32")]
     fn draw_pill(&mut self, ctx: &egui::Context) {
         let remaining = self.timer.remaining();
         let mins = remaining.as_secs() / 60;

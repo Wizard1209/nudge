@@ -12,6 +12,7 @@ impl Timer {
         }
     }
 
+    #[cfg(any(test, target_arch = "wasm32"))]
     pub fn is_expired(&self) -> bool {
         Instant::now() >= self.deadline
     }
@@ -20,6 +21,7 @@ impl Timer {
         self.deadline = Instant::now() + duration;
     }
 
+    #[cfg(any(test, target_arch = "wasm32"))]
     pub fn remaining(&self) -> Duration {
         self.deadline.saturating_duration_since(Instant::now())
     }
