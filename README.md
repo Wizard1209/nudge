@@ -52,10 +52,13 @@ NDJSON файл (`journal-rust.ndjson`), append-only, одна JSON-запись
 
 - Интервал: **10 минут**
 - Журнал: `%USERPROFILE%\Documents\Nudge\journal-rust.ndjson`
+- Хоткей: **Ctrl+Shift+Space** — вызывает popup вручную из любого окна.
+  Настраивается в `%USERPROFILE%\Documents\Nudge\config.json` (поле `hotkey`).
+  Формат: модификаторы (`Ctrl`, `Alt`, `Shift`, `Win`) + одна клавиша
+  через `+`, например `Alt+J` или `Ctrl+F12`.
 
 ## TODO (после MVP)
 
-- [ ] Горячая клавиша для вызова popup вручную
 - [ ] Звуковой сигнал при popup
 - [ ] Автозапуск с Windows
 - [ ] LLM-классификатор: автооценка "хуйня или нет" из текста обоих полей (если явно не указано → `null`). Лёгкая модель, локально или API

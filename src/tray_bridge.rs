@@ -26,13 +26,17 @@ use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, RegisterHotKey,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, DispatchMessageW, GetForegroundWindow, GetWindowThreadProcessId, MSG,
     MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW, PostThreadMessageW,
-    QS_ALLINPUT, SW_RESTORE, SetForegroundWindow, ShowWindow, TranslateMessage, WM_USER,
+    QS_ALLINPUT, SW_RESTORE, SetForegroundWindow, ShowWindow, TranslateMessage, WM_HOTKEY, WM_USER,
 };
 
 use crate::daisy;
+use crate::hotkey::{self, Hotkey, MOD_ALT as MY_MOD_ALT, MOD_CTRL, MOD_SHIFT as MY_MOD_SHIFT, MOD_WIN as MY_MOD_WIN};
 use crate::nudge_state;
 
 // ---------- shared state ---------------------------------------------------
@@ -152,18 +156,105 @@ fn wake_tray_thread() {
 /// Spawn the long-lived tray thread. Call once at startup, before
 /// `eframe::run_native`. The thread creates the tray icon, sets the
 /// global tray / menu event handlers, and runs the animation loop.
-pub fn spawn_tray_thread() {
+///
+/// `hotkey` (when present) is registered on the tray thread via
+/// `RegisterHotKey`. It must be registered on the same thread that pumps
+/// the message queue, otherwise WM_HOTKEY is delivered to a queue we
+/// aren't reading. None disables the hotkey for this run (e.g. an invalid
+/// config label).
+pub fn spawn_tray_thread(hotkey: Option<Hotkey>) {
     thread::Builder::new()
         .name("nudge-tray".into())
-        .spawn(tray_thread_main)
+        .spawn(move || tray_thread_main(hotkey))
         .expect("failed to spawn tray thread");
+}
+
+/// ID we pass to RegisterHotKey. Single hotkey for now; if we ever add more
+/// (e.g. "pause", "skip"), bump to distinct constants.
+const HOTKEY_ID_SHOW_POPUP: i32 = 1;
+
+/// Win32 VK code for a parsed key token. None means we don't know how to
+/// register this token globally (caller logs and skips).
+fn vk_for_key(key: &str) -> Option<u32> {
+    if key.len() == 1 {
+        let ch = key.as_bytes()[0];
+        if ch.is_ascii_uppercase() || ch.is_ascii_digit() {
+            // VK_A..VK_Z and VK_0..VK_9 use the ASCII codes directly.
+            return Some(ch as u32);
+        }
+    }
+    if let Some(rest) = key.strip_prefix('F') {
+        if let Ok(n) = rest.parse::<u8>() {
+            if (1..=24).contains(&n) {
+                // VK_F1 = 0x70 … VK_F24 = 0x87
+                return Some(0x70 + (n as u32) - 1);
+            }
+        }
+    }
+    match key {
+        "SPACE" => Some(0x20),     // VK_SPACE
+        "ENTER" => Some(0x0D),     // VK_RETURN
+        "TAB" => Some(0x09),       // VK_TAB
+        "ESCAPE" => Some(0x1B),    // VK_ESCAPE
+        "BACKSPACE" => Some(0x08), // VK_BACK
+        _ => None,
+    }
+}
+
+fn modifiers_to_win32(m: u8) -> HOT_KEY_MODIFIERS {
+    let mut out = MOD_NOREPEAT;
+    if m & MOD_CTRL != 0 {
+        out |= MOD_CONTROL;
+    }
+    if m & MY_MOD_ALT != 0 {
+        out |= MOD_ALT;
+    }
+    if m & MY_MOD_SHIFT != 0 {
+        out |= MOD_SHIFT;
+    }
+    if m & MY_MOD_WIN != 0 {
+        out |= MOD_WIN;
+    }
+    out
+}
+
+/// Register the configured global hotkey on the current thread. Returns
+/// true on success. Failure (taken by another app, unknown key) is logged
+/// to stderr — we never abort startup over a hotkey.
+fn try_register_hotkey(hk: &Hotkey) -> bool {
+    let Some(vk) = vk_for_key(hk.key.as_str()) else {
+        eprintln!(
+            "[nudge] cannot register hotkey: unknown key \"{}\"",
+            hk.key.as_str()
+        );
+        return false;
+    };
+    let mods = modifiers_to_win32(hk.modifiers);
+    let ok = unsafe { RegisterHotKey(None, HOTKEY_ID_SHOW_POPUP, mods, vk).is_ok() };
+    if !ok {
+        eprintln!(
+            "[nudge] RegisterHotKey failed for \"{}\" — probably bound by another app",
+            hotkey::format(hk)
+        );
+    }
+    ok
 }
 
 // ---------- the tray thread itself -----------------------------------------
 
-fn tray_thread_main() {
+fn tray_thread_main(hotkey: Option<Hotkey>) {
     unsafe {
         TRAY_THREAD_ID.store(GetCurrentThreadId(), Ordering::SeqCst);
+    }
+
+    // Register global hotkey on this thread so WM_HOTKEY is posted into this
+    // message queue. None / failure both just leave the app hotkey-less for
+    // this run — the tray icon still works as the manual-open path.
+    // The tray thread never exits cleanly; we don't UnregisterHotKey because
+    // Windows reclaims the binding when the process dies. Failure is logged
+    // by try_register_hotkey and is non-fatal.
+    if let Some(hk) = &hotkey {
+        try_register_hotkey(hk);
     }
 
     use tray_icon::TrayIconBuilder;
@@ -355,6 +446,15 @@ fn drain_messages() {
     unsafe {
         let mut msg = MSG::default();
         while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+            // WM_HOTKEY is posted to the thread message queue (no hwnd), so
+            // we must handle it before DispatchMessageW — Dispatch would
+            // drop it for lack of a target window. Same UX path as a tray
+            // left-click: pop the popup as a Manual trigger.
+            if msg.message == WM_HOTKEY && msg.wParam.0 == HOTKEY_ID_SHOW_POPUP as usize {
+                set_tray_clicked();
+                wake_eframe();
+                continue;
+            }
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }

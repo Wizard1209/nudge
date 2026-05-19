@@ -31,8 +31,11 @@ mod wasm_entry {
 
 #[cfg(target_arch = "wasm32")]
 mod app;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod config;
 #[cfg(target_os = "windows")]
 pub mod daisy;
+pub mod hotkey;
 pub mod journal;
 pub mod nudge_state;
 pub mod timer;
