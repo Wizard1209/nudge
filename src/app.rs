@@ -3,26 +3,14 @@ use eframe::egui;
 use crate::nudge_state::{self, Action, TriggerSource};
 use crate::timer::Timer;
 
+/// Read the current focus state of the page document. WASM equivalent of
+/// `viewport().focused` on native — polled each frame so that focus loss
+/// is caught even when no `blur` event fires (closing a sibling tab,
+/// devtools stealing focus, renderer-side races). Edge-triggered listeners
+/// miss those cases; level-triggered polling is self-correcting.
 #[cfg(target_arch = "wasm32")]
-use std::sync::atomic::{AtomicBool, Ordering};
-
-#[cfg(target_arch = "wasm32")]
-static WEB_BLUR_FIRED: AtomicBool = AtomicBool::new(false);
-
-/// Attach a window `blur` listener that sets a flag when the window loses focus.
-/// Called once from `NudgeApp::new`; subsequent frames poll the flag. Native
-/// builds use `viewport().focused` from winit events instead.
-#[cfg(target_arch = "wasm32")]
-fn install_blur_listener() {
-    use wasm_bindgen::prelude::Closure;
-    use wasm_bindgen::JsCast;
-    let Some(window) = web_sys::window() else { return };
-    let closure = Closure::wrap(Box::new(move || {
-        WEB_BLUR_FIRED.store(true, Ordering::Relaxed);
-    }) as Box<dyn FnMut()>);
-    let _ = window
-        .add_event_listener_with_callback("blur", closure.as_ref().unchecked_ref());
-    closure.forget();
+fn document_has_focus() -> Option<bool> {
+    Some(web_sys::window()?.document()?.has_focus().ok()?)
 }
 
 /// Framebuffer clear color for the transparent spotlight window. Using an
@@ -51,8 +39,7 @@ pub struct NudgeApp {
     pill_rect: Option<egui::Rect>,
     /// Tracks whether the egui window has ever been focused. Without this,
     /// the focus-loss check would fire on the very first frame before the
-    /// window is even handed focus by the OS.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// window is even handed focus by the OS / page.
     was_focused: bool,
     /// True once the user has typed a key or clicked inside the popup.
     /// Switch-away (blur / outside click) only hides the popup after this is
@@ -80,9 +67,6 @@ impl NudgeApp {
         visuals.widgets.inactive.fg_stroke.color = egui::Color32::from_gray(170);
         cc.egui_ctx.set_visuals(visuals);
 
-        #[cfg(target_arch = "wasm32")]
-        install_blur_listener();
-
         Self {
             doing: String::new(),
             bullshit: String::new(),
@@ -99,7 +83,6 @@ impl NudgeApp {
             card_rect: None,
             #[cfg(target_arch = "wasm32")]
             pill_rect: None,
-            #[cfg(not(target_arch = "wasm32"))]
             was_focused: false,
             user_engaged: false,
             #[cfg(target_os = "windows")]
@@ -552,9 +535,11 @@ impl eframe::App for NudgeApp {
             }
 
             // Window focus-loss → switch away.
-            // Native: egui fills viewport().focused from winit events.
-            // WASM: eframe doesn't populate it; we poll a DOM-blur flag instead.
-            // Gate on user_engaged so a noisy OS-level blur during page setup
+            // Level-triggered: each frame ask "is the window focused right now?"
+            // Self-correcting — if we miss a blur event (closing a sibling tab,
+            // devtools stealing focus, renderer-side races), the next poll
+            // still sees the unfocused state and closes the popup.
+            // Gate on user_engaged so a noisy focus flicker during page setup
             // (common in automated tests) doesn't hide an untouched popup.
             let engaged_this_frame = ctx.input(|i| {
                 let any_key = i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. }));
@@ -569,23 +554,16 @@ impl eframe::App for NudgeApp {
             }
 
             #[cfg(not(target_arch = "wasm32"))]
-            {
-                let focused_now = ctx.input(|i| i.viewport().focused);
-                if focused_now == Some(true) {
-                    self.was_focused = true;
-                }
-                if self.user_engaged && self.was_focused && focused_now == Some(false) {
-                    self.hide_popup(ctx, Action::SwitchAway);
-                    return;
-                }
-            }
+            let focused_now = ctx.input(|i| i.viewport().focused);
             #[cfg(target_arch = "wasm32")]
-            {
-                let fired = WEB_BLUR_FIRED.swap(false, Ordering::Relaxed);
-                if fired && self.user_engaged {
-                    self.hide_popup(ctx, Action::SwitchAway);
-                    return;
-                }
+            let focused_now = document_has_focus();
+
+            if focused_now == Some(true) {
+                self.was_focused = true;
+            }
+            if self.user_engaged && self.was_focused && focused_now == Some(false) {
+                self.hide_popup(ctx, Action::SwitchAway);
+                return;
             }
         }
 

@@ -49,11 +49,15 @@ export async function dismissForm(page: Page, via: DismissTrigger = "esc"): Prom
         await page.mouse.click(10, 10)
         await wait(600)
     } else {
-        // blur is dispatched synthetically — egui needs more time to receive
-        // it, hide the popup AND commit field contents to the preserved buffer
-        // before the next interaction can reopen.
+        // Drive `document.hasFocus()` directly. The app polls it each frame,
+        // so flipping the return value is what actually triggers switch-away.
+        // (Dispatching a synthetic FocusEvent would not change hasFocus and
+        // therefore would not exercise the production path.)
         await page.evaluate(() => {
-            window.dispatchEvent(new FocusEvent("blur"))
+            Object.defineProperty(document, "hasFocus", {
+                configurable: true,
+                value: () => false,
+            })
         })
         await wait(1500)
     }
