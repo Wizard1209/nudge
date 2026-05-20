@@ -39,5 +39,6 @@ pub mod hotkey;
 pub mod journal;
 pub mod nudge_state;
 pub mod timer;
+pub mod word_jump;
 #[cfg(target_os = "windows")]
 pub mod tray_bridge;

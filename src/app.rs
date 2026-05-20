@@ -2,6 +2,7 @@ use eframe::egui;
 
 use crate::nudge_state::{self, Action, TriggerSource};
 use crate::timer::Timer;
+use crate::word_jump;
 
 /// Read the current focus state of the page document. WASM equivalent of
 /// `viewport().focused` on native — polled each frame so that focus loss
@@ -292,6 +293,11 @@ impl NudgeApp {
         );
         let is_focused = ui.ctx().memory(|m| m.has_focus(field_id));
         if is_focused {
+            // Replace egui's ASCII-only word jump with a Unicode-aware one
+            // so Ctrl+Arrow / Ctrl+Backspace / Ctrl+Delete behave correctly
+            // on Cyrillic text. Must run BEFORE TextEdit drains the events.
+            word_jump::intercept_ctrl_word_keys(ui.ctx(), field_id, value);
+
             // Subtle row tint, inset from the card edge and softly rounded
             // so it visually sits INSIDE the card instead of butting up
             // against the stroke/rounded corners. Alpha 2 (~0.8% white)

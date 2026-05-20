@@ -15,6 +15,8 @@ mod nudge_state;
 mod timer;
 #[cfg(target_os = "windows")]
 mod tray_bridge;
+#[cfg(not(target_arch = "wasm32"))]
+mod word_jump;
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
