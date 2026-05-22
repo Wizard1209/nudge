@@ -38,6 +38,13 @@ pub fn should_write_journal(action: Action, doing: &str, bullshit: &str) -> bool
     action == Action::Submit && !(doing.trim().is_empty() && bullshit.trim().is_empty())
 }
 
+/// Spec §4: only Enter (Submit) clears `doing` / `bullshit` on close. Esc and
+/// Switch both preserve them so the next open resumes where the user left
+/// off — they share one row in the table and one rule here.
+pub fn should_clear_form(action: Action) -> bool {
+    matches!(action, Action::Submit)
+}
+
 /// Error returned by `parse_interval` when the user typed a number that is
 /// invalid per spec (`next_interval_minutes` must be finite and > 0).
 #[derive(Debug, Clone, PartialEq)]
@@ -191,6 +198,23 @@ mod tests {
     fn switch_away_never_writes_journal() {
         assert!(!should_write_journal(Action::SwitchAway, "doing", ""));
         assert!(!should_write_journal(Action::SwitchAway, "", ""));
+    }
+
+    #[test]
+    fn submit_clears_form() {
+        assert!(should_clear_form(Action::Submit));
+    }
+
+    #[test]
+    fn dismiss_preserves_form() {
+        // Esc shares the spec §4 row with Switch — both keep doing/bullshit
+        // so the next open resumes where the user left off.
+        assert!(!should_clear_form(Action::Dismiss));
+    }
+
+    #[test]
+    fn switch_away_preserves_form() {
+        assert!(!should_clear_form(Action::SwitchAway));
     }
 
     #[test]

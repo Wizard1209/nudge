@@ -26,11 +26,11 @@ describe("popup polls document.hasFocus()", () => {
             }
         })
 
-        // Engage the user so any user_engaged gate is satisfied — we are
-        // testing the focus-polling path, not the gate.
-        await nudge.page.mouse.click(400, 170)
-        await wait(200)
-        await nudge.page.keyboard.type("polling test", { delay: 30 })
+        // Crucially: do NOT engage the popup first (no clicks, no keystrokes).
+        // Spec §4: Switch on focus-loss must fire as long as the popup got
+        // focus at open-time — it does not require any prior interaction.
+        // This guards the production bug where the first focus-switch
+        // silently failed to close the popup.
         await wait(300)
 
         // Flip hasFocus → false. Crucially: no FocusEvent is dispatched.

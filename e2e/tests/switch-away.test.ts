@@ -3,14 +3,16 @@ import { test } from "../fixtures/nudge"
 import { assertCardHidden } from "../fixtures/pixels"
 import { clickPill, dismissForm, wait, type DismissTrigger } from "../fixtures/actions"
 
-// Both blur and click-outside follow the same contract: the popup hides
-// without recording an entry AND the typed text survives until the user
-// reopens via the pill and presses Enter.
+// Esc, blur and click-outside all follow the same contract per spec §4:
+// the popup hides without recording an entry AND the typed text survives
+// until the user reopens via the pill and presses Enter. Esc shares its
+// row with Switch in the spec table — different trigger, same effect.
 //
-// One parametrized scenario over the two triggers, so the contract stays
+// One parametrized scenario over the three triggers, so the contract stays
 // authoritative in one place. The trigger names are also the test-case
 // labels so a failure prints which path broke.
 const TRIGGERS: ReadonlyArray<[label: string, via: DismissTrigger, text: string]> = [
+    ["esc",           "esc",           "preserved across esc"],
     ["click-outside", "click-outside", "preserved across switch"],
     ["blur",          "blur",          "preserved across blur"],
 ]

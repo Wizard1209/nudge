@@ -4,16 +4,6 @@ use crate::nudge_state::{self, Action, TriggerSource};
 use crate::timer::Timer;
 use crate::word_jump;
 
-/// Read the current focus state of the page document. WASM equivalent of
-/// `viewport().focused` on native — polled each frame so that focus loss
-/// is caught even when no `blur` event fires (closing a sibling tab,
-/// devtools stealing focus, renderer-side races). Edge-triggered listeners
-/// miss those cases; level-triggered polling is self-correcting.
-#[cfg(target_arch = "wasm32")]
-fn document_has_focus() -> Option<bool> {
-    Some(web_sys::window()?.document()?.has_focus().ok()?)
-}
-
 /// Framebuffer clear color for the transparent spotlight window. Using an
 /// opaque value (even dark grey) breaks native transparency — Windows DWM
 /// composites the alpha channel straight from the framebuffer, so anything
@@ -38,15 +28,12 @@ pub struct NudgeApp {
     card_rect: Option<egui::Rect>,
     #[cfg(target_arch = "wasm32")]
     pill_rect: Option<egui::Rect>,
-    /// Tracks whether the egui window has ever been focused. Without this,
-    /// the focus-loss check would fire on the very first frame before the
-    /// window is even handed focus by the OS / page.
-    was_focused: bool,
-    /// True once the user has typed a key or clicked inside the popup.
-    /// Switch-away (blur / outside click) only hides the popup after this is
-    /// set — OS-level blurs that fire during page setup (noisy in automated
-    /// tests) shouldn't hide a popup the user has never interacted with.
-    user_engaged: bool,
+    /// Snapshot taken in `show_popup`: did the OS hand us foreground at the
+    /// moment the popup opened? When true, per-frame focus-loss check is
+    /// active. When false (e.g. a fullscreen game refused to release
+    /// foreground), focus-loss never closes the popup — only Enter / Esc /
+    /// click-outside can. See spec §4.
+    armed: bool,
 
     // Native window handle for Win32 API calls.
     // The tray icon itself lives on a dedicated thread (see tray_bridge);
@@ -84,8 +71,7 @@ impl NudgeApp {
             card_rect: None,
             #[cfg(target_arch = "wasm32")]
             pill_rect: None,
-            was_focused: false,
-            user_engaged: false,
+            armed: false,
             #[cfg(target_os = "windows")]
             hwnd: None,
         }
@@ -123,7 +109,6 @@ impl NudgeApp {
         self.trigger_source = source;
         self.popup_visible = true;
         self.focus_first = true;
-        self.user_engaged = false;
 
         // Park the icon animator: with the popup on screen the icon
         // shouldn't keep ticking down. It'll restart on hide_popup.
@@ -134,6 +119,38 @@ impl NudgeApp {
         if let Some(hwnd_val) = self.hwnd {
             use windows::Win32::Foundation::HWND;
             crate::tray_bridge::force_foreground(HWND(hwnd_val as *mut _));
+        }
+
+        // Spec §4: focus-loss closes only if the popup actually got focus at
+        // open-time. Snapshot the OS's foreground state synchronously now,
+        // right after force_foreground (native) or as soon as the popup
+        // becomes visible (WASM). Stays fixed for the lifetime of this open.
+        self.armed = self.current_foreground_matches();
+    }
+
+    /// Source of truth for "is our popup the OS-foreground / page-focused
+    /// surface right now?" — used both at open-time to set `armed` and in
+    /// the per-frame loop to detect focus loss. Goes through Win32 /
+    /// `document.hasFocus()` directly, not eframe's `viewport().focused`,
+    /// because the latter lags by a frame after WM_ACTIVATE / focus events.
+    fn current_foreground_matches(&self) -> bool {
+        #[cfg(target_os = "windows")]
+        {
+            use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+            let Some(hwnd_val) = self.hwnd else { return false };
+            let fg = unsafe { GetForegroundWindow() };
+            return !fg.0.is_null() && fg.0 as isize == hwnd_val;
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            return web_sys::window()
+                .and_then(|w| w.document())
+                .and_then(|d| d.has_focus().ok())
+                .unwrap_or(false);
+        }
+        #[cfg(not(any(target_os = "windows", target_arch = "wasm32")))]
+        {
+            false
         }
     }
 
@@ -198,14 +215,16 @@ impl NudgeApp {
             self.timer.reset(interval);
         }
 
-        // Shared: reset form. SwitchAway preserves doing/bullshit per spec §4
-        // — that's its whole point versus Esc.
-        if action != Action::SwitchAway {
+        // Shared: reset form. Per spec §4 only Submit (Enter) clears
+        // doing/bullshit; Esc and Switch both preserve them so the next open
+        // resumes where the user left off.
+        if nudge_state::should_clear_form(action) {
             self.doing.clear();
             self.bullshit.clear();
         }
         self.focus_first = true;
         self.popup_visible = false;
+        self.armed = false;
         // Drop the cached card bounds. Without this, a stale rect from the
         // previous show survives across hide/show — and the next click that
         // reopens the popup (e.g. a pill click) is then mis-detected as
@@ -468,6 +487,13 @@ impl eframe::App for NudgeApp {
                 }
             }
 
+            // Spec §4: initial popup shown by Self::new bypasses show_popup,
+            // so arm it here on the first frame — once hwnd is captured
+            // (native) and the page is ready (WASM).
+            if self.popup_visible {
+                self.armed = self.current_foreground_matches();
+            }
+
             self.center_once = false;
         }
 
@@ -540,34 +566,11 @@ impl eframe::App for NudgeApp {
                 }
             }
 
-            // Window focus-loss → switch away.
-            // Level-triggered: each frame ask "is the window focused right now?"
-            // Self-correcting — if we miss a blur event (closing a sibling tab,
-            // devtools stealing focus, renderer-side races), the next poll
-            // still sees the unfocused state and closes the popup.
-            // Gate on user_engaged so a noisy focus flicker during page setup
-            // (common in automated tests) doesn't hide an untouched popup.
-            let engaged_this_frame = ctx.input(|i| {
-                let any_key = i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. }));
-                let click_in_card = match (self.card_rect, i.pointer.interact_pos()) {
-                    (Some(rect), Some(p)) => i.pointer.any_click() && rect.contains(p),
-                    _ => false,
-                };
-                any_key || click_in_card
-            });
-            if engaged_this_frame {
-                self.user_engaged = true;
-            }
-
-            #[cfg(not(target_arch = "wasm32"))]
-            let focused_now = ctx.input(|i| i.viewport().focused);
-            #[cfg(target_arch = "wasm32")]
-            let focused_now = document_has_focus();
-
-            if focused_now == Some(true) {
-                self.was_focused = true;
-            }
-            if self.user_engaged && self.was_focused && focused_now == Some(false) {
+            // Window focus-loss → switch away (spec §4).
+            // `armed` was snapshotted in show_popup: true iff we actually got
+            // foreground at open-time. If we didn't, focus-loss never fires
+            // here — Esc / Enter / click-outside remain the only ways out.
+            if self.armed && !self.current_foreground_matches() {
                 self.hide_popup(ctx, Action::SwitchAway);
                 return;
             }
