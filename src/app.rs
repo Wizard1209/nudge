@@ -43,7 +43,7 @@ pub struct NudgeApp {
 }
 
 impl NudgeApp {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, default_minutes: f64) -> Self {
         let mut visuals = egui::Visuals::dark();
         // Transparent panel background so the card sits on top of wallpaper/desktop
         visuals.panel_fill = egui::Color32::TRANSPARENT;
@@ -58,7 +58,7 @@ impl NudgeApp {
         Self {
             doing: String::new(),
             bullshit: String::new(),
-            next_minutes: "10".to_string(),
+            next_minutes: default_minutes.to_string(),
             focus_first: true,
             center_once: true,
             // Spec §4: timer is frozen until the user closes the popup for

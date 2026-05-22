@@ -42,6 +42,13 @@ fn main() -> eframe::Result {
             config.hotkey
         );
     }
+    let (default_minutes, interval_was_invalid) = config.resolved_interval_minutes();
+    if interval_was_invalid {
+        eprintln!(
+            "[nudge] config default_interval_minutes {} is not a positive finite number, falling back to 10",
+            config.default_interval_minutes
+        );
+    }
 
     // The tray icon, its menu, and the animation loop all live on a single
     // dedicated thread (see tray_bridge::spawn_tray_thread). It runs its
@@ -94,7 +101,7 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Nudge",
         options,
-        Box::new(move |cc| Ok(Box::new(NudgeApp::new(cc)))),
+        Box::new(move |cc| Ok(Box::new(NudgeApp::new(cc, default_minutes)))),
     )
 }
 
