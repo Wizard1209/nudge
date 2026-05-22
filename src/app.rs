@@ -105,10 +105,16 @@ impl NudgeApp {
         )
     }
 
-    fn show_popup(&mut self, _ctx: &egui::Context, source: TriggerSource) {
+    fn show_popup(&mut self, ctx: &egui::Context, source: TriggerSource) {
         self.trigger_source = source;
         self.popup_visible = true;
         self.focus_first = true;
+
+        // Tell egui itself the viewport is visible again — without this
+        // counterpart to the hide_popup `Visible(false)` send, egui keeps
+        // believing the window is hidden and skips painting.
+        #[cfg(not(target_arch = "wasm32"))]
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
 
         // Park the icon animator: with the popup on screen the icon
         // shouldn't keep ticking down. It'll restart on hide_popup.
@@ -154,7 +160,7 @@ impl NudgeApp {
         }
     }
 
-    fn hide_popup(&mut self, _ctx: &egui::Context, action: Action) {
+    fn hide_popup(&mut self, ctx: &egui::Context, action: Action) {
         // Parse the interval field. A parse error means the user typed an
         // explicit non-positive number (e.g. "-5" or "0"). On Submit that is
         // a validation error — surface it and keep the popup open. On
@@ -231,6 +237,13 @@ impl NudgeApp {
         // "outside the card" on the very next frame, instantly switching us
         // back away.
         self.card_rect = None;
+
+        // Tell egui the viewport is hidden. Without this, egui's event
+        // loop keeps pumping/scheduling for the "visible" viewport even
+        // when we SW_HIDE the HWND directly — winit then burns a full
+        // core on the main thread despite update() never being called.
+        #[cfg(not(target_arch = "wasm32"))]
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
 
         // Native-only: hide window + schedule background timer wakeup
         #[cfg(target_os = "windows")]

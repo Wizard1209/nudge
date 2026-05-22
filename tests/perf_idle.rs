@@ -24,19 +24,27 @@ use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{CloseHandle, FILETIME, HANDLE};
+use windows::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+};
 use windows::Win32::System::Threading::{
-    GetProcessTimes, OpenProcess, TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-    PROCESS_TERMINATE,
+    GetThreadDescription, GetThreadTimes, GetProcessTimes, OpenProcess, OpenThread,
+    TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+    THREAD_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
     VK_ESCAPE,
 };
 
-/// Acceptable CPU-time per wall-second. 100 ms/s = 10% of one core — only
-/// catches catastrophes. After the first calibration run, edit this down to
-/// `(observed_baseline * 1.2)` and commit. Each subsequent optimization
-/// lowers it further.
+/// Acceptable CPU-time per wall-second. Catches catastrophic regressions
+/// (the original bug was ~1000 ms/s — a full core). Observed post-fix
+/// baseline jitters between ~5 and ~55 ms/s across runs on a debug
+/// build, depending on whether anything else is contending or whether
+/// winit has cached its frame state. 100 ms/s = 10% of one core, well
+/// above the noise floor but well below the kind of bug worth catching.
+/// Ratchet down further once we understand the variance source (probably
+/// wgpu helper threads warming up) and can stabilize the floor.
 const THRESHOLD_MS_PER_SEC: f64 = 100.0;
 
 /// Time after spawn before sending Esc. eframe init + tray-thread bootstrap
@@ -85,10 +93,32 @@ fn idle_cpu_is_under_threshold() {
         .expect("OpenProcess for measurement");
 
     let cpu_before = process_cpu_time(handle);
+    let threads_before = enumerate_thread_cpu(pid);
     let wall_start = Instant::now();
     std::thread::sleep(MEASURE_WINDOW);
     let cpu_after = process_cpu_time(handle);
+    let threads_after = enumerate_thread_cpu(pid);
     let wall_elapsed = wall_start.elapsed();
+
+    // Per-thread CPU breakdown — points at the actual offending thread.
+    let mut deltas: Vec<(u32, Duration)> = threads_after
+        .iter()
+        .map(|(tid, after)| {
+            let before = threads_before.get(tid).copied().unwrap_or_default();
+            (*tid, after.checked_sub(before).unwrap_or_default())
+        })
+        .collect();
+    deltas.sort_by(|a, b| b.1.cmp(&a.1));
+    eprintln!(
+        "[perf-diag] per-thread CPU over {:.1}s window (top 10):",
+        wall_elapsed.as_secs_f64()
+    );
+    for (tid, delta) in deltas.iter().take(10) {
+        let ms = delta.as_secs_f64() * 1000.0;
+        let ms_per_sec = ms / wall_elapsed.as_secs_f64();
+        let name = thread_description(*tid).unwrap_or_else(|| "<unnamed>".to_string());
+        eprintln!("[perf-diag]   tid={tid} \"{name}\": {ms:.1} ms total ({ms_per_sec:.1} ms/s)");
+    }
 
     unsafe {
         let _ = CloseHandle(handle);
@@ -123,6 +153,77 @@ fn process_cpu_time(handle: HANDLE) -> Duration {
             .expect("GetProcessTimes");
     }
     filetime_to_duration(kernel) + filetime_to_duration(user)
+}
+
+/// Best-effort thread name via GetThreadDescription. Libraries that set
+/// names via SetThreadDescription (Rust's std, tokio, winit, etc.) show
+/// up here; OS threads typically don't.
+fn thread_description(tid: u32) -> Option<String> {
+    unsafe {
+        let h = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, false, tid).ok()?;
+        let name_ptr = GetThreadDescription(h).ok();
+        let _ = CloseHandle(h);
+        let name_ptr = name_ptr?;
+        if name_ptr.is_null() {
+            return None;
+        }
+        let s = name_ptr.to_string().ok();
+        // Intentionally not LocalFree'ing the buffer — diagnostic-only,
+        // process exits shortly anyway.
+        s.filter(|s| !s.is_empty())
+    }
+}
+
+/// Walk every thread of the process and snapshot its accumulated
+/// kernel+user CPU time. Returns a map of TID → total. Threads created
+/// or destroyed mid-window are handled gracefully via the diff caller:
+/// `unwrap_or_default()` on missing keys.
+fn enumerate_thread_cpu(pid: u32) -> std::collections::HashMap<u32, Duration> {
+    let mut times = std::collections::HashMap::new();
+    let snapshot = match unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) } {
+        Ok(h) => h,
+        Err(_) => return times,
+    };
+    let mut entry = THREADENTRY32 {
+        dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+        ..Default::default()
+    };
+    unsafe {
+        if Thread32First(snapshot, &mut entry).is_ok() {
+            loop {
+                if entry.th32OwnerProcessID == pid {
+                    if let Ok(h) =
+                        OpenThread(THREAD_QUERY_LIMITED_INFORMATION, false, entry.th32ThreadID)
+                    {
+                        let mut creation = FILETIME::default();
+                        let mut exit = FILETIME::default();
+                        let mut kernel = FILETIME::default();
+                        let mut user = FILETIME::default();
+                        if GetThreadTimes(
+                            h,
+                            &mut creation,
+                            &mut exit,
+                            &mut kernel,
+                            &mut user,
+                        )
+                        .is_ok()
+                        {
+                            let total = filetime_to_duration(kernel) + filetime_to_duration(user);
+                            times.insert(entry.th32ThreadID, total);
+                        }
+                        let _ = CloseHandle(h);
+                    }
+                }
+                // Reset dwSize on each iteration — required by the API.
+                entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+                if Thread32Next(snapshot, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snapshot);
+    }
+    times
 }
 
 fn filetime_to_duration(ft: FILETIME) -> Duration {
