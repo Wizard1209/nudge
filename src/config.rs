@@ -108,6 +108,31 @@ pub fn resolve_default_config_path() -> std::path::PathBuf {
     config_path(&docs)
 }
 
+/// Pull a `--config <path>` or `--config=<path>` override out of CLI args.
+/// Used by the perf test (and any future tooling) to point a launched
+/// nudge.exe at a throwaway config without clobbering the user's real
+/// `~/Documents/Nudge/config.json`. Returns `None` if the flag is absent
+/// or trailing without a value — silent, since this is a power-user lever
+/// rather than a documented contract.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn parse_config_arg<I, S>(args: I) -> Option<std::path::PathBuf>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut iter = args.into_iter();
+    while let Some(arg) = iter.next() {
+        let arg_ref = arg.as_ref();
+        if arg_ref == "--config" {
+            return iter.next().map(|p| std::path::PathBuf::from(p.as_ref()));
+        }
+        if let Some(rest) = arg_ref.strip_prefix("--config=") {
+            return Some(std::path::PathBuf::from(rest));
+        }
+    }
+    None
+}
+
 /// Load config from `path`, or return `Config::default()` if the file
 /// doesn't exist or doesn't parse. Errors are returned alongside the
 /// fallback so the caller can log them — we never refuse to start.
@@ -363,6 +388,56 @@ mod tests {
             let (cfg, err) = load_or_default(&path);
             assert!(err.is_none());
             assert_eq!(cfg, Config::default());
+        }
+
+        #[test]
+        fn parse_config_arg_absent_returns_none() {
+            assert_eq!(parse_config_arg(Vec::<&str>::new()), None);
+            assert_eq!(parse_config_arg(["--other", "value"]), None);
+        }
+
+        #[test]
+        fn parse_config_arg_space_separated() {
+            assert_eq!(
+                parse_config_arg(["--config", "/tmp/foo.json"]),
+                Some(std::path::PathBuf::from("/tmp/foo.json"))
+            );
+        }
+
+        #[test]
+        fn parse_config_arg_equals_form() {
+            assert_eq!(
+                parse_config_arg(["--config=/tmp/foo.json"]),
+                Some(std::path::PathBuf::from("/tmp/foo.json"))
+            );
+        }
+
+        #[test]
+        fn parse_config_arg_with_preceding_args() {
+            // The flag can be anywhere in the arg list, not just first.
+            assert_eq!(
+                parse_config_arg(["--verbose", "--config", "/tmp/x.json", "--quiet"]),
+                Some(std::path::PathBuf::from("/tmp/x.json"))
+            );
+        }
+
+        #[test]
+        fn parse_config_arg_trailing_returns_none() {
+            // `--config` at the end with no value: don't consume something
+            // that isn't there. Silent None — the caller falls back to the
+            // default config path.
+            assert_eq!(parse_config_arg(["--other", "--config"]), None);
+        }
+
+        #[test]
+        fn parse_config_arg_first_wins() {
+            // If somebody passes --config twice, take the first one — same
+            // rule as most CLI parsers. (Unlikely in practice; this just
+            // pins the behavior.)
+            assert_eq!(
+                parse_config_arg(["--config", "/a.json", "--config", "/b.json"]),
+                Some(std::path::PathBuf::from("/a.json"))
+            );
         }
 
         #[test]

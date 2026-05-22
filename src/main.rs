@@ -25,11 +25,19 @@ fn main() -> eframe::Result {
 
     // Load the user config (or use defaults). Bad / missing files are
     // logged but never fatal — the app must always come up.
-    let config_path = config::resolve_default_config_path();
+    //
+    // `--config <path>` overrides the default location. When the override is
+    // set we also skip first-run seeding: a caller pointing at a custom file
+    // (perf test, throwaway sandbox) doesn't want a default file silently
+    // materialized alongside it.
+    let cli_config_path = config::parse_config_arg(std::env::args().skip(1));
+    let config_path = cli_config_path
+        .clone()
+        .unwrap_or_else(config::resolve_default_config_path);
     let (config, config_err) = config::load_or_default(&config_path);
     if let Some(err) = config_err {
         eprintln!("[nudge] {err}");
-    } else if !config_path.exists() {
+    } else if cli_config_path.is_none() && !config_path.exists() {
         // First run: seed the file so users have a template to edit.
         if let Err(e) = config::ensure_default_written(&config_path) {
             eprintln!("[nudge] failed to write default config: {e}");

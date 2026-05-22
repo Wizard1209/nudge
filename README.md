@@ -50,7 +50,8 @@ NDJSON файл (`journal-rust.ndjson`), append-only, одна JSON-запись
 
 ## Дефолты
 
-- Интервал: **10 минут**
+- Интервал: **10 минут** — настраивается в `config.json`
+  (поле `default_interval_minutes`, любое положительное число).
 - Журнал: `%USERPROFILE%\Documents\Nudge\journal-rust.ndjson`
 - Хоткей: **Ctrl+Shift+Space** — вызывает popup вручную из любого окна.
   Настраивается в `%USERPROFILE%\Documents\Nudge\config.json` (поле `hotkey`).
