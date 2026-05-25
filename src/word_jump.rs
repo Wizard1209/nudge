@@ -111,7 +111,7 @@ pub fn intercept_ctrl_word_keys(
             if !(modifiers.ctrl || modifiers.alt) {
                 return true;
             }
-            let [min, max] = range.sorted();
+            let [min, max] = range.sorted_cursors();
             let has_selection = min.index != max.index;
             match key {
                 Key::ArrowLeft => {

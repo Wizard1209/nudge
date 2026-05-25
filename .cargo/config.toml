@@ -1,2 +1,14 @@
 [target.wasm32-unknown-unknown]
 rustflags = ['--cfg', 'getrandom_backend="wasm_js"']
+
+# The `nudge_web` cdylib exists only for the WASM build (src/lib.rs is fully
+# `#[cfg(target_arch = "wasm32")]`). On windows-gnu it has no Rust exports, but
+# mingw auto-exports every statically-linked dependency symbol — with eframe
+# 0.34's large tree that overflows ld's 16-bit export ordinal limit
+# ("export ordinal too large: 83155"). Still overflows on the glow renderer
+# (the wgpu→glow switch shrinks the tree but not below the limit), so this is
+# NOT a wgpu artifact. We never load nudge_web.dll on Windows, so suppress its
+# auto-exports. Harmless for the bin (exes export nothing); the WASM cdylib
+# uses wasm-ld and is unaffected by this native-only flag.
+[target.x86_64-pc-windows-gnu]
+rustflags = ['-Clink-arg=-Wl,--exclude-all-symbols']

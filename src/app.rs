@@ -287,7 +287,9 @@ impl NudgeApp {
     }
 
     fn draw_card(&mut self, ctx: &egui::Context) {
-        let screen = ctx.screen_rect();
+        // egui 0.34 split screen_rect() into viewport_rect()/content_rect();
+        // content_rect() is the in-window content area we size the card against.
+        let screen = ctx.content_rect();
         let card_width = 480.0_f32.min(screen.width() - 48.0);
         let top_offset = screen.height() * 0.25;
 
@@ -332,14 +334,16 @@ impl NudgeApp {
 
             // Subtle row tint, inset from the card edge and softly rounded
             // so it visually sits INSIDE the card instead of butting up
-            // against the stroke/rounded corners. Alpha 2 (~0.8% white)
-            // keeps the tint from looking like a solid block over the
-            // semi-transparent card fill.
+            // against the stroke/rounded corners. egui 0.34 corrected its
+            // alpha compositing (0.31 over-brightened low alphas — `2` there
+            // rendered like a +20 brightness jump); on 0.34 the same value is
+            // nearly invisible, so we use alpha 20 to land a clearly-visible
+            // but still-subtle highlight. Tuned against design-focus-highlight.
             let inset_rect = row_rect.shrink2(egui::vec2(8.0, 4.0));
             ui.painter().rect_filled(
                 inset_rect,
                 egui::CornerRadius::same(6),
-                egui::Color32::from_white_alpha(2),
+                egui::Color32::from_white_alpha(20),
             );
         }
         ui.put(
@@ -351,7 +355,13 @@ impl NudgeApp {
                         .size(16.0)
                         .color(egui::Color32::from_gray(170)),
                 )
-                .frame(false)
+                // egui 0.34: a custom `.frame(..)` is used verbatim, so its
+                // inner_margin — NOT `.margin(..)` — is what insets the text.
+                // `.margin()` alone (as in 0.31's `.frame(false)`) leaves the
+                // text jammed in the field's top-left corner. Put the 20/12
+                // inset on the frame; keep `.margin()` matching so the galley's
+                // available width agrees with the frame's content area.
+                .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(20, 12)))
                 .margin(egui::Margin::symmetric(20, 12))
                 .font(egui::FontId::proportional(16.0))
                 .text_color(egui::Color32::from_rgb(235, 235, 240)),
@@ -462,7 +472,13 @@ impl eframe::App for NudgeApp {
         CLEAR_COLOR_TRANSPARENT
     }
 
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, root_ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // eframe 0.34 replaced `App::update(ctx)` with `App::ui(ui)`. The
+        // `ui` we're handed is the central panel (transparent, no margin); we
+        // drive everything off its context exactly as the old `update` did.
+        let ctx_owned = root_ui.ctx().clone();
+        let ctx = &ctx_owned;
+
         // === First frame setup ===
         if self.center_once {
             // Position is set at launch from primary monitor dimensions (see main.rs).
@@ -590,11 +606,9 @@ impl eframe::App for NudgeApp {
         }
 
         // === Shared: render UI ===
-        // Transparent central panel so wallpaper / desktop shows through around card.
-        egui::CentralPanel::default()
-            .frame(egui::Frame::NONE)
-            .show(ctx, |_ui| {});
-
+        // `root_ui` (handed to us by eframe) is the transparent, margin-less
+        // central panel — wallpaper/desktop shows through around the card.
+        // We paint only the floating card Area on top of it.
         if self.popup_visible {
             self.draw_card(ctx);
         } else {

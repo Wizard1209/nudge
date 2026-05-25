@@ -37,15 +37,20 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_ESCAPE,
 };
 
-/// Acceptable CPU-time per wall-second. Catches catastrophic regressions
-/// (the original bug was ~1000 ms/s — a full core). Observed post-fix
-/// baseline jitters between ~5 and ~55 ms/s across runs on a debug
-/// build, depending on whether anything else is contending or whether
-/// winit has cached its frame state. 100 ms/s = 10% of one core, well
-/// above the noise floor but well below the kind of bug worth catching.
-/// Ratchet down further once we understand the variance source (probably
-/// wgpu helper threads warming up) and can stabilize the floor.
-const THRESHOLD_MS_PER_SEC: f64 = 100.0;
+/// Acceptable CPU-time per wall-second while idle (popup hidden).
+///
+/// The bug this guards against: a hidden eframe window busy-looped winit's
+/// main thread at ~1000 ms/s (a full core) in release builds — eframe ≤0.33
+/// would `request_redraw()` an invisible window, get no `RedrawRequested`
+/// back, and leave `ControlFlow` stuck on `Poll`. eframe 0.34 fixed it by
+/// painting invisible windows directly on a throttled interval; measured
+/// idle is now effectively 0 ms/s here.
+///
+/// 25 ms/s = 2.5% of one core: ~40× headroom below the busy-loop, with slack
+/// for the throttled invisible-window repaints and measurement noise. Do not
+/// raise this back toward 100 without a reason — that was the calibration
+/// value from before the fix landed.
+const THRESHOLD_MS_PER_SEC: f64 = 25.0;
 
 /// Time after spawn before sending Esc. eframe init + tray-thread bootstrap
 /// + window foregrounding — 3s is comfortably above worst-case cold-start.

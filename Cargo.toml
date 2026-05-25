@@ -12,7 +12,16 @@ name = "nudge"
 path = "src/main.rs"
 
 [dependencies]
-eframe = "0.31"
+# eframe 0.34 flipped its default renderer from glow → wgpu. On Windows the
+# wgpu/DX12 backend only reports `CompositeAlphaMode::Opaque`, so egui-wgpu
+# can't honor `with_transparent(true)` and the spotlight overlay renders as an
+# opaque black block (egui-wgpu winit.rs alpha-mode fallback → Auto/Opaque).
+# glow honors Win32 transparent windows directly, exactly as the 0.31 default
+# did. The 0.34 idle-CPU fix lives in the SHARED native run loop
+# (run.rs::check_redraw_requests), not in the wgpu integration, so it survives
+# on glow. Dropping wgpu also sheds the wgpu-hal/gpu-allocator tree that forced
+# the `windows = "=0.62.0"` pin below.
+eframe = { version = "0.34", default-features = false, features = ["glow", "default_fonts", "accesskit"] }
 chrono = "0.4"
 web-time = "1.1"
 serde = { version = "1", features = ["derive"] }
@@ -21,7 +30,7 @@ ulid = "1"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 tray-icon = "0.19"
-windows = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_Graphics_Gdi", "Win32_UI_HiDpi"] }
 raw-window-handle = "0.6"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -29,6 +38,11 @@ dirs = "6"
 
 [dev-dependencies]
 tempfile = "3"
+# Used only by the #[ignore]'d native capture tests: encode the window grab to
+# PNG (image) and submit it to an LLM vision judge over HTTPS (ureq + base64).
+image = { version = "0.25", default-features = false, features = ["png"] }
+ureq = { version = "2", features = ["json"] }
+base64 = "0.22"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"

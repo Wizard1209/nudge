@@ -1,7 +1,7 @@
 import { expect, describe } from "vitest"
 import { test } from "../fixtures/nudge"
 import { assertCardHidden } from "../fixtures/pixels"
-import { clickPill, dismissForm, wait, type DismissTrigger } from "../fixtures/actions"
+import { clickPill, dismissForm, focusField, wait, FIELD_DOING_Y, type DismissTrigger } from "../fixtures/actions"
 
 // Esc, blur and click-outside all follow the same contract per spec §4:
 // the popup hides without recording an entry AND the typed text survives
@@ -21,9 +21,12 @@ describe("popup preserves typed text across switch-away", () => {
     test.for(TRIGGERS)("%s trigger hides popup, keeps text, restores on reopen", async ([_, via, text], { nudge }) => {
         await nudge.page.evaluate(() => localStorage.clear())
 
-        // Type into the first (auto-focused) field.
-        await nudge.page.mouse.click(400, 170)
-        await wait(200)
+        // Focus the first field reliably before typing. A single click on an
+        // egui text edit is a racy way to take focus (hence the double-click
+        // `focusField` helper); the race got worse on egui 0.34 whose larger
+        // wasm bundle compiles slower on cold load, so the typed text could
+        // miss the field entirely and the assertion saw an empty journal.
+        await focusField(nudge.page, FIELD_DOING_Y)
         await nudge.page.keyboard.type(text, { delay: 30 })
         await wait(300)
 

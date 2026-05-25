@@ -23,9 +23,12 @@ async function launchNudge(): Promise<NudgeContext> {
     await page.setViewport({ width: 800, height: 600 })
     await page.goto(NUDGE_URL, { waitUntil: "networkidle0" })
 
-    // Wait for egui canvas to render (give it a moment to paint)
-    await page.waitForSelector("canvas#nudge_canvas", { timeout: 5_000 })
-    await new Promise((r) => setTimeout(r, 1_000))
+    // Wait for egui canvas to render (give it a moment to paint). The egui
+    // 0.34 wasm bundle is ~2× larger (Vello), so first-load compile in a cold
+    // browser is slower; 2.5s keeps the first test of a run from racing the
+    // initial paint/focus. Subsequent loads are cached and fast.
+    await page.waitForSelector("canvas#nudge_canvas", { timeout: 10_000 })
+    await new Promise((r) => setTimeout(r, 2_500))
 
     return { browser, page }
 }
