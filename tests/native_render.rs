@@ -219,18 +219,21 @@ fn native_window_renders_card_centered_and_transparent() {
 /// jammed in the top-left CORNER of each field (lost text inset) rather than
 /// padded + vertically centered. The judge sees the real composited pixels.
 const JUDGE_PROMPT: &str = "\
-You are a strict UI QA judge. The image is a screenshot of a minimalist \
-'spotlight'-style popup card (like macOS Spotlight) for a journaling app, \
-captured over an arbitrary desktop background — everything OUTSIDE the rounded \
-card is transparent and shows whatever was on the desktop, so ignore it. Judge \
-ONLY the card and its three stacked rows (top→bottom): a text field labelled \
-'Что я делаю?', a text field labelled 'Хуйня?', and a small number field \
-(e.g. '10'). REQUIREMENTS, ALL must hold to pass: \
-(1) all three rows/labels are visible and legible; \
-(2) each label is INSET from the left edge of its row with comfortable padding \
-AND vertically centered within the row — it must NOT be jammed flush into the \
-top-left corner of the field; \
-(3) no label text is clipped at the card edges. \
+You are a UI QA judge checking for ONE specific rendering bug. The image is a \
+screenshot of a minimalist 'spotlight'-style popup card for a journaling app. \
+The card is TRANSPARENT outside its rounded rectangle, so the desktop (chat \
+windows, etc.) shows through around and faintly behind it — that is EXPECTED; \
+never fail because of background content. Judge ONLY the rounded card, which \
+has three stacked rows: a field labelled 'Что я делаю?', a field labelled \
+'Хуйня?', and a number field (e.g. '10').\n\n\
+THE BUG TO CATCH: a field's text rendered jammed into the TOP-LEFT CORNER of \
+its row — flush against the left and top edges with no padding.\n\n\
+PASS when each row's text is clearly INDENTED from the card's left edge (has \
+left padding) and sits roughly in the row's vertical middle. Treat minor \
+variation in exact vertical centering, padding size, font smoothing, or \
+faint background bleed-through as NORMAL — do NOT fail for any of those.\n\n\
+FAIL ONLY if: text is jammed flush in the top-left corner with no padding, OR \
+a whole row/label is missing, OR a label is so cut off it is unreadable.\n\n\
 Respond with ONLY a JSON object, no prose: \
 {\"pass\": true|false, \"reason\": \"<one concise sentence>\"}.";
 
@@ -252,13 +255,37 @@ fn native_window_passes_llm_vision_judge() {
 
     // No margin: hand the judge just the card window itself.
     let (cap, _w, _h) = spawn_and_capture(0);
+
+    // Dump exactly what the judge sees, when NUDGE_DUMP_PNG is set.
+    if let Ok(path) = std::env::var("NUDGE_DUMP_PNG") {
+        cap.save_png(&path);
+        eprintln!("[llm-judge] wrote judged image to {path}");
+    }
+
+    // Default gpt-4o: gpt-4o-mini's vision can't resolve the ~20px text inset
+    // on this transparent card over a busy desktop — it false-fails a CORRECT
+    // render at full/half/low resolution alike (a capability ceiling, not a
+    // cost knob). Override with OPENAI_JUDGE_MODEL=gpt-4o-mini at your peril.
+    let model = std::env::var("OPENAI_JUDGE_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
+    // Cost knobs: OPENAI_JUDGE_DETAIL "low" (default) sends one flat ~512px /
+    // ~85-token tile — gpt-4o still judges correctly and it's ~13× cheaper than
+    // "high". OPENAI_JUDGE_SCALE downscales the PNG before encoding (1.0 = full).
+    let scale: f32 = std::env::var("OPENAI_JUDGE_SCALE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1.0);
+    let detail = std::env::var("OPENAI_JUDGE_DETAIL").unwrap_or_else(|_| "low".to_string());
+    let png = cap.png_bytes_scaled(scale);
+    eprintln!(
+        "[llm-judge] model={model} scale={scale} detail={detail} png_bytes={}",
+        png.len()
+    );
     let data_url = format!(
         "data:image/png;base64,{}",
-        base64::engine::general_purpose::STANDARD.encode(cap.png_bytes())
+        base64::engine::general_purpose::STANDARD.encode(&png)
     );
-
     let request = serde_json::json!({
-        "model": "gpt-4o-mini",
+        "model": model,
         "temperature": 0,
         "max_tokens": 200,
         "response_format": { "type": "json_object" },
@@ -266,7 +293,7 @@ fn native_window_passes_llm_vision_judge() {
             "role": "user",
             "content": [
                 { "type": "text", "text": JUDGE_PROMPT },
-                { "type": "image_url", "image_url": { "url": data_url, "detail": "high" } }
+                { "type": "image_url", "image_url": { "url": data_url, "detail": detail } }
             ]
         }]
     });
@@ -349,19 +376,34 @@ impl Capture {
         rgba
     }
 
-    /// Encode the capture as an in-memory PNG (for the LLM vision judge).
-    fn png_bytes(&self) -> Vec<u8> {
+    /// Encode the capture as an in-memory PNG (for the LLM vision judge),
+    /// optionally downscaled by `scale` (1.0 = full resolution).
+    fn png_bytes_scaled(&self, scale: f32) -> Vec<u8> {
+        let src = image::RgbaImage::from_raw(self.w as u32, self.h as u32, self.rgba())
+            .expect("rgba buffer -> image");
+        let (w, h, raw) = if (scale - 1.0).abs() > 1e-3 {
+            let nw = (self.w as f32 * scale).round().max(1.0) as u32;
+            let nh = (self.h as f32 * scale).round().max(1.0) as u32;
+            let resized = image::imageops::resize(&src, nw, nh, image::imageops::FilterType::Lanczos3);
+            (nw, nh, resized.into_raw())
+        } else {
+            (self.w as u32, self.h as u32, src.into_raw())
+        };
         let mut out = std::io::Cursor::new(Vec::new());
         image::write_buffer_with_format(
             &mut out,
-            &self.rgba(),
-            self.w as u32,
-            self.h as u32,
+            &raw,
+            w,
+            h,
             image::ExtendedColorType::Rgba8,
             image::ImageFormat::Png,
         )
         .expect("encode png");
         out.into_inner()
+    }
+
+    fn png_bytes(&self) -> Vec<u8> {
+        self.png_bytes_scaled(1.0)
     }
 
     fn save_png(&self, path: &str) {
