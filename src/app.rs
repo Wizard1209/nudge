@@ -10,6 +10,12 @@ use crate::word_jump;
 /// non-zero produces the grey box halo seen in early builds.
 pub const CLEAR_COLOR_TRANSPARENT: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
 
+/// Placeholder / hint text colour. egui's dark default is ~gray(120), which
+/// washes out against the translucent card. Bumped to gray(170) so hints
+/// like "Что я делаю?" are comfortably legible. Set both on the egui visuals
+/// (so the widget defaults match) and on each field's hint RichText.
+const HINT_TEXT_COLOR: egui::Color32 = egui::Color32::from_gray(170);
+
 pub struct NudgeApp {
     // Form fields
     doing: String,
@@ -48,11 +54,8 @@ impl NudgeApp {
         // Transparent panel background so the card sits on top of wallpaper/desktop
         visuals.panel_fill = egui::Color32::TRANSPARENT;
         visuals.window_fill = egui::Color32::TRANSPARENT;
-        // Placeholder / hint text colour: egui's dark default is ~gray(120),
-        // which washes out against the translucent card. Bump to ~gray(170)
-        // so hints like "Что я делаю?" are comfortably legible.
-        visuals.widgets.noninteractive.fg_stroke.color = egui::Color32::from_gray(170);
-        visuals.widgets.inactive.fg_stroke.color = egui::Color32::from_gray(170);
+        visuals.widgets.noninteractive.fg_stroke.color = HINT_TEXT_COLOR;
+        visuals.widgets.inactive.fg_stroke.color = HINT_TEXT_COLOR;
         cc.egui_ctx.set_visuals(visuals);
 
         Self {
@@ -360,7 +363,7 @@ impl NudgeApp {
                 .hint_text(
                     egui::RichText::new(hint)
                         .size(16.0)
-                        .color(egui::Color32::from_gray(170)),
+                        .color(HINT_TEXT_COLOR),
                 )
                 // egui 0.34: a custom `.frame(..)` is used verbatim, so its
                 // inner_margin — NOT `.margin(..)` — is what insets the text.
