@@ -169,8 +169,8 @@ fn title_case_key(upper: &str) -> String {
     // F-keys stay uppercase. Single letters stay uppercase. Multi-char names
     // (Space, Enter, Escape, …) get title-cased so the rendered label reads
     // naturally instead of shouting.
-    if upper.len() == 1 || upper.starts_with('F') && upper[1..].chars().all(|c| c.is_ascii_digit())
-    {
+    let is_f_key = upper.starts_with('F') && upper[1..].chars().all(|c| c.is_ascii_digit());
+    if upper.len() == 1 || is_f_key {
         return upper.to_string();
     }
     let mut chars = upper.chars();

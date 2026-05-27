@@ -79,17 +79,23 @@ pub fn parse_interval(text: &str) -> Result<Duration, IntervalError> {
     Ok(Duration::from_secs_f64(minutes * 60.0))
 }
 
+/// Remaining whole minutes, rounded UP. Zero seconds stays 0 (the "now"
+/// state); any positive remainder rounds to the next whole minute. Shared
+/// by the tooltip text and its dedup key so the two never disagree.
+fn ceil_minutes(d: Duration) -> u64 {
+    let secs = d.as_secs();
+    if secs == 0 { 0 } else { (secs + 59) / 60 }
+}
+
 /// Tray tooltip text for the time remaining until the next nudge.
 /// Spec §5: `~N min` rounded UP to the next whole minute; `now` once the
 /// timer has expired (showing `~0 min` would read as a bug rather than
 /// "popup is about to appear").
 pub fn tooltip_for_remaining(d: Duration) -> String {
-    let secs = d.as_secs();
-    if secs == 0 {
-        return "now".to_string();
+    match ceil_minutes(d) {
+        0 => "now".to_string(),
+        mins => format!("~{} min", mins),
     }
-    let mins = (secs + 59) / 60;
-    format!("~{} min", mins)
 }
 
 /// Minute number that `tooltip_for_remaining` would render for this
@@ -97,12 +103,7 @@ pub fn tooltip_for_remaining(d: Duration) -> String {
 /// tooltip is only refreshed when the displayed number changes (spec §5:
 /// "обновляется раз в минуту"). The "now" state maps to 0.
 pub fn displayed_minutes(d: Duration) -> u64 {
-    let secs = d.as_secs();
-    if secs == 0 {
-        0
-    } else {
-        (secs + 59) / 60
-    }
+    ceil_minutes(d)
 }
 
 /// Labels for the tray context menu, in order. Spec §5: "Show Nudge", "Quit".

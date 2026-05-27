@@ -33,41 +33,31 @@ impl fmt::Display for JournalError {
 
 /// Validate required fields before write per spec.
 fn validate_event(event: &JournalEvent) -> Result<(), JournalError> {
+    let invalid = |detail: String| Err(JournalError::Validation { detail });
+
     if event.schema_version != 1 {
-        return Err(JournalError::Validation {
-            detail: format!("schema_version must be 1, got {}", event.schema_version),
-        });
+        return invalid(format!("schema_version must be 1, got {}", event.schema_version));
     }
     if event.event_type != "submitted" {
-        return Err(JournalError::Validation {
-            detail: format!("event_type must be 'submitted', got '{}'", event.event_type),
-        });
+        return invalid(format!("event_type must be 'submitted', got '{}'", event.event_type));
     }
     if event.entry_id.is_empty() {
-        return Err(JournalError::Validation {
-            detail: "entry_id must be non-empty".to_string(),
-        });
+        return invalid("entry_id must be non-empty".to_string());
     }
     if event.implementation.is_empty() {
-        return Err(JournalError::Validation {
-            detail: "implementation must be non-empty".to_string(),
-        });
+        return invalid("implementation must be non-empty".to_string());
     }
     if event.trigger_source != "timer" && event.trigger_source != "manual" {
-        return Err(JournalError::Validation {
-            detail: format!(
-                "trigger_source must be 'timer' or 'manual', got '{}'",
-                event.trigger_source
-            ),
-        });
+        return invalid(format!(
+            "trigger_source must be 'timer' or 'manual', got '{}'",
+            event.trigger_source
+        ));
     }
     if !event.next_interval_minutes.is_finite() || event.next_interval_minutes <= 0.0 {
-        return Err(JournalError::Validation {
-            detail: format!(
-                "next_interval_minutes must be > 0, got {}",
-                event.next_interval_minutes
-            ),
-        });
+        return invalid(format!(
+            "next_interval_minutes must be > 0, got {}",
+            event.next_interval_minutes
+        ));
     }
     Ok(())
 }
