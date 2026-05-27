@@ -161,27 +161,34 @@ impl NudgeApp {
     }
 
     fn hide_popup(&mut self, ctx: &egui::Context, action: Action) {
-        // Parse the interval field. A parse error means the user typed an
-        // explicit non-positive number (e.g. "-5" or "0"). On Submit that is
-        // a validation error — surface it and keep the popup open. On
-        // Dismiss we silently fall back to the 10-minute default so Esc
-        // still works even with garbage in the field.
-        let interval = match nudge_state::parse_interval(&self.next_minutes) {
-            Ok(d) => d,
+        // The entire spec §4 close decision lives in `decide_close`; this
+        // method is its executor. The only thing we resolve here that the
+        // decision can't is the journal-write I/O, because that can fail at
+        // the OS / browser layer (and a failure must keep the popup open).
+        let outcome = match nudge_state::decide_close(
+            self.trigger_source,
+            action,
+            &self.doing,
+            &self.bullshit,
+            &self.next_minutes,
+        ) {
+            Ok(o) => o,
             Err(e) => {
-                if action == Action::Submit {
-                    self.error_message = Some(e.to_string());
-                    return;
-                }
-                std::time::Duration::from_secs(10 * 60)
+                // Explicit Submit with an invalid interval: surface and keep
+                // the popup open (no outcome to execute).
+                self.error_message = Some(e.to_string());
+                return;
             }
         };
-        let minutes: f64 = interval.as_secs_f64() / 60.0;
 
-        // Spec §4: Submit with both text fields empty is the "update timer
-        // without journaling" path — skip the write but still reset the
-        // timer below.
-        if nudge_state::should_write_journal(action, &self.doing, &self.bullshit) {
+        if outcome.write_journal {
+            // The interval the journal records is whatever the decision is
+            // about to reset the timer to. `write_journal` implies Submit,
+            // and Submit always resets, so `reset_timer` is `Some` here.
+            let minutes: f64 = outcome
+                .reset_timer
+                .map(|d| d.as_secs_f64() / 60.0)
+                .unwrap_or(10.0);
             let trigger = match self.trigger_source {
                 TriggerSource::Timer => "timer",
                 TriggerSource::Manual => "manual",
@@ -215,16 +222,16 @@ impl NudgeApp {
         // Clear error on successful action
         self.error_message = None;
 
-        // Shared: timer reset logic
-        let should_reset = nudge_state::should_reset_timer(self.trigger_source, action);
-        if should_reset {
+        // Shared: timer reset. `Some(interval)` ⇒ reset; `None` ⇒ leave the
+        // live timer ticking (manual Esc / Switch).
+        if let Some(interval) = outcome.reset_timer {
             self.timer.reset(interval);
         }
 
-        // Shared: reset form. Per spec §4 only Submit (Enter) clears
-        // doing/bullshit; Esc and Switch both preserve them so the next open
+        // Shared: reset form per the decision. Only Submit clears
+        // doing/bullshit; Esc and Switch preserve them so the next open
         // resumes where the user left off.
-        if nudge_state::should_clear_form(action) {
+        if outcome.clear_form {
             self.doing.clear();
             self.bullshit.clear();
         }
@@ -259,7 +266,7 @@ impl NudgeApp {
             // The tray thread handles both icon animation and the
             // popup-fire wakeup (it ShowWindow's our HWND once the timer
             // expires). Hand it the new deadline so it knows when.
-            if should_reset {
+            if let Some(interval) = outcome.reset_timer {
                 let deadline = std::time::Instant::now() + interval;
                 crate::tray_bridge::set_timer_state(deadline, interval);
             }

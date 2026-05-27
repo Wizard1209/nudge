@@ -16,33 +16,79 @@ pub enum Action {
     SwitchAway,
 }
 
-/// Decides whether the timer should be reset after a popup interaction.
+/// The full plan for closing the popup, computed in one place from the spec
+/// §4 truth table. `decide_close` returns this; the caller (`NudgeApp::
+/// hide_popup`) is a thin executor that performs exactly the I/O the plan
+/// dictates — write the journal iff `write_journal`, reset the timer iff
+/// `reset_timer` is `Some`, clear the text fields iff `clear_form`.
 ///
-/// Spec §4: Esc and Switch on a manually-opened popup leave the timer alone
-/// (the user looked at the popup and put it away — there is no reason to
-/// punish them by rescheduling). Submit always resets, regardless of how
-/// the popup was opened: the user explicitly chose a new interval. And if
-/// the popup was triggered by the timer expiring, *any* close must reset,
-/// otherwise the now-zero deadline would refire the popup on the next
-/// frame.
-pub fn should_reset_timer(source: TriggerSource, action: Action) -> bool {
-    matches!(source, TriggerSource::Timer) || matches!(action, Action::Submit)
+/// Folding the four old `should_*` predicates + interval parsing into one
+/// outcome makes spec §4 a single coherent decision instead of four
+/// disconnected booleans an orchestrator had to re-assemble. The composed
+/// outcome — not the isolated booleans — is what historically broke (e.g.
+/// "timer-fired Esc must still reset or the popup refires"), so it is also
+/// the right test surface.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CloseOutcome {
+    /// Append a journal entry for this close. Only Submit with at least one
+    /// non-empty text field; the empty-Submit path is "change interval
+    /// without journaling".
+    pub write_journal: bool,
+    /// Reset the timer to this interval, or `None` to leave it ticking.
+    /// `Some` whenever the popup was timer-fired (its deadline is already in
+    /// the past — not rescheduling would refire instantly) or the user hit
+    /// Submit (they explicitly chose a new interval).
+    pub reset_timer: Option<Duration>,
+    /// Clear `doing` / `bullshit` after close. Only Submit; Esc and Switch
+    /// preserve them so the next open resumes where the user left off.
+    pub clear_form: bool,
 }
 
-/// Spec §4: Submit writes a journal entry only if at least one of the
-/// free-text fields is non-empty. An "Enter with empty fields" press is the
-/// dedicated path for «обновить интервал, ничего не записывая» — it still
-/// resets the timer (that's `should_reset_timer`'s job), but skips the
-/// journal write.
-pub fn should_write_journal(action: Action, doing: &str, bullshit: &str) -> bool {
-    action == Action::Submit && !(doing.trim().is_empty() && bullshit.trim().is_empty())
-}
+/// Decide everything that happens when the popup closes, from the spec §4
+/// truth table, in one place. `minutes_text` is the raw contents of the
+/// interval field.
+///
+/// Returns `Err(IntervalError)` only on the one validation path the spec
+/// defines: an explicit Submit carrying a parseably-invalid interval (e.g.
+/// "-5" or "0"). In that case the caller must surface the error and keep the
+/// popup open — there is no valid outcome to execute. Esc / Switch never
+/// error: they fall back to the 10-minute default so the popup always
+/// closes, even with garbage in the field.
+pub fn decide_close(
+    source: TriggerSource,
+    action: Action,
+    doing: &str,
+    bullshit: &str,
+    minutes_text: &str,
+) -> Result<CloseOutcome, IntervalError> {
+    // Parse the interval. A parse error means the user typed an explicit
+    // non-positive / non-finite number. On Submit that is a validation error
+    // (caller keeps the popup open). On Esc / Switch we silently fall back to
+    // the default so the popup still closes.
+    let interval = match parse_interval(minutes_text) {
+        Ok(d) => d,
+        Err(e) => {
+            if action == Action::Submit {
+                return Err(e);
+            }
+            Duration::from_secs(10 * 60)
+        }
+    };
 
-/// Spec §4: only Enter (Submit) clears `doing` / `bullshit` on close. Esc and
-/// Switch both preserve them so the next open resumes where the user left
-/// off — they share one row in the table and one rule here.
-pub fn should_clear_form(action: Action) -> bool {
-    matches!(action, Action::Submit)
+    // Timer-fired popup deadline is already in the past, so ANY close must
+    // reschedule; otherwise Submit (user chose a new interval) resets too.
+    let reset = matches!(source, TriggerSource::Timer) || matches!(action, Action::Submit);
+
+    // Submit writes only if at least one free-text field is non-empty.
+    let write_journal =
+        action == Action::Submit && !(doing.trim().is_empty() && bullshit.trim().is_empty());
+
+    Ok(CloseOutcome {
+        write_journal,
+        reset_timer: reset.then_some(interval),
+        // Only Submit clears the form; Esc and Switch preserve it.
+        clear_form: matches!(action, Action::Submit),
+    })
 }
 
 /// Error returned by `parse_interval` when the user typed a number that is
@@ -79,17 +125,23 @@ pub fn parse_interval(text: &str) -> Result<Duration, IntervalError> {
     Ok(Duration::from_secs_f64(minutes * 60.0))
 }
 
+/// Remaining whole minutes, rounded UP. Zero seconds stays 0 (the "now"
+/// state); any positive remainder rounds to the next whole minute. Shared
+/// by the tooltip text and its dedup key so the two never disagree.
+fn ceil_minutes(d: Duration) -> u64 {
+    let secs = d.as_secs();
+    if secs == 0 { 0 } else { (secs + 59) / 60 }
+}
+
 /// Tray tooltip text for the time remaining until the next nudge.
 /// Spec §5: `~N min` rounded UP to the next whole minute; `now` once the
 /// timer has expired (showing `~0 min` would read as a bug rather than
 /// "popup is about to appear").
 pub fn tooltip_for_remaining(d: Duration) -> String {
-    let secs = d.as_secs();
-    if secs == 0 {
-        return "now".to_string();
+    match ceil_minutes(d) {
+        0 => "now".to_string(),
+        mins => format!("~{} min", mins),
     }
-    let mins = (secs + 59) / 60;
-    format!("~{} min", mins)
 }
 
 /// Minute number that `tooltip_for_remaining` would render for this
@@ -97,12 +149,7 @@ pub fn tooltip_for_remaining(d: Duration) -> String {
 /// tooltip is only refreshed when the displayed number changes (spec §5:
 /// "обновляется раз в минуту"). The "now" state maps to 0.
 pub fn displayed_minutes(d: Duration) -> u64 {
-    let secs = d.as_secs();
-    if secs == 0 {
-        0
-    } else {
-        (secs + 59) / 60
-    }
+    ceil_minutes(d)
 }
 
 /// Labels for the tray context menu, in order. Spec §5: "Show Nudge", "Quit".
@@ -136,85 +183,136 @@ pub fn window_position(screen: (u32, u32), window: (u32, u32)) -> (i32, i32) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn timer_submit_resets() {
-        assert!(should_reset_timer(TriggerSource::Timer, Action::Submit));
+    // === decide_close: the spec §4 close decision, as one composed outcome ===
+    //
+    // These assert the whole `CloseOutcome` per row of the §4 truth table —
+    // the composition is what historically broke, not the isolated booleans
+    // it's built from. `D` is a valid interval ("5" → 5 minutes) so the
+    // reset field carries the parsed value, not a fallback.
+
+    /// 5 minutes as a Duration — the interval `"5"` parses to.
+    fn five_min() -> Duration {
+        Duration::from_secs(5 * 60)
     }
 
     #[test]
-    fn timer_dismiss_resets() {
-        // Structural: timer-fired popup has a deadline in the past — any
-        // close MUST set a new one, otherwise the popup refires.
-        assert!(should_reset_timer(TriggerSource::Timer, Action::Dismiss));
+    fn timer_submit_with_content_writes_resets_clears() {
+        // Timer-fired Enter with text: write the journal, reset to the chosen
+        // interval, clear the form.
+        let o = decide_close(TriggerSource::Timer, Action::Submit, "doing", "", "5").unwrap();
+        assert_eq!(
+            o,
+            CloseOutcome {
+                write_journal: true,
+                reset_timer: Some(five_min()),
+                clear_form: true,
+            }
+        );
     }
 
     #[test]
-    fn timer_switch_away_resets() {
-        // Same structural reason as timer_dismiss_resets.
-        assert!(should_reset_timer(TriggerSource::Timer, Action::SwitchAway));
+    fn timer_dismiss_resets_but_writes_nothing_and_keeps_form() {
+        // Structural rule (autopsy: nudge-electron 2026-04-20): a timer-fired
+        // popup's deadline is already in the past, so Esc MUST reschedule or
+        // the popup refires next frame. It still writes nothing and preserves
+        // the form.
+        let o = decide_close(TriggerSource::Timer, Action::Dismiss, "doing", "x", "5").unwrap();
+        assert_eq!(o.reset_timer, Some(five_min()), "timer-fired Esc must reset");
+        assert!(!o.write_journal);
+        assert!(!o.clear_form);
     }
 
     #[test]
-    fn manual_submit_resets() {
-        // User explicitly chose a new interval — apply it.
-        assert!(should_reset_timer(TriggerSource::Manual, Action::Submit));
+    fn timer_switch_away_also_resets() {
+        // Same structural reason as the Dismiss case.
+        let o = decide_close(TriggerSource::Timer, Action::SwitchAway, "", "", "5").unwrap();
+        assert_eq!(o.reset_timer, Some(five_min()));
+        assert!(!o.write_journal);
+        assert!(!o.clear_form);
     }
 
     #[test]
-    fn manual_dismiss_does_not_reset() {
-        // User opened the popup, changed their mind — don't reschedule.
-        assert!(!should_reset_timer(TriggerSource::Manual, Action::Dismiss));
+    fn manual_dismiss_leaves_timer_alone() {
+        // User opened the popup manually and changed their mind — the live
+        // timer keeps counting (reset_timer None), nothing is written, the
+        // form is preserved.
+        let o = decide_close(TriggerSource::Manual, Action::Dismiss, "doing", "x", "5").unwrap();
+        assert_eq!(o.reset_timer, None, "manual Esc must not reschedule");
+        assert!(!o.write_journal);
+        assert!(!o.clear_form);
     }
 
     #[test]
-    fn manual_switch_away_does_not_reset() {
-        // User looked away from a manually-opened popup. State is preserved
-        // (see hide_popup) and the still-live timer keeps counting.
-        assert!(!should_reset_timer(TriggerSource::Manual, Action::SwitchAway));
+    fn manual_switch_away_leaves_timer_alone() {
+        let o = decide_close(TriggerSource::Manual, Action::SwitchAway, "doing", "", "5").unwrap();
+        assert_eq!(o.reset_timer, None);
+        assert!(!o.write_journal);
+        assert!(!o.clear_form);
     }
 
     #[test]
-    fn submit_with_content_writes_journal() {
-        assert!(should_write_journal(Action::Submit, "doing thing", ""));
-        assert!(should_write_journal(Action::Submit, "", "yes"));
-        assert!(should_write_journal(Action::Submit, "x", "y"));
+    fn manual_submit_resets_even_though_manual() {
+        // Submit always resets, regardless of trigger source — the user
+        // explicitly chose a new interval.
+        let o = decide_close(TriggerSource::Manual, Action::Submit, "doing", "", "5").unwrap();
+        assert_eq!(o.reset_timer, Some(five_min()));
+        assert!(o.write_journal);
+        assert!(o.clear_form);
     }
 
     #[test]
-    fn submit_with_empty_fields_skips_journal() {
-        // The "change interval without journaling" path: Enter on empty
-        // fields updates the timer but writes nothing.
-        assert!(!should_write_journal(Action::Submit, "", ""));
-        assert!(!should_write_journal(Action::Submit, "   ", "\t\n"));
+    fn submit_with_empty_fields_is_change_interval_without_journaling() {
+        // The dedicated "обновить интервал, ничего не записывая" path: Enter
+        // on empty fields resets the timer but writes nothing. Whitespace-only
+        // counts as empty.
+        for (doing, bullshit) in [("", ""), ("   ", "\t\n")] {
+            let o =
+                decide_close(TriggerSource::Manual, Action::Submit, doing, bullshit, "5").unwrap();
+            assert!(!o.write_journal, "empty Submit must not write");
+            assert_eq!(o.reset_timer, Some(five_min()), "but it still resets");
+            assert!(o.clear_form);
+        }
     }
 
     #[test]
-    fn dismiss_never_writes_journal() {
-        assert!(!should_write_journal(Action::Dismiss, "doing", "bullshit"));
-        assert!(!should_write_journal(Action::Dismiss, "", ""));
+    fn submit_writes_when_either_field_nonempty() {
+        for (doing, bullshit) in [("x", ""), ("", "y"), ("x", "y")] {
+            let o =
+                decide_close(TriggerSource::Manual, Action::Submit, doing, bullshit, "5").unwrap();
+            assert!(o.write_journal, "Submit with content must write");
+        }
     }
 
     #[test]
-    fn switch_away_never_writes_journal() {
-        assert!(!should_write_journal(Action::SwitchAway, "doing", ""));
-        assert!(!should_write_journal(Action::SwitchAway, "", ""));
+    fn submit_with_invalid_interval_is_a_validation_error() {
+        // An explicit Submit carrying a parseably-invalid interval is the one
+        // path that yields no outcome — the caller keeps the popup open and
+        // shows the error.
+        for bad in ["0", "-5", "NaN"] {
+            let err = decide_close(TriggerSource::Manual, Action::Submit, "doing", "", bad)
+                .unwrap_err();
+            assert_eq!(err.input, bad);
+        }
     }
 
     #[test]
-    fn submit_clears_form() {
-        assert!(should_clear_form(Action::Submit));
+    fn dismiss_with_invalid_interval_falls_back_and_still_closes() {
+        // Esc / Switch never error: a garbage interval falls back to the
+        // 10-minute default so the popup always closes. Combined with a
+        // timer-fired source that means it resets to 10 minutes.
+        let o = decide_close(TriggerSource::Timer, Action::Dismiss, "doing", "", "-5").unwrap();
+        assert_eq!(o.reset_timer, Some(Duration::from_secs(10 * 60)));
+        assert!(!o.write_journal);
     }
 
     #[test]
-    fn dismiss_preserves_form() {
-        // Esc shares the spec §4 row with Switch — both keep doing/bullshit
-        // so the next open resumes where the user left off.
-        assert!(!should_clear_form(Action::Dismiss));
-    }
-
-    #[test]
-    fn switch_away_preserves_form() {
-        assert!(!should_clear_form(Action::SwitchAway));
+    fn manual_dismiss_with_invalid_interval_does_not_reset() {
+        // Garbage interval on a manual Esc: still no error, still no reset
+        // (the fallback interval is computed but unused because manual Esc
+        // doesn't reschedule).
+        let o = decide_close(TriggerSource::Manual, Action::Dismiss, "doing", "", "garbage")
+            .unwrap();
+        assert_eq!(o.reset_timer, None);
     }
 
     #[test]
