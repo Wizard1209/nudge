@@ -13,6 +13,7 @@
 //! for lower-DPI trays.
 
 use std::f32::consts::PI;
+use std::time::Duration;
 
 pub const ICON_SIZE: u32 = 64;
 pub const PETAL_COUNT: u8 = 12;
@@ -42,6 +43,81 @@ pub struct DriftState {
     pub petal_index: u8,
     /// 0.0 = just detached (still in place), 1.0 = fully gone.
     pub progress: f32,
+}
+
+/// The daisy state for one tick of the countdown, derived purely from the
+/// configured interval (`duration`) and how much of it has `elapsed`.
+///
+/// Spec §5 timing lives here: how many petals are still attached, the petal
+/// currently drifting away (if any), and whether enough time has passed —
+/// including the final drift — to fire the popup. The tray thread reads
+/// `elapsed` from the wall clock, calls [`frame_at`], then turns this into a
+/// `set_icon` + the `TIMER_FIRED` atomic. Keeping it pure lets the §5
+/// invariants run under `cargo test` without the Win32 message pump.
+#[derive(Clone, Copy, Debug)]
+pub struct DaisyFrame {
+    /// Petals still attached to the flower (0..=PETAL_COUNT). Feed straight
+    /// into [`render`]; excludes any petal animating in `drift`.
+    pub petals_remaining: u8,
+    /// The just-fallen petal mid-animation, or `None` outside a drift window.
+    pub drift: Option<DriftState>,
+    /// `true` once `elapsed` has reached `duration` plus the final drift —
+    /// the moment the popup should fire (spec §5: pop only after the last
+    /// petal has finished falling).
+    pub should_fire: bool,
+    /// Length of one petal's lifetime (`duration / PETAL_COUNT`). Exposed so
+    /// the tray loop can schedule its next wake until the next petal drop.
+    pub petal_duration: Duration,
+    /// Time since the most recent petal dropped. Pairs with `petal_duration`
+    /// for the tray loop's pre-drop wake scheduling.
+    pub time_since_drop: Duration,
+}
+
+/// Compute the daisy state for `elapsed` into an interval of length
+/// `duration` (spec §5 timing). Pure: no clock, no I/O.
+///
+/// Petals fall one per `duration / PETAL_COUNT`, in index order (0 at 12
+/// o'clock, clockwise). The freshly-dropped petal drifts for `drift_dur`
+/// — at most 250 ms, and never more than half a petal's lifetime so a
+/// drifting petal can't overrun the next drop on very short intervals.
+/// `elapsed` is allowed to grow past `duration` so the final drift can play
+/// out before `should_fire` flips.
+pub fn frame_at(duration: Duration, elapsed: Duration) -> DaisyFrame {
+    let petal_count_u64 = PETAL_COUNT as u64;
+    let petal_dur_nanos = (duration.as_nanos() as u64).max(1) / petal_count_u64;
+    let petal_dur = Duration::from_nanos(petal_dur_nanos);
+    let elapsed_nanos = elapsed.as_nanos() as u64;
+    let raw_drops = elapsed_nanos / petal_dur_nanos;
+    let petals_dropped = raw_drops.min(petal_count_u64) as u8;
+    let petals_remaining = PETAL_COUNT - petals_dropped;
+    let time_since_drop =
+        Duration::from_nanos(elapsed_nanos - (petals_dropped as u64) * petal_dur_nanos);
+    // Drift gets at most half a petal lifetime, so it can't run into
+    // the next drop even at silly-short intervals.
+    let drift_dur = Duration::from_millis(250).min(petal_dur / 2);
+
+    let drift = if petals_dropped > 0 && time_since_drop < drift_dur {
+        let progress =
+            (time_since_drop.as_secs_f32() / drift_dur.as_secs_f32()).clamp(0.0, 1.0);
+        Some(DriftState {
+            petal_index: petals_dropped - 1,
+            progress,
+        })
+    } else {
+        None
+    };
+
+    // Fire only after the very last drift has finished, so the user sees the
+    // final petal fall before the popup takes focus.
+    let should_fire = elapsed >= duration + drift_dur;
+
+    DaisyFrame {
+        petals_remaining,
+        drift,
+        should_fire,
+        petal_duration: petal_dur,
+        time_since_drop,
+    }
 }
 
 /// Render one frame of the daisy as a 64×64 RGBA buffer.
@@ -189,6 +265,79 @@ fn composite(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- frame_at: spec §5 timeline invariants ----------------------------
+    //
+    // Expected values are derived from the same integer/float arithmetic
+    // frame_at runs, to pin CURRENT behavior. With PETAL_COUNT = 12 and a
+    // 120 s interval, one petal falls every 10 s and the drift window is
+    // min(250 ms, 10 s / 2) = 250 ms.
+
+    const DUR_120S: Duration = Duration::from_secs(120);
+
+    #[test]
+    fn mid_interval_steady_state_has_no_drift() {
+        // 35 s in: 35 / 10 = 3 petals dropped, 9 remaining; 5 s since the
+        // last drop, well past the 250 ms drift window → no drift.
+        let f = frame_at(DUR_120S, Duration::from_secs(35));
+        assert_eq!(f.petals_remaining, 9);
+        assert!(f.drift.is_none(), "5 s after a drop is past the drift window");
+        assert!(!f.should_fire);
+        assert_eq!(f.petal_duration, Duration::from_secs(10));
+        assert_eq!(f.time_since_drop, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn just_after_petal_drops_has_drift_near_zero() {
+        // Exactly 30 s in: the 3rd petal (index 2) has just detached. Drift
+        // present with progress 0.0 and petals_remaining already decremented.
+        let f = frame_at(DUR_120S, Duration::from_secs(30));
+        assert_eq!(f.petals_remaining, 9);
+        let d = f.drift.expect("a petal just dropped → drift present");
+        assert_eq!(d.petal_index, 2);
+        assert!(d.progress.abs() < 1e-6, "progress ≈ 0 at the instant of drop");
+        assert_eq!(f.time_since_drop, Duration::ZERO);
+        assert!(!f.should_fire);
+    }
+
+    #[test]
+    fn fires_only_after_final_drift_completes() {
+        // drift_dur = 250 ms, so should_fire flips at duration + 250 ms.
+        let just_before = frame_at(DUR_120S, DUR_120S + Duration::from_millis(200));
+        assert!(!just_before.should_fire, "200 ms past expiry < 250 ms drift");
+
+        let just_after = frame_at(DUR_120S, DUR_120S + Duration::from_millis(300));
+        assert!(just_after.should_fire, "300 ms past expiry ≥ 250 ms drift");
+        // All petals gone by expiry; the count caps at PETAL_COUNT.
+        assert_eq!(just_after.petals_remaining, 0);
+
+        // Boundary is inclusive (elapsed >= duration + drift_dur).
+        let exact = frame_at(DUR_120S, DUR_120S + Duration::from_millis(250));
+        assert!(exact.should_fire);
+    }
+
+    #[test]
+    fn short_interval_clamps_drift_before_next_petal() {
+        // 1.2 s interval → petal_dur = 100 ms, drift_dur = min(250, 50) = 50 ms.
+        // The drift window must close before the next petal drops at 100 ms.
+        let dur = Duration::from_millis(1200);
+
+        // 20 ms after the 1st drop: inside the 50 ms drift window.
+        let inside = frame_at(dur, Duration::from_millis(120));
+        assert_eq!(inside.petals_remaining, 11);
+        let d = inside.drift.expect("20 ms after a drop is inside drift");
+        assert_eq!(d.petal_index, 0);
+
+        // 60 ms after the 1st drop: past the 50 ms clamp but the next petal
+        // (at 100 ms) hasn't dropped yet → no drift, still 11 remaining.
+        let after = frame_at(dur, Duration::from_millis(160));
+        assert_eq!(after.petals_remaining, 11);
+        assert!(
+            after.drift.is_none(),
+            "drift must clamp shut before the next petal drops"
+        );
+        assert_eq!(after.petal_duration, Duration::from_millis(100));
+    }
 
     fn alpha_at(buf: &[u8], x: u32, y: u32) -> u8 {
         let i = ((y * ICON_SIZE + x) * 4 + 3) as usize;

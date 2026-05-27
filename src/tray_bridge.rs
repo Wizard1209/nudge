@@ -356,31 +356,12 @@ fn tray_thread_main(hotkey: Option<Hotkey>) {
                 .saturating_sub(timer.deadline.duration_since(now))
         };
 
-        let petal_count_u64 = daisy::PETAL_COUNT as u64;
-        let petal_dur_nanos = (timer.duration.as_nanos() as u64).max(1) / petal_count_u64;
-        let petal_dur = Duration::from_nanos(petal_dur_nanos);
-        let elapsed_nanos = elapsed.as_nanos() as u64;
-        let raw_drops = elapsed_nanos / petal_dur_nanos;
-        let petals_dropped = raw_drops.min(petal_count_u64) as u8;
-        let petals_remaining = daisy::PETAL_COUNT - petals_dropped;
-        let time_since_drop = Duration::from_nanos(
-            elapsed_nanos - (petals_dropped as u64) * petal_dur_nanos,
-        );
-        // Drift gets at most half a petal lifetime, so it can't run into
-        // the next drop even at silly-short intervals.
-        let drift_dur = Duration::from_millis(250).min(petal_dur / 2);
-
-        let drift = if petals_dropped > 0 && time_since_drop < drift_dur {
-            let progress = (time_since_drop.as_secs_f32()
-                / drift_dur.as_secs_f32())
-            .clamp(0.0, 1.0);
-            Some(daisy::DriftState {
-                petal_index: petals_dropped - 1,
-                progress,
-            })
-        } else {
-            None
-        };
+        // Spec §5 timeline math lives in `daisy::frame_at` (pure + tested);
+        // the tray thread keeps only the wall-clock measurement above and the
+        // Win32 I/O below.
+        let frame = daisy::frame_at(timer.duration, elapsed);
+        let petals_remaining = frame.petals_remaining;
+        let drift = frame.drift;
 
         let drift_scaled = drift.map(|d| (d.progress * 100.0) as u16).unwrap_or(0);
         let key = (petals_remaining, drift_scaled, drift.is_some());
@@ -405,11 +386,10 @@ fn tray_thread_main(hotkey: Option<Hotkey>) {
             last_tooltip_minutes = Some(mins_now);
         }
 
-        // Time to fire the popup? Wait for the very last drift to finish so
-        // the user actually sees the final petal fall before the popup
-        // takes focus.
-        let final_drift_done = elapsed >= timer.duration + drift_dur;
-        if final_drift_done && fired_for_deadline != Some(timer.deadline) {
+        // Time to fire the popup? `frame.should_fire` waits for the very last
+        // drift to finish so the user actually sees the final petal fall
+        // before the popup takes focus.
+        if frame.should_fire && fired_for_deadline != Some(timer.deadline) {
             fired_for_deadline = Some(timer.deadline);
             TIMER_FIRED.store(true, Ordering::SeqCst);
             if let Some(hwnd_val) = load_hwnd() {
@@ -428,7 +408,7 @@ fn tray_thread_main(hotkey: Option<Hotkey>) {
         } else {
             // Until the next petal drop, clamped to a minute as a sanity
             // backstop in case the system clock jumps.
-            let to_next = petal_dur.saturating_sub(time_since_drop);
+            let to_next = frame.petal_duration.saturating_sub(frame.time_since_drop);
             (to_next.as_millis() as u32).min(60_000)
         };
 
