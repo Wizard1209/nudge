@@ -262,14 +262,36 @@ fn native_window_passes_llm_vision_judge() {
         eprintln!("[llm-judge] wrote judged image to {path}");
     }
 
-    // Default gpt-4o: gpt-4o-mini's vision can't resolve the ~20px text inset
-    // on this transparent card over a busy desktop — it false-fails a CORRECT
-    // render at full/half/low resolution alike (a capability ceiling, not a
-    // cost knob). Override with OPENAI_JUDGE_MODEL=gpt-4o-mini at your peril.
-    let model = std::env::var("OPENAI_JUDGE_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
+    // ── Judge model menu (OpenAI API, current as of 2026-05) ─────────────
+    // Per-call cost is a fraction of a cent on ANY of these (one small
+    // screenshot + tiny JSON, run rarely), so pick for vision quality, not
+    // price. The bug is the ~20px text inset on a transparent card over a busy
+    // desktop — fine enough that gpt-4o-mini's vision CAN'T resolve it and
+    // false-fails a CORRECT render at full/half/low res alike (a capability
+    // ceiling, not a cost knob — observed). gpt-4o cleared it; gpt-5.4-mini is
+    // the newer-gen default (stronger vision + reasoning).
+    //
+    //   OPENAI_JUDGE_MODEL    in→out $/1M     notes
+    //   gpt-5.5               $5.00 → $30.00   flagship, max reliability
+    //   gpt-5.4               $2.50 → $15.00   strong, cheaper flagship
+    //   gpt-5.4-mini  (def)   $0.75 →  $4.50   best quality/cost (5.x vision+reasoning)
+    //   gpt-5.4-nano          $0.20 →  $1.25   cheapest 5.x; coarse checks only
+    //   gpt-4o                $2.50 → $10.00   legacy, cleared this bug
+    //   gpt-4o-mini           legacy           too weak — false-fails (see above)
+    let model = std::env::var("OPENAI_JUDGE_MODEL").unwrap_or_else(|_| "gpt-5.4-mini".to_string());
+
+    // GPT-5.x / o-series are *reasoning* models: on /v1/chat/completions they
+    // REJECT `max_tokens` (require `max_completion_tokens`), spend hidden
+    // reasoning tokens out of that budget before the JSON, and don't take a
+    // custom `temperature`. Legacy gpt-4o* use the old `max_tokens`+`temperature`
+    // shape. Branch on the family so OPENAI_JUDGE_MODEL "just works" either way.
+    // `reasoning_effort` (OPENAI_JUDGE_EFFORT, default "low") is the 5.x
+    // quality/cost knob — "low" is plenty for one focused check.
+    let is_reasoning = model.starts_with("gpt-5") || model.starts_with('o');
+    let effort = std::env::var("OPENAI_JUDGE_EFFORT").unwrap_or_else(|_| "low".to_string());
     // Cost knobs: OPENAI_JUDGE_DETAIL "low" (default) sends one flat ~512px /
-    // ~85-token tile — gpt-4o still judges correctly and it's ~13× cheaper than
-    // "high". OPENAI_JUDGE_SCALE downscales the PNG before encoding (1.0 = full).
+    // ~85-token tile — judged correctly and ~13× cheaper than "high".
+    // OPENAI_JUDGE_SCALE downscales the PNG before encoding (1.0 = full).
     let scale: f32 = std::env::var("OPENAI_JUDGE_SCALE")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -277,17 +299,15 @@ fn native_window_passes_llm_vision_judge() {
     let detail = std::env::var("OPENAI_JUDGE_DETAIL").unwrap_or_else(|_| "low".to_string());
     let png = cap.png_bytes_scaled(scale);
     eprintln!(
-        "[llm-judge] model={model} scale={scale} detail={detail} png_bytes={}",
+        "[llm-judge] model={model} reasoning={is_reasoning} effort={effort} scale={scale} detail={detail} png_bytes={}",
         png.len()
     );
     let data_url = format!(
         "data:image/png;base64,{}",
         base64::engine::general_purpose::STANDARD.encode(&png)
     );
-    let request = serde_json::json!({
+    let mut request = serde_json::json!({
         "model": model,
-        "temperature": 0,
-        "max_tokens": 200,
         "response_format": { "type": "json_object" },
         "messages": [{
             "role": "user",
@@ -297,6 +317,15 @@ fn native_window_passes_llm_vision_judge() {
             ]
         }]
     });
+    if is_reasoning {
+        // Generous cap so reasoning tokens don't starve the JSON answer; you're
+        // billed only for tokens actually generated, so a high cap is free.
+        request["max_completion_tokens"] = serde_json::json!(4000);
+        request["reasoning_effort"] = serde_json::json!(effort);
+    } else {
+        request["max_tokens"] = serde_json::json!(200);
+        request["temperature"] = serde_json::json!(0);
+    }
 
     let response = ureq::post("https://api.openai.com/v1/chat/completions")
         .set("Authorization", &format!("Bearer {api_key}"))

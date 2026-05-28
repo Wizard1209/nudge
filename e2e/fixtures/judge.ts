@@ -44,7 +44,8 @@ function cropPng(buf: Buffer, r: Region): Buffer {
 }
 
 /**
- * Send a screenshot to gpt-4o-mini and judge whether it satisfies the assertion.
+ * Send a screenshot to the judge model (default gpt-5.4-nano) and judge whether
+ * it satisfies the assertion.
  *
  * Stability comes from three things:
  *   1) Prompts assert ONE atomic visual fact (no "X visible AND no Y" compounds).
@@ -61,11 +62,32 @@ export async function visualAssert(
     const cropped = opts.region ? cropPng(screenshot, opts.region) : screenshot
     const base64 = cropped.toString("base64")
 
+    // gpt-5.4-nano is the cheap default ($0.20→$1.25 /1M); these e2e checks are
+    // coarse atomic facts (card present, three rows, typed text), so nano's
+    // vision is plenty. Override with OPENAI_JUDGE_MODEL.
+    //
+    // GPT-5.x / o-series are *reasoning* models: on chat/completions they reject
+    // `max_tokens` (need `max_completion_tokens`), burn hidden reasoning tokens
+    // out of that budget, and don't take a custom `temperature`. Legacy gpt-4o*
+    // use the old shape. Branch so either family works.
+    const model = process.env.OPENAI_JUDGE_MODEL ?? "gpt-5.4-nano"
+    const isReasoning = model.startsWith("gpt-5") || model.startsWith("o")
+    // Reasoning models run at temperature=1 (they REJECT temperature:0), so
+    // their verdict has some sampling jitter; effort is the only stability /
+    // quality lever. Default "low"; raise via OPENAI_JUDGE_EFFORT.
+    const effort = (process.env.OPENAI_JUDGE_EFFORT ?? "low") as
+        | "low"
+        | "medium"
+        | "high"
+
     const response = await client.chat.completions.create({
-        model: "gpt-4o-mini",
-        temperature: 0,
+        model,
         response_format: { type: "json_object" },
-        max_tokens: 200,
+        // High cap so reasoning tokens don't starve the JSON; billed only for
+        // tokens actually generated.
+        ...(isReasoning
+            ? { max_completion_tokens: 2000, reasoning_effort: effort }
+            : { max_tokens: 200, temperature: 0 }),
         messages: [
             {
                 role: "user",
