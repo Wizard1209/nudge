@@ -34,6 +34,7 @@ mod wasm_entry {
 
 #[cfg(target_arch = "wasm32")]
 mod app;
+pub mod autostart;
 pub mod config;
 #[cfg(target_os = "windows")]
 pub mod daisy;

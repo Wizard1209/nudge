@@ -3,6 +3,8 @@
 #[cfg(not(target_arch = "wasm32"))]
 mod app;
 #[cfg(not(target_arch = "wasm32"))]
+mod autostart;
+#[cfg(not(target_arch = "wasm32"))]
 mod config;
 #[cfg(target_os = "windows")]
 mod daisy;
@@ -18,10 +20,77 @@ mod tray_bridge;
 #[cfg(not(target_arch = "wasm32"))]
 mod word_jump;
 
+/// Exercise the real autostart provider against the live registry and report
+/// PASS/FAIL, restoring whatever state we found. A manual QA tool — the
+/// registry can't be unit-tested in CI/WSL — invoked via
+/// `nudge --autostart-selftest`. Cross-check independently with
+/// `scripts/autostart-check.ps1`.
+#[cfg(target_os = "windows")]
+fn run_autostart_selftest() -> ! {
+    use autostart::{AutostartProvider, RUN_SUBKEY, RUN_VALUE_NAME, WindowsRegistryProvider};
+
+    macro_rules! fail {
+        ($($a:tt)*) => {{ eprintln!("[selftest] FAIL: {}", format!($($a)*)); std::process::exit(1); }};
+    }
+
+    let provider = match WindowsRegistryProvider::for_current_exe() {
+        Ok(p) => p,
+        Err(e) => fail!("{e}"),
+    };
+    println!("[selftest] HKCU\\{RUN_SUBKEY} value \"{RUN_VALUE_NAME}\"");
+
+    let initial = match provider.is_enabled() {
+        Ok(v) => v,
+        Err(e) => fail!("is_enabled (initial): {e}"),
+    };
+    println!("[selftest] initial is_enabled = {initial}");
+
+    if let Err(e) = provider.enable() {
+        fail!("enable: {e}");
+    }
+    let after_enable = provider.is_enabled().unwrap_or(false);
+    println!("[selftest] after enable  -> is_enabled = {after_enable} (want true)");
+
+    if let Err(e) = provider.disable() {
+        fail!("disable: {e}");
+    }
+    let after_disable = provider.is_enabled().unwrap_or(true);
+    println!("[selftest] after disable -> is_enabled = {after_disable} (want false)");
+
+    // Leave the registry exactly as we found it.
+    let restore = if initial {
+        provider.enable()
+    } else {
+        provider.disable()
+    };
+    if let Err(e) = restore {
+        fail!("restore to {initial}: {e}");
+    }
+    println!("[selftest] restored is_enabled = {initial}");
+
+    if after_enable && !after_disable {
+        println!("[selftest] PASS");
+        std::process::exit(0);
+    }
+    fail!("enable/disable cycle did not flip the value as expected");
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
     use app::NudgeApp;
     use eframe::egui;
+
+    // Manual registry QA hook — runs the autostart lifecycle and exits before
+    // any GUI / config work. Windows-only; a no-op stub elsewhere.
+    if std::env::args().skip(1).any(|a| a == "--autostart-selftest") {
+        #[cfg(target_os = "windows")]
+        run_autostart_selftest();
+        #[cfg(not(target_os = "windows"))]
+        {
+            eprintln!("[nudge] --autostart-selftest is only supported on Windows");
+            std::process::exit(2);
+        }
+    }
 
     // Load the user config (or use defaults). Bad / missing files are
     // logged but never fatal — the app must always come up.
