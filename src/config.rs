@@ -30,6 +30,13 @@ pub struct Config {
     /// `resolved_interval_minutes` — see that method for the fallback rule.
     #[serde(default = "default_interval_minutes_value")]
     pub default_interval_minutes: f64,
+
+    /// Whether the app is registered to launch at OS login. Mirrors the
+    /// confirmed system state (registry on Windows): the autostart provider
+    /// writes this `true` only after the OS-level change succeeds. Opt-in, so
+    /// it defaults to false for new installs and pre-field config files.
+    #[serde(default)]
+    pub autostart: bool,
 }
 
 fn default_hotkey_label() -> String {
@@ -45,6 +52,7 @@ impl Default for Config {
         Self {
             hotkey: default_hotkey_label(),
             default_interval_minutes: default_interval_minutes_value(),
+            autostart: false,
         }
     }
 }
@@ -75,14 +83,15 @@ impl Config {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+/// Read/write failure shared by the native (file) and WASM (localStorage)
+/// stores. `path` is the file path on native or `localStorage:<key>` on WASM
+/// so the message points at the right place regardless of backend.
 #[derive(Debug, Clone)]
 pub enum ConfigError {
     Io { path: String, detail: String },
     Parse { path: String, detail: String },
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl std::fmt::Display for ConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -92,7 +101,6 @@ impl std::fmt::Display for ConfigError {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl std::error::Error for ConfigError {}
 
 /// Default config path: `<Documents>/Nudge/config.json`. Same root as the
@@ -195,6 +203,120 @@ pub fn ensure_default_written(path: &std::path::Path) -> Result<(), ConfigError>
     })
 }
 
+/// Atomically persist `config` to `path`. Writes a sibling `<path>.tmp` then
+/// renames it over the target, so a concurrent reader (or a crash mid-write)
+/// never observes a half-written config. Creates parent dirs as needed.
+///
+/// This is the write half of the source-of-truth contract: the settings
+/// process saves here, the running app re-reads via `load_or_default`. The
+/// temp lives in the same directory as the target so the rename stays on one
+/// filesystem (cross-device renames aren't atomic). `std::fs::rename` maps to
+/// `MoveFileExW(MOVEFILE_REPLACE_EXISTING)` on Windows, so it replaces an
+/// existing config in place.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn save(path: &std::path::Path, config: &Config) -> Result<(), ConfigError> {
+    use std::fs;
+    let path_str = path.display().to_string();
+
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).map_err(|e| ConfigError::Io {
+                path: path_str.clone(),
+                detail: e.to_string(),
+            })?;
+        }
+    }
+
+    let body = serde_json::to_string_pretty(config).map_err(|e| ConfigError::Parse {
+        path: path_str.clone(),
+        detail: e.to_string(),
+    })?;
+
+    let mut tmp_os = path.as_os_str().to_owned();
+    tmp_os.push(".tmp");
+    let tmp = std::path::PathBuf::from(tmp_os);
+
+    fs::write(&tmp, body).map_err(|e| ConfigError::Io {
+        path: tmp.display().to_string(),
+        detail: e.to_string(),
+    })?;
+
+    fs::rename(&tmp, path).map_err(|e| {
+        // A failed rename must not leave the temp file littering the dir.
+        let _ = fs::remove_file(&tmp);
+        ConfigError::Io {
+            path: path_str,
+            detail: e.to_string(),
+        }
+    })
+}
+
+/// localStorage key holding the persisted config in the browser build.
+#[cfg(target_arch = "wasm32")]
+const LOCALSTORAGE_KEY: &str = "nudge-config";
+
+#[cfg(target_arch = "wasm32")]
+fn localstorage() -> Result<web_sys::Storage, ConfigError> {
+    web_sys::window()
+        .and_then(|w| w.local_storage().ok())
+        .flatten()
+        .ok_or_else(|| ConfigError::Io {
+            path: format!("localStorage:{LOCALSTORAGE_KEY}"),
+            detail: "localStorage unavailable".to_string(),
+        })
+}
+
+/// Load config from localStorage (WASM), or `Config::default()` if absent or
+/// malformed. The browser analogue of `load_or_default`, with the same
+/// forgiving rule: a missing blob is not an error; a malformed one returns the
+/// default alongside the error so the caller can log it.
+#[cfg(target_arch = "wasm32")]
+pub fn load_from_localstorage() -> (Config, Option<ConfigError>) {
+    let storage = match localstorage() {
+        Ok(s) => s,
+        Err(e) => return (Config::default(), Some(e)),
+    };
+    let raw = match storage.get_item(LOCALSTORAGE_KEY) {
+        Ok(Some(s)) if !s.is_empty() => s,
+        Ok(_) => return (Config::default(), None),
+        Err(_) => {
+            return (
+                Config::default(),
+                Some(ConfigError::Io {
+                    path: format!("localStorage:{LOCALSTORAGE_KEY}"),
+                    detail: "get_item failed".to_string(),
+                }),
+            );
+        }
+    };
+    match serde_json::from_str::<Config>(&raw) {
+        Ok(cfg) => (cfg, None),
+        Err(e) => (
+            Config::default(),
+            Some(ConfigError::Parse {
+                path: format!("localStorage:{LOCALSTORAGE_KEY}"),
+                detail: e.to_string(),
+            }),
+        ),
+    }
+}
+
+/// Persist config to localStorage (WASM). The browser analogue of `save`.
+#[cfg(target_arch = "wasm32")]
+pub fn save_to_localstorage(config: &Config) -> Result<(), ConfigError> {
+    let body = serde_json::to_string(config).map_err(|e| ConfigError::Parse {
+        path: format!("localStorage:{LOCALSTORAGE_KEY}"),
+        detail: e.to_string(),
+    })?;
+    let storage = localstorage()?;
+    storage
+        .set_item(LOCALSTORAGE_KEY, &body)
+        .map_err(|_| ConfigError::Io {
+            path: format!("localStorage:{LOCALSTORAGE_KEY}"),
+            detail: "set_item failed".to_string(),
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,6 +401,12 @@ mod tests {
             assert!(invalid, "{bad} should be flagged invalid");
             assert_eq!(mins, 10.0, "{bad} should fall back to 10.0");
         }
+    }
+
+    #[test]
+    fn autostart_defaults_to_false() {
+        // New installs must never silently register for autostart — opt-in only.
+        assert!(!Config::default().autostart);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -449,6 +577,101 @@ mod tests {
             ensure_default_written(&path).unwrap();
             let body = std::fs::read_to_string(&path).unwrap();
             assert!(body.contains("Alt+J"), "user value preserved");
+        }
+
+        #[test]
+        fn autostart_field_round_trips() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.json");
+            std::fs::write(
+                &path,
+                r#"{"hotkey":"Ctrl+Shift+Space","autostart":true}"#,
+            )
+            .unwrap();
+            let (cfg, err) = load_or_default(&path);
+            assert!(err.is_none());
+            assert!(cfg.autostart);
+        }
+
+        #[test]
+        fn missing_autostart_field_defaults_false() {
+            // Configs written before the autostart field existed must still
+            // parse, with autostart taking its serde default of false.
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.json");
+            std::fs::write(&path, r#"{"hotkey":"Alt+J"}"#).unwrap();
+            let (cfg, err) = load_or_default(&path);
+            assert!(err.is_none());
+            assert!(!cfg.autostart);
+        }
+
+        #[test]
+        fn save_round_trips_through_load() {
+            // save() then load_or_default() must reproduce the exact config —
+            // this is the source-of-truth contract the settings window relies on.
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.json");
+            let cfg = Config {
+                hotkey: "Alt+J".to_string(),
+                default_interval_minutes: 7.0,
+                autostart: true,
+            };
+            save(&path, &cfg).unwrap();
+            let (loaded, err) = load_or_default(&path);
+            assert!(err.is_none());
+            assert_eq!(loaded, cfg);
+        }
+
+        #[test]
+        fn save_creates_parent_dirs() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("nested").join("config.json");
+            save(&path, &Config::default()).unwrap();
+            assert!(path.exists());
+        }
+
+        #[test]
+        fn save_overwrites_existing() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.json");
+            save(
+                &path,
+                &Config {
+                    autostart: false,
+                    ..Config::default()
+                },
+            )
+            .unwrap();
+            save(
+                &path,
+                &Config {
+                    autostart: true,
+                    ..Config::default()
+                },
+            )
+            .unwrap();
+            let (loaded, _) = load_or_default(&path);
+            assert!(loaded.autostart);
+        }
+
+        #[test]
+        fn save_leaves_no_temp_file() {
+            // Atomic write writes a sibling temp then renames; the temp must
+            // never survive a successful save.
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.json");
+            save(&path, &Config::default()).unwrap();
+            let mut entries: Vec<String> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect();
+            entries.sort();
+            assert_eq!(
+                entries,
+                vec!["config.json".to_string()],
+                "only the final file should remain"
+            );
         }
     }
 }
