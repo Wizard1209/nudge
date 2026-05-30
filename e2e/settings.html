@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <link data-trunk rel="rust" href="../Cargo.toml" data-target-name="nudge_web" />
+    <meta charset="utf-8">
+    <title>Nudge — Settings</title>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background: #1f2128;
+        }
+        canvas { display: block; width: 100%; height: 100%; background: transparent; }
+    </style>
+</head>
+<body>
+    <!-- Same canvas id as index.html so the shared wasm_entry::start hooks
+         the same DOM element. The settings vs. popup branch is decided by
+         the URL: settings.html (or anything containing "settings" in the
+         path or query) boots the SettingsApp; everything else boots the
+         spotlight popup. -->
+    <canvas id="nudge_canvas"></canvas>
+</body>
+</html>

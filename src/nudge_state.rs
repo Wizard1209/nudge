@@ -152,8 +152,9 @@ pub fn displayed_minutes(d: Duration) -> u64 {
     ceil_minutes(d)
 }
 
-/// Labels for the tray context menu, in order. Spec §5: "Show Nudge", "Quit".
-pub const TRAY_MENU_LABELS: [&str; 2] = ["Show Nudge", "Quit"];
+/// Labels for the tray context menu, in order. Spec §5: tray language is
+/// English. "Settings" sits between "Show Nudge" and "Quit" — visit-then-bye.
+pub const TRAY_MENU_LABELS: [&str; 3] = ["Show Nudge", "Settings", "Quit"];
 
 /// How often `update()` should re-run. `None` when the popup is hidden:
 /// tray clicks and the timer-expiry thread wake the event loop via
@@ -388,7 +389,9 @@ mod tests {
 
     #[test]
     fn tray_menu_labels_match_spec() {
-        assert_eq!(TRAY_MENU_LABELS, ["Show Nudge", "Quit"]);
+        // Spec §5: tray language is English. "Settings" sits between the
+        // show and quit items so the menu reads visit-configure-bye.
+        assert_eq!(TRAY_MENU_LABELS, ["Show Nudge", "Settings", "Quit"]);
     }
 
     #[test]

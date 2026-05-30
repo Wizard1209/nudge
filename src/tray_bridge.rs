@@ -261,12 +261,15 @@ fn tray_thread_main(hotkey: Option<Hotkey>) {
     use tray_icon::menu::{Menu, MenuItem};
 
     let menu = Menu::new();
-    let [show_label, quit_label] = nudge_state::TRAY_MENU_LABELS;
+    let [show_label, settings_label, quit_label] = nudge_state::TRAY_MENU_LABELS;
     let show_item = MenuItem::new(show_label, true, None);
+    let settings_item = MenuItem::new(settings_label, true, None);
     let quit_item = MenuItem::new(quit_label, true, None);
     menu.append(&show_item).unwrap();
+    menu.append(&settings_item).unwrap();
     menu.append(&quit_item).unwrap();
     let show_id = show_item.id().clone();
+    let settings_id = settings_item.id().clone();
     let quit_id = quit_item.id().clone();
 
     let initial_rgba = daisy::render(daisy::PETAL_COUNT, None);
@@ -311,11 +314,21 @@ fn tray_thread_main(hotkey: Option<Hotkey>) {
                 set_tray_clicked();
                 wake_eframe();
             }
+            if event.id == settings_id {
+                // Spawn a second instance of nudge.exe with --settings.
+                // The two processes communicate ONLY through config.json
+                // (and the registry for autostart). We fire-and-forget; a
+                // failed spawn is logged-and-ignored — settings are also
+                // editable by hand per spec §5.
+                if let Ok(exe) = std::env::current_exe() {
+                    let _ = std::process::Command::new(exe).arg("--settings").spawn();
+                }
+            }
         },
     ));
 
     // Hold these so they aren't dropped — menu only keeps weak refs.
-    let _menu_items = (show_item, quit_item);
+    let _menu_items = (show_item, settings_item, quit_item);
 
     // We dedupe identical icon updates so set_icon isn't called every loop.
     // State key: (petals_remaining, drift_progress_x100, drift_active).

@@ -89,11 +89,11 @@ where
     persist(config).map_err(AutostartError::Persist)
 }
 
-/// In-memory provider for tests and the WASM build (no real registry in the
-/// browser). Tracks the enabled flag and can be told to fail a given call.
-/// Deliberately absent from the native release binary, which only ever uses
-/// the real OS provider.
-#[cfg(any(test, target_arch = "wasm32"))]
+/// In-memory provider. Always available — used by tests, by the WASM build
+/// (no real registry in the browser), and by the native settings UI as a
+/// safety-net fallback when the real provider can't be constructed
+/// (e.g. `current_exe()` failed). The native main + tray code paths still
+/// only use `WindowsRegistryProvider` in practice.
 pub struct FakeProvider {
     enabled: std::cell::Cell<bool>,
     fail_enable: bool,
@@ -103,7 +103,6 @@ pub struct FakeProvider {
     lie_on_confirm: bool,
 }
 
-#[cfg(any(test, target_arch = "wasm32"))]
 impl FakeProvider {
     pub fn new(enabled: bool) -> Self {
         Self {
@@ -113,18 +112,24 @@ impl FakeProvider {
             lie_on_confirm: false,
         }
     }
+    // The failure-injecting constructors are exercised only by unit tests
+    // (settings_app + autostart). They stay cfg(test) so the release binary
+    // doesn't carry dead public API.
+    #[cfg(test)]
     pub fn failing_enable() -> Self {
         Self {
             fail_enable: true,
             ..Self::new(false)
         }
     }
+    #[cfg(test)]
     pub fn failing_disable() -> Self {
         Self {
             fail_disable: true,
             ..Self::new(true)
         }
     }
+    #[cfg(test)]
     pub fn unconfirmed() -> Self {
         Self {
             lie_on_confirm: true,
@@ -133,7 +138,6 @@ impl FakeProvider {
     }
 }
 
-#[cfg(any(test, target_arch = "wasm32"))]
 impl AutostartProvider for FakeProvider {
     fn enable(&self) -> Result<(), String> {
         if self.fail_enable {
