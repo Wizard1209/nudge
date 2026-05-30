@@ -20,6 +20,7 @@
 
 use crate::autostart::{AutostartError, AutostartProvider, apply_autostart};
 use crate::config::{Config, ConfigError};
+use crate::hotkey::{self, Hotkey};
 
 /// CLI flag that boots `nudge.exe` into the settings UI instead of the
 /// popup. Single source of truth so the tray dispatch (spawn) and the main
@@ -212,6 +213,68 @@ fn format_interval(n: f64) -> String {
 }
 
 // =============================================================================
+// Recorder decision logic — pure, no egui frame, fully unit-testable.
+// =============================================================================
+
+/// What the per-frame recorder loop wants the shell to do, given the current
+/// egui input snapshot. Split out from the eframe shell so the policy
+/// (cancel-on-bare-Esc, capture-first-supported-key, hint-on-unsupported)
+/// can be tested without spinning a real `Context`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CaptureOutcome {
+    /// A supported combo was pressed — write `format(hk)` into the form and
+    /// leave recording mode.
+    Captured(Hotkey),
+    /// A non-modifier key was pressed, but our supported set rejects it —
+    /// stay in recording mode and show a hint.
+    Unsupported,
+    /// User pressed Escape with no modifiers — cancel recording (restore
+    /// the prior hotkey, leave recording mode). With modifiers held, Esc
+    /// is treated as a real combo (Ctrl+Shift+Esc et al. are legal).
+    CancelRequested,
+    /// No actionable input this frame; keep waiting.
+    KeepWaiting,
+}
+
+/// Per-frame recorder decision. `keys` is the snapshot of non-modifier keys
+/// reported by egui as currently down (we ignore modifier-only keys because
+/// egui doesn't surface raw Ctrl/Alt/Shift as `Key` variants in the first
+/// place — see `hotkey_from_egui` notes).
+///
+/// Policy:
+/// 1. Bare Escape (no modifiers held) → `CancelRequested`. With modifiers,
+///    Escape passes through to the normal capture path (so Ctrl+Esc records).
+/// 2. First non-modifier key in `keys` that maps via `hotkey_from_egui` →
+///    `Captured`.
+/// 3. First non-modifier key in `keys` that DOESN'T map → `Unsupported`.
+/// 4. No keys → `KeepWaiting`.
+pub fn decide_capture(
+    modifiers: eframe::egui::Modifiers,
+    keys: &[eframe::egui::Key],
+) -> CaptureOutcome {
+    use eframe::egui::Key;
+
+    let Some(first_key) = keys.first().copied() else {
+        return CaptureOutcome::KeepWaiting;
+    };
+
+    // Bare Escape cancels. With any modifier held, Esc is just another key.
+    let no_modifiers = !(modifiers.ctrl
+        || modifiers.alt
+        || modifiers.shift
+        || modifiers.mac_cmd
+        || modifiers.command);
+    if first_key == Key::Escape && no_modifiers {
+        return CaptureOutcome::CancelRequested;
+    }
+
+    match hotkey::hotkey_from_egui(modifiers, first_key) {
+        Some(hk) => CaptureOutcome::Captured(hk),
+        None => CaptureOutcome::Unsupported,
+    }
+}
+
+// =============================================================================
 // eframe shell — render & event-loop layer. Cross-platform so it compiles on
 // native AND wasm32; the *callers* differ (native main spawns it as a
 // dedicated process, wasm boots it via the URL query branch in lib.rs).
@@ -234,6 +297,17 @@ pub struct SettingsApp {
     /// When set, the next frame ends the eframe loop. On native this exits
     /// the dedicated settings process; on WASM it's a no-op (no process).
     quit_requested: bool,
+    /// True while the hotkey row is in capture mode. The TextEdit is hidden,
+    /// the row shows a "Нажмите комбинацию…" prompt, and per-frame input
+    /// polling drives `decide_capture` to fill in the field.
+    recording_hotkey: bool,
+    /// Snapshot of the hotkey label taken when recording started — used by
+    /// the cancel branch to restore the pre-recording value. `None` when
+    /// we aren't recording.
+    hotkey_pre_record: Option<String>,
+    /// Hint shown below the row when the last captured key was unsupported.
+    /// Cleared on entering / leaving recording mode.
+    recording_hint: Option<&'static str>,
 }
 
 impl SettingsApp {
@@ -253,7 +327,28 @@ impl SettingsApp {
             persist,
             banner: None,
             quit_requested: false,
+            recording_hotkey: false,
+            hotkey_pre_record: None,
+            recording_hint: None,
         }
+    }
+
+    /// Enter capture mode. Snapshot the current label so a Cancel/Esc can
+    /// restore it; clear any stale hint from a previous session.
+    fn start_recording(&mut self) {
+        self.hotkey_pre_record = Some(self.form.hotkey.clone());
+        self.recording_hotkey = true;
+        self.recording_hint = None;
+    }
+
+    /// Leave capture mode and restore the pre-recording label. Used for both
+    /// the explicit Cancel button and the bare-Esc keystroke.
+    fn cancel_recording(&mut self) {
+        if let Some(prev) = self.hotkey_pre_record.take() {
+            self.form.hotkey = prev;
+        }
+        self.recording_hotkey = false;
+        self.recording_hint = None;
     }
 
     /// Save path: validate, persist, update baseline. On error → banner.
@@ -300,8 +395,11 @@ impl eframe::App for SettingsApp {
         let ctx_owned = root_ui.ctx().clone();
         let ctx = &ctx_owned;
 
-        // Esc closes the window (no destructive effect — Save is explicit).
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        // Esc closes the window — unless we're recording a hotkey, in which
+        // case the recording loop owns Esc as a cancel gesture. Without this
+        // guard, hitting Esc while recording would close the entire settings
+        // window before the recorder could honour the user's intent to bail.
+        if !self.recording_hotkey && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.quit_requested = true;
         }
         if ctx.input(|i| i.viewport().close_requested()) {
@@ -312,17 +410,61 @@ impl eframe::App for SettingsApp {
         ui.heading("Настройки");
         ui.add_space(8.0);
 
-        // Row 1: hotkey (plain text — recorder is Task 4)
+        // Row 1: hotkey. Two modes — the plain TextEdit + "Запись" button when
+        // idle, and a "Нажмите комбинацию…" prompt + Cancel button while
+        // recording. Recording captures the first supported combo through
+        // `decide_capture` and stuffs `format(hk)` back into the form's
+        // hotkey string; Save still does the persistence.
         ui.horizontal(|ui| {
             ui.label("Глобальный хоткей:");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.form.hotkey)
-                    .id(egui::Id::new("settings_hotkey"))
-                    .desired_width(220.0)
-                    .hint_text("Ctrl+Shift+Space"),
-            );
+            if self.recording_hotkey {
+                ui.label(egui::RichText::new("Нажмите комбинацию…").italics());
+                if ui.button("Отмена").clicked() {
+                    self.cancel_recording();
+                }
+            } else {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.form.hotkey)
+                        .id(egui::Id::new("settings_hotkey"))
+                        .desired_width(220.0)
+                        .hint_text("Ctrl+Shift+Space"),
+                );
+                if ui.button("Запись").clicked() {
+                    self.start_recording();
+                }
+            }
         });
+        if self.recording_hotkey {
+            if let Some(hint) = self.recording_hint {
+                ui.colored_label(egui::Color32::LIGHT_RED, hint);
+            }
+        }
         ui.add_space(6.0);
+
+        // Per-frame recorder polling: while in recording mode, snapshot the
+        // egui input and ask `decide_capture` what to do.
+        if self.recording_hotkey {
+            let (mods, keys) = ctx.input(|i| {
+                let keys: Vec<egui::Key> = i.keys_down.iter().copied().collect();
+                (i.modifiers, keys)
+            });
+            match decide_capture(mods, &keys) {
+                CaptureOutcome::KeepWaiting => {}
+                CaptureOutcome::CancelRequested => self.cancel_recording(),
+                CaptureOutcome::Captured(hk) => {
+                    self.form.hotkey = hotkey::format(&hk);
+                    self.recording_hotkey = false;
+                    self.hotkey_pre_record = None;
+                    self.recording_hint = None;
+                }
+                CaptureOutcome::Unsupported => {
+                    self.recording_hint = Some("Unsupported key, try another");
+                }
+            }
+            // Keep repainting while recording so the next input frame arrives
+            // promptly (eframe is otherwise lazy when no widget asks for it).
+            ctx.request_repaint();
+        }
 
         // Row 2: default interval
         ui.horizontal(|ui| {
@@ -523,6 +665,74 @@ mod tests {
             !parse_settings_arg(["--settingsxxx"]),
             "must be an exact match — no prefix gimmicks"
         );
+    }
+
+    // ---- decide_capture (recorder policy) ----------------------------------
+
+    use eframe::egui::{Key, Modifiers};
+
+    #[test]
+    fn decide_capture_no_keys_keeps_waiting() {
+        assert_eq!(
+            decide_capture(Modifiers::NONE, &[]),
+            CaptureOutcome::KeepWaiting
+        );
+    }
+
+    #[test]
+    fn decide_capture_bare_escape_cancels() {
+        // Bare Esc is the universal cancel — recording a literal Esc-only
+        // hotkey would collide with the cancel gesture, so we forbid it. A
+        // user who really wants Esc can use Ctrl+Esc / Shift+Esc.
+        assert_eq!(
+            decide_capture(Modifiers::NONE, &[Key::Escape]),
+            CaptureOutcome::CancelRequested
+        );
+    }
+
+    #[test]
+    fn decide_capture_escape_with_modifier_captures() {
+        // Ctrl+Esc passes through as a real combo. Same for Shift+Esc, etc.
+        let out = decide_capture(Modifiers::CTRL, &[Key::Escape]);
+        match out {
+            CaptureOutcome::Captured(hk) => {
+                assert_eq!(hk.modifiers, crate::hotkey::MOD_CTRL);
+                assert_eq!(hk.key.as_str(), "ESCAPE");
+            }
+            other => panic!("expected Captured, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decide_capture_supported_key_captures() {
+        let mods = Modifiers { ctrl: true, shift: true, ..Modifiers::NONE };
+        let out = decide_capture(mods, &[Key::A]);
+        match out {
+            CaptureOutcome::Captured(hk) => {
+                assert_eq!(crate::hotkey::format(&hk), "Ctrl+Shift+A");
+            }
+            other => panic!("expected Captured, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decide_capture_unsupported_key_signals_hint() {
+        // Home isn't in our allowlist (vk_for_key wouldn't recognise it).
+        assert_eq!(
+            decide_capture(Modifiers::CTRL, &[Key::Home]),
+            CaptureOutcome::Unsupported
+        );
+    }
+
+    #[test]
+    fn decide_capture_uses_first_key() {
+        // If two keys are down in the same frame (rare but possible during
+        // chord release), we honour the first — keeps the policy deterministic.
+        let out = decide_capture(Modifiers::CTRL, &[Key::A, Key::B]);
+        match out {
+            CaptureOutcome::Captured(hk) => assert_eq!(hk.key.as_str(), "A"),
+            other => panic!("expected Captured(A), got {other:?}"),
+        }
     }
 
     #[test]

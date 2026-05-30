@@ -190,6 +190,79 @@ pub fn default_hotkey() -> Hotkey {
     parse("Ctrl+Shift+Space").expect("default hotkey must parse")
 }
 
+/// Translate an egui-side `(modifiers, key)` pair from the settings recorder
+/// into a `Hotkey` in our canonical form. The supported key set deliberately
+/// mirrors what [`canonicalize_key`] accepts and what
+/// [`crate::tray_bridge::vk_for_key`] can translate to a Win32 VK — so the
+/// recorder cannot produce a label that would silently fail to register at
+/// next launch.
+///
+/// Returns `None` for any key outside that set (arrows, Home/End, punctuation,
+/// dead keys, …) — the caller surfaces a hint and keeps recording.
+///
+/// On the modifier side, egui's `mac_cmd` / `command` both fold into our
+/// `MOD_WIN` bit, matching the parser's `Win|Super|Meta|Cmd` aliasing rule.
+/// Callers must pass a real non-modifier key as `key`; egui doesn't surface
+/// raw Ctrl/Alt/Shift as `Key` variants, so this contract is naturally upheld
+/// by the input-pump loop.
+//
+// Bin-on-wasm reports this as "never used" because main.rs's settings_app
+// import is gated to non-wasm — same noise the rest of this module already
+// emits in that build. The library and the native bin both use this fn.
+#[allow(dead_code)]
+pub fn hotkey_from_egui(modifiers: eframe::egui::Modifiers, key: eframe::egui::Key) -> Option<Hotkey> {
+    use eframe::egui::Key;
+
+    let token: &'static str = match key {
+        Key::A => "A", Key::B => "B", Key::C => "C", Key::D => "D",
+        Key::E => "E", Key::F => "F", Key::G => "G", Key::H => "H",
+        Key::I => "I", Key::J => "J", Key::K => "K", Key::L => "L",
+        Key::M => "M", Key::N => "N", Key::O => "O", Key::P => "P",
+        Key::Q => "Q", Key::R => "R", Key::S => "S", Key::T => "T",
+        Key::U => "U", Key::V => "V", Key::W => "W", Key::X => "X",
+        Key::Y => "Y", Key::Z => "Z",
+        Key::Num0 => "0", Key::Num1 => "1", Key::Num2 => "2", Key::Num3 => "3",
+        Key::Num4 => "4", Key::Num5 => "5", Key::Num6 => "6", Key::Num7 => "7",
+        Key::Num8 => "8", Key::Num9 => "9",
+        Key::F1 => "F1", Key::F2 => "F2", Key::F3 => "F3", Key::F4 => "F4",
+        Key::F5 => "F5", Key::F6 => "F6", Key::F7 => "F7", Key::F8 => "F8",
+        Key::F9 => "F9", Key::F10 => "F10", Key::F11 => "F11", Key::F12 => "F12",
+        Key::F13 => "F13", Key::F14 => "F14", Key::F15 => "F15", Key::F16 => "F16",
+        Key::F17 => "F17", Key::F18 => "F18", Key::F19 => "F19", Key::F20 => "F20",
+        Key::F21 => "F21", Key::F22 => "F22", Key::F23 => "F23", Key::F24 => "F24",
+        Key::Space => "SPACE",
+        Key::Enter => "ENTER",
+        Key::Tab => "TAB",
+        Key::Escape => "ESCAPE",
+        Key::Backspace => "BACKSPACE",
+        _ => return None,
+    };
+
+    let mut mods: u8 = 0;
+    if modifiers.ctrl {
+        mods |= MOD_CTRL;
+    }
+    if modifiers.alt {
+        mods |= MOD_ALT;
+    }
+    if modifiers.shift {
+        mods |= MOD_SHIFT;
+    }
+    // egui's `command` is the "primary modifier": Cmd on mac, Ctrl on others.
+    // `mac_cmd` is the raw Cmd key (mac only). Both fold into our MOD_WIN bit
+    // for cross-platform consistency with the parser's Win|Super|Meta|Cmd
+    // aliasing — except on non-mac targets `command == ctrl`, which we already
+    // handled above, so we only add MOD_WIN when `mac_cmd` is set (true Cmd).
+    if modifiers.mac_cmd {
+        mods |= MOD_WIN;
+    }
+
+    Some(Hotkey {
+        modifiers: mods,
+        key: HotkeyKey(token.to_string()),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,5 +400,144 @@ mod tests {
     fn default_hotkey_is_ctrl_shift_space() {
         let hk = default_hotkey();
         assert_eq!(format(&hk), "Ctrl+Shift+Space");
+    }
+
+    // ---- hotkey_from_egui ---------------------------------------------------
+    // The recorder's pure mapping function. Verifies the supported key set
+    // exactly matches what `canonicalize_key` (and therefore
+    // `tray_bridge::vk_for_key`) accepts, so a recorded combo CAN be
+    // registered on Windows at next launch.
+
+    use eframe::egui::{Key, Modifiers};
+
+    #[test]
+    fn letters_map_to_uppercase_token() {
+        // egui::Key::A..=Z → "A".."Z". Modifier-less recording produces a
+        // bare-letter hotkey; the parser allows it (Cmd+A etc. are common,
+        // but bare-A is also legal — just impractical).
+        let letters = [
+            (Key::A, "A"), (Key::B, "B"), (Key::C, "C"), (Key::D, "D"),
+            (Key::E, "E"), (Key::F, "F"), (Key::G, "G"), (Key::H, "H"),
+            (Key::I, "I"), (Key::J, "J"), (Key::K, "K"), (Key::L, "L"),
+            (Key::M, "M"), (Key::N, "N"), (Key::O, "O"), (Key::P, "P"),
+            (Key::Q, "Q"), (Key::R, "R"), (Key::S, "S"), (Key::T, "T"),
+            (Key::U, "U"), (Key::V, "V"), (Key::W, "W"), (Key::X, "X"),
+            (Key::Y, "Y"), (Key::Z, "Z"),
+        ];
+        for (k, expected) in letters {
+            let hk = hotkey_from_egui(Modifiers::NONE, k)
+                .unwrap_or_else(|| panic!("letter {expected:?} must map"));
+            assert_eq!(hk.key.as_str(), expected, "letter {expected:?}");
+            assert_eq!(hk.modifiers, 0, "no modifiers passed");
+        }
+    }
+
+    #[test]
+    fn digits_map_to_token() {
+        let digits = [
+            (Key::Num0, "0"), (Key::Num1, "1"), (Key::Num2, "2"), (Key::Num3, "3"),
+            (Key::Num4, "4"), (Key::Num5, "5"), (Key::Num6, "6"), (Key::Num7, "7"),
+            (Key::Num8, "8"), (Key::Num9, "9"),
+        ];
+        for (k, expected) in digits {
+            let hk = hotkey_from_egui(Modifiers::CTRL, k).unwrap();
+            assert_eq!(hk.key.as_str(), expected);
+            assert_eq!(hk.modifiers, MOD_CTRL);
+        }
+    }
+
+    #[test]
+    fn f_keys_map_to_token() {
+        // F1..F24 — the same range vk_for_key registers globally.
+        let f_keys = [
+            (Key::F1, "F1"), (Key::F2, "F2"), (Key::F3, "F3"), (Key::F4, "F4"),
+            (Key::F5, "F5"), (Key::F6, "F6"), (Key::F7, "F7"), (Key::F8, "F8"),
+            (Key::F9, "F9"), (Key::F10, "F10"), (Key::F11, "F11"), (Key::F12, "F12"),
+            (Key::F13, "F13"), (Key::F14, "F14"), (Key::F15, "F15"), (Key::F16, "F16"),
+            (Key::F17, "F17"), (Key::F18, "F18"), (Key::F19, "F19"), (Key::F20, "F20"),
+            (Key::F21, "F21"), (Key::F22, "F22"), (Key::F23, "F23"), (Key::F24, "F24"),
+        ];
+        for (k, expected) in f_keys {
+            let hk = hotkey_from_egui(Modifiers::NONE, k).unwrap();
+            assert_eq!(hk.key.as_str(), expected);
+        }
+    }
+
+    #[test]
+    fn named_keys_map() {
+        // Same allowlist canonicalize_key permits — Space, Enter, Tab, Escape,
+        // Backspace. Aliases (Return → ENTER, Esc → ESCAPE) don't appear in
+        // egui::Key, so no aliasing logic needed here.
+        let named = [
+            (Key::Space, "SPACE"),
+            (Key::Enter, "ENTER"),
+            (Key::Tab, "TAB"),
+            (Key::Escape, "ESCAPE"),
+            (Key::Backspace, "BACKSPACE"),
+        ];
+        for (k, expected) in named {
+            let hk = hotkey_from_egui(Modifiers::NONE, k).unwrap();
+            assert_eq!(hk.key.as_str(), expected);
+        }
+    }
+
+    #[test]
+    fn modifiers_compose() {
+        // Ctrl+Shift+A → both bits set.
+        let mods = Modifiers { ctrl: true, shift: true, ..Modifiers::NONE };
+        let hk = hotkey_from_egui(mods, Key::A).unwrap();
+        assert_eq!(hk.modifiers, MOD_CTRL | MOD_SHIFT);
+        assert_eq!(hk.key.as_str(), "A");
+    }
+
+    #[test]
+    fn all_four_modifiers_compose() {
+        // Ctrl+Alt+Shift+Cmd+J — all four bits set. Tests that mac_cmd folds
+        // into our MOD_WIN bit (the parser treats Cmd as an alias for Win).
+        let mods = Modifiers { ctrl: true, alt: true, shift: true, mac_cmd: true, command: true };
+        let hk = hotkey_from_egui(mods, Key::J).unwrap();
+        assert_eq!(hk.modifiers, MOD_CTRL | MOD_ALT | MOD_SHIFT | MOD_WIN);
+        assert_eq!(hk.key.as_str(), "J");
+    }
+
+    #[test]
+    fn unsupported_key_returns_none() {
+        // Anything outside the canonicalize_key allowlist must be rejected —
+        // otherwise the recorder writes a label that fails to register at
+        // next launch, silently.
+        for k in [
+            Key::Home, Key::End, Key::Insert, Key::Delete,
+            Key::PageUp, Key::PageDown,
+            Key::ArrowUp, Key::ArrowDown, Key::ArrowLeft, Key::ArrowRight,
+            Key::Comma, Key::Period, Key::Semicolon, Key::Quote,
+            Key::Minus, Key::Plus, Key::Equals, Key::Slash, Key::Backslash,
+            Key::F25, // F25..F35 exist in egui but Win32 only goes F1..F24
+        ] {
+            assert!(
+                hotkey_from_egui(Modifiers::CTRL, k).is_none(),
+                "{k:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn roundtrip_via_format_and_parse() {
+        // Whatever the recorder produces, format() → parse() must reconstruct
+        // the same Hotkey. This is the contract that lets Save just write the
+        // text label: the parser will accept it back on next launch.
+        let samples: &[(Modifiers, Key)] = &[
+            (Modifiers { ctrl: true, shift: true, ..Modifiers::NONE }, Key::Space),
+            (Modifiers::ALT, Key::J),
+            (Modifiers::NONE, Key::F12),
+            (Modifiers { ctrl: true, alt: true, ..Modifiers::NONE }, Key::Num7),
+            (Modifiers::CTRL, Key::Enter),
+            (Modifiers::CTRL, Key::Backspace),
+        ];
+        for (m, k) in samples {
+            let hk = hotkey_from_egui(*m, *k).expect("supported");
+            let text = format(&hk);
+            let parsed = parse(&text).expect("format() output must parse");
+            assert_eq!(parsed, hk, "roundtrip failed for {text}");
+        }
     }
 }

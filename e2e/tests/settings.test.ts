@@ -29,6 +29,10 @@ const BUTTON_ROW_Y = 130
 // coordinates target the middle of each input box.
 const HOTKEY_INPUT_X = 237
 const INTERVAL_INPUT_X = 256
+// "Запись" / "Отмена" button on the hotkey row, immediately right of the
+// TextEdit. Calibrated against a screenshot of the rendered canvas. Toggles
+// the recorder mode.
+const HOTKEY_RECORD_BUTTON_X = 380
 // Checkbox glyph for autostart sits at the very left of its row.
 const AUTOSTART_CHECKBOX_X = 9
 // Save button is the first (leftmost) button in the bottom row.
@@ -86,6 +90,80 @@ test("editing interval and saving persists the new value", async ({ settings }) 
     const persisted = await readPersistedConfig(settings.page)
     expect(persisted).not.toBeNull()
     expect(persisted!.default_interval_minutes).toBe(7)
+})
+
+test("hotkey recorder captures Ctrl+Shift+A and Save persists it", async ({ settings }) => {
+    // End-to-end recorder flow: click "Запись" → the row enters capture
+    // mode → press Ctrl+Shift+A → the form's hotkey string flips to
+    // "Ctrl+Shift+A" (canonical form) → click Save → localStorage carries
+    // the new label.
+    await settings.page.evaluate(() => localStorage.clear())
+
+    // Click the "Запись" button to enter capture mode.
+    await settings.page.mouse.click(HOTKEY_RECORD_BUTTON_X, ROW_HOTKEY_Y)
+    await wait(400)
+
+    // Make sure the canvas has keyboard focus so egui sees the keys. The
+    // recorder's per-frame poll reads ctx.input(); without focus, eframe-web
+    // doesn't forward key events into egui.
+    await settings.page.evaluate(() => {
+        const c = document.getElementById("nudge_canvas") as HTMLCanvasElement | null
+        c?.focus()
+    })
+    await wait(200)
+
+    // Press Ctrl+Shift+A as a real chord. Order matters: modifiers first so
+    // egui sees them as "down" when the non-modifier key arrives.
+    await settings.page.keyboard.down("Shift")
+    await settings.page.keyboard.down("Control")
+    await settings.page.keyboard.down("KeyA")
+    await wait(300)
+    await settings.page.keyboard.up("KeyA")
+    await settings.page.keyboard.up("Control")
+    await settings.page.keyboard.up("Shift")
+    await wait(500)
+
+    // Save — the recorder only stages the value, persistence still requires
+    // an explicit Save click (matches the spec §9: hotkey is the "click Save
+    // to persist" branch, autostart is the immediate one).
+    await settings.page.mouse.click(SAVE_BUTTON_X, BUTTON_ROW_Y)
+    await wait(500)
+
+    const persisted = await readPersistedConfig(settings.page)
+    expect(persisted).not.toBeNull()
+    expect(persisted!.hotkey).toBe("Ctrl+Shift+A")
+})
+
+test("Escape while recording cancels and restores prior hotkey", async ({ settings }) => {
+    // Bare Escape during capture is the cancel gesture — it must restore
+    // whatever the field held before the user clicked "Запись" (not flip
+    // recording-state into the form). Save afterwards persists the original
+    // value, NOT some half-captured combo.
+    await settings.page.evaluate(() => localStorage.clear())
+
+    // Enter recording mode.
+    await settings.page.mouse.click(HOTKEY_RECORD_BUTTON_X, ROW_HOTKEY_Y)
+    await wait(400)
+
+    await settings.page.evaluate(() => {
+        const c = document.getElementById("nudge_canvas") as HTMLCanvasElement | null
+        c?.focus()
+    })
+    await wait(200)
+
+    // Press bare Escape — should cancel recording.
+    await settings.page.keyboard.press("Escape")
+    await wait(500)
+
+    // Save now — the form's hotkey should still be the default
+    // ("Ctrl+Shift+Space"), proving the cancel branch restored the prior value
+    // instead of leaving the field in some half-captured state.
+    await settings.page.mouse.click(SAVE_BUTTON_X, BUTTON_ROW_Y)
+    await wait(500)
+
+    const persisted = await readPersistedConfig(settings.page)
+    expect(persisted).not.toBeNull()
+    expect(persisted!.hotkey).toBe("Ctrl+Shift+Space")
 })
 
 test("autostart toggle persists immediately, without Save", async ({ settings }) => {
