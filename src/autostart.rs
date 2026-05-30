@@ -89,11 +89,13 @@ where
     persist(config).map_err(AutostartError::Persist)
 }
 
-/// In-memory provider. Always available — used by tests, by the WASM build
-/// (no real registry in the browser), and by the native settings UI as a
-/// safety-net fallback when the real provider can't be constructed
-/// (e.g. `current_exe()` failed). The native main + tray code paths still
-/// only use `WindowsRegistryProvider` in practice.
+/// In-memory provider. Used by tests, by the WASM build (no real registry
+/// in the browser), and as the non-Windows-native fallback so the linux
+/// dev build compiles. It is never used in the Windows release binary —
+/// Windows always goes through `WindowsRegistryProvider`, and if that
+/// can't be constructed we refuse to open the settings window rather than
+/// silently lie about the registry state.
+#[cfg(any(test, not(target_os = "windows")))]
 pub struct FakeProvider {
     enabled: std::cell::Cell<bool>,
     fail_enable: bool,
@@ -103,6 +105,7 @@ pub struct FakeProvider {
     lie_on_confirm: bool,
 }
 
+#[cfg(any(test, not(target_os = "windows")))]
 impl FakeProvider {
     pub fn new(enabled: bool) -> Self {
         Self {
@@ -138,6 +141,7 @@ impl FakeProvider {
     }
 }
 
+#[cfg(any(test, not(target_os = "windows")))]
 impl AutostartProvider for FakeProvider {
     fn enable(&self) -> Result<(), String> {
         if self.fail_enable {

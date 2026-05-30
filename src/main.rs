@@ -144,14 +144,22 @@ fn run_settings_ui() -> eframe::Result {
     // so the linux dev build compiles. Non-Windows users don't actually
     // reach the settings window (no tray to spawn it), so the fake never
     // runs in production.
+    //
+    // On Windows we refuse to open the window with a fake substitute when
+    // the real provider fails to construct (e.g. `current_exe()` returned
+    // Err — astronomically rare). Falling back to a FakeProvider would make
+    // the autostart toggle a silent lie: the in-memory state would flip,
+    // the config would persist `autostart: true`, but the registry would
+    // never be touched — breaking Task 2's transactional invariant.
     #[cfg(target_os = "windows")]
     let provider: Box<dyn autostart::AutostartProvider> = {
         match autostart::WindowsRegistryProvider::for_current_exe() {
             Ok(p) => Box::new(p),
             Err(e) => {
                 eprintln!("[nudge-settings] cannot construct autostart provider: {e}");
-                // Continue with a no-op fake so the rest of the UI still works.
-                Box::new(autostart::FakeProvider::new(cfg.autostart))
+                return Err(eframe::Error::AppCreation(
+                    format!("cannot construct autostart provider: {e}").into(),
+                ));
             }
         }
     };
