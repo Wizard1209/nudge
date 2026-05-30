@@ -35,6 +35,14 @@ raw-window-handle = "0.6"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 dirs = "6"
+# Filesystem watcher for live-reloading config.json edits made by the settings
+# UI (or by hand). Wraps native OS APIs (ReadDirectoryChangesW / inotify /
+# FSEvents) so the watcher thread sleeps in the kernel and costs ~0 CPU at
+# idle — important because `tests/perf_idle.rs` ratchets the idle-CPU budget
+# down to 25 ms/s. Default features are fine on all desktop targets; the
+# crate is fully cfg-gated out of wasm via the `cfg(not(target_arch = "wasm32"))`
+# scope so the browser build never pulls it in.
+notify = "8"
 
 [dev-dependencies]
 tempfile = "3"

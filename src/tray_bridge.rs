@@ -19,6 +19,7 @@
 //!   - Fires the popup when the timer expires (sets `TIMER_FIRED` +
 //!     `ShowWindow(SW_RESTORE)` on eframe's HWND).
 
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 use std::thread;
@@ -28,6 +29,7 @@ use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN, RegisterHotKey,
+    UnregisterHotKey,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, DispatchMessageW, GetForegroundWindow, GetWindowThreadProcessId, MSG,
@@ -35,6 +37,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     QS_ALLINPUT, SW_RESTORE, SetForegroundWindow, ShowWindow, TranslateMessage, WM_HOTKEY, WM_USER,
 };
 
+use crate::config;
+use crate::config_watcher::{self, ConfigChange};
 use crate::daisy;
 use crate::hotkey::{self, Hotkey, MOD_ALT as MY_MOD_ALT, MOD_CTRL, MOD_SHIFT as MY_MOD_SHIFT, MOD_WIN as MY_MOD_WIN};
 use crate::nudge_state;
@@ -48,6 +52,14 @@ static HWND_STORE: AtomicIsize = AtomicIsize::new(0);
 /// Edge flags polled by `NudgeApp::update()`.
 static TRAY_CLICKED: AtomicBool = AtomicBool::new(false);
 static TIMER_FIRED: AtomicBool = AtomicBool::new(false);
+
+/// Set by the config_watcher callback (off the tray thread) when
+/// `config.json` changes on disk. The tray thread picks this up on its
+/// next wake, re-reads the file, and applies any live-meaningful diff
+/// (currently: re-register the hotkey when it differs). Stays an
+/// AtomicBool rather than a counter — N concurrent saves all collapse
+/// to "re-read once", which is the correct behaviour.
+static CONFIG_RELOAD_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 /// `true` while the popup is on screen. The tray thread treats this as
 /// "freeze animation": clear out any pending repaints and wait until eframe
@@ -144,6 +156,15 @@ pub fn set_popup_visible(visible: bool) {
     wake_tray_thread();
 }
 
+/// Signal that `config.json` changed on disk and the tray thread should
+/// re-read + diff it on its next iteration. Called from the
+/// `config_watcher` callback, off any tray thread. Idempotent: setting
+/// the flag twice before the tray sees it collapses to one re-read.
+pub fn request_config_reload() {
+    CONFIG_RELOAD_REQUESTED.store(true, Ordering::SeqCst);
+    wake_tray_thread();
+}
+
 fn wake_tray_thread() {
     let tid = TRAY_THREAD_ID.load(Ordering::SeqCst);
     if tid != 0 {
@@ -162,10 +183,22 @@ fn wake_tray_thread() {
 /// the message queue, otherwise WM_HOTKEY is delivered to a queue we
 /// aren't reading. None disables the hotkey for this run (e.g. an invalid
 /// config label).
-pub fn spawn_tray_thread(hotkey: Option<Hotkey>) {
+///
+/// `config_path` and `initial_config` are the launch-time snapshot. The
+/// tray thread keeps `initial_config` as its `previous_cfg` baseline so
+/// that when the watcher fires it can diff the freshly-re-read file
+/// against what's currently in effect (e.g. only re-register the
+/// hotkey when the *parsed* string differs, not on every save). The
+/// path lets the tray thread re-read the file from the same source the
+/// settings process writes to — including any `--config` override.
+pub fn spawn_tray_thread(
+    hotkey: Option<Hotkey>,
+    config_path: PathBuf,
+    initial_config: config::Config,
+) {
     thread::Builder::new()
         .name("nudge-tray".into())
-        .spawn(move || tray_thread_main(hotkey))
+        .spawn(move || tray_thread_main(hotkey, config_path, initial_config))
         .expect("failed to spawn tray thread");
 }
 
@@ -242,7 +275,11 @@ fn try_register_hotkey(hk: &Hotkey) -> bool {
 
 // ---------- the tray thread itself -----------------------------------------
 
-fn tray_thread_main(hotkey: Option<Hotkey>) {
+fn tray_thread_main(
+    hotkey: Option<Hotkey>,
+    config_path: PathBuf,
+    initial_config: config::Config,
+) {
     unsafe {
         TRAY_THREAD_ID.store(GetCurrentThreadId(), Ordering::SeqCst);
     }
@@ -250,12 +287,17 @@ fn tray_thread_main(hotkey: Option<Hotkey>) {
     // Register global hotkey on this thread so WM_HOTKEY is posted into this
     // message queue. None / failure both just leave the app hotkey-less for
     // this run — the tray icon still works as the manual-open path.
-    // The tray thread never exits cleanly; we don't UnregisterHotKey because
-    // Windows reclaims the binding when the process dies. Failure is logged
-    // by try_register_hotkey and is non-fatal.
+    // Failure is logged by try_register_hotkey and is non-fatal.
     if let Some(hk) = &hotkey {
         try_register_hotkey(hk);
     }
+
+    // Live-reload bookkeeping: the previous Config so each reload can
+    // diff against what we actually applied last, and a flag tracking
+    // whether the hotkey is currently registered (so we know whether
+    // to call UnregisterHotKey before re-registering).
+    let mut previous_cfg = initial_config;
+    let mut hotkey_registered = hotkey.is_some();
 
     use tray_icon::TrayIconBuilder;
     use tray_icon::menu::{Menu, MenuItem};
@@ -343,6 +385,15 @@ fn tray_thread_main(hotkey: Option<Hotkey>) {
     loop {
         drain_messages();
 
+        // Apply pending config-file reloads before we either park
+        // (popup visible) or animate. Doing it here means a reload that
+        // arrives mid-popup gets applied as soon as the popup closes —
+        // we never silently drop a request, even though we don't fight
+        // the popup for attention while it's up.
+        if CONFIG_RELOAD_REQUESTED.swap(false, Ordering::SeqCst) {
+            apply_config_reload(&config_path, &mut previous_cfg, &mut hotkey_registered);
+        }
+
         if POPUP_VISIBLE.load(Ordering::SeqCst) {
             // Popup is up. Don't fight it for attention; idle until eframe
             // tells us things have changed.
@@ -427,6 +478,80 @@ fn tray_thread_main(hotkey: Option<Hotkey>) {
 
         wait_for_message(next_wake_ms);
     }
+}
+
+/// Re-read `config_path` and apply any live-meaningful diff against
+/// `previous_cfg`. Only the hotkey has live UI effect on the running
+/// app today (see module doc + `config_watcher` docs); the interval
+/// and autostart fields are updated in the in-memory record so the
+/// next diff is computed against truth, but they don't trigger any
+/// syscalls here.
+///
+/// A malformed file is tolerated the same way `load_or_default` does
+/// it: log to stderr, fall back to defaults, keep the previous in-
+/// memory record. The watcher must not be the thing that kills the
+/// app over a typo in the user's config.
+fn apply_config_reload(
+    config_path: &std::path::Path,
+    previous_cfg: &mut config::Config,
+    hotkey_registered: &mut bool,
+) {
+    let (new_cfg, err) = config::load_or_default(config_path);
+    if let Some(e) = err {
+        eprintln!("[nudge] config reload: {e} — keeping previous in-memory config");
+        return;
+    }
+
+    let changes = config_watcher::diff(previous_cfg, &new_cfg);
+    if changes.is_empty() {
+        return;
+    }
+
+    for change in &changes {
+        match change {
+            ConfigChange::HotkeyChanged { from, to } => {
+                eprintln!("[nudge] config reload: hotkey \"{from}\" → \"{to}\"");
+                // Unregister the previous binding (best-effort — if it
+                // wasn't actually registered, Win32 returns FALSE and
+                // we ignore it; the next try_register_hotkey is the
+                // operative call).
+                if *hotkey_registered {
+                    unsafe {
+                        let _ = UnregisterHotKey(None, HOTKEY_ID_SHOW_POPUP);
+                    }
+                    *hotkey_registered = false;
+                }
+                let (parsed, invalid) = new_cfg.resolved_hotkey();
+                if invalid {
+                    eprintln!(
+                        "[nudge] config reload: hotkey \"{to}\" is unparseable, leaving unbound"
+                    );
+                } else {
+                    *hotkey_registered = try_register_hotkey(&parsed);
+                }
+            }
+            ConfigChange::IntervalChanged => {
+                // Recorded only: the popup captured the launch-time
+                // default and the user owns the field afterwards.
+                eprintln!(
+                    "[nudge] config reload: default_interval_minutes \
+                     {} → {} (no live effect; applies at next startup)",
+                    previous_cfg.default_interval_minutes,
+                    new_cfg.default_interval_minutes
+                );
+            }
+            ConfigChange::AutostartChanged => {
+                // Settings process owns the registry write
+                // transactionally; we just refresh our cached copy.
+                eprintln!(
+                    "[nudge] config reload: autostart {} → {} (settings process owns registry)",
+                    previous_cfg.autostart, new_cfg.autostart
+                );
+            }
+        }
+    }
+
+    *previous_cfg = new_cfg;
 }
 
 fn wake_eframe() {

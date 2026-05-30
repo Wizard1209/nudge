@@ -6,6 +6,8 @@ mod app;
 mod autostart;
 #[cfg(not(target_arch = "wasm32"))]
 mod config;
+#[cfg(not(target_arch = "wasm32"))]
+mod config_watcher;
 #[cfg(target_os = "windows")]
 mod daisy;
 mod hotkey;
@@ -258,11 +260,39 @@ fn main() -> eframe::Result {
     // own message pump so animation keeps ticking even while eframe's
     // popup window is SW_HIDE'd. The same thread also owns the global
     // hotkey registration (WM_HOTKEY is delivered to the registering
-    // thread's message queue).
+    // thread's message queue), and — after Task 5 — handles config-file
+    // live-reload by re-reading `config_path` and diffing.
     #[cfg(target_os = "windows")]
-    tray_bridge::spawn_tray_thread(Some(configured_hotkey));
+    tray_bridge::spawn_tray_thread(
+        Some(configured_hotkey),
+        config_path.clone(),
+        config.clone(),
+    );
     #[cfg(not(target_os = "windows"))]
     let _ = configured_hotkey; // unused on non-Windows targets for now
+
+    // Live-reload: watch `config.json` for changes (settings UI saves,
+    // or hand-edits) and signal the tray thread to re-read + diff.
+    // Failures are non-fatal (rare: directory missing, OS watch limit
+    // hit) — the app still works, the user just doesn't get live
+    // reload until the next restart.
+    //
+    // The handle MUST live for the rest of the process — dropping it
+    // stops the watcher. eframe::run_native consumes the event loop
+    // but local bindings here outlive the call, so a plain `let` is
+    // enough; we name it `_watcher` (with the leading underscore) so
+    // clippy doesn't flag the otherwise-unused binding.
+    #[cfg(target_os = "windows")]
+    let _watcher = match config_watcher::spawn(
+        config_path.clone(),
+        Box::new(tray_bridge::request_config_reload),
+    ) {
+        Ok(h) => Some(h),
+        Err(e) => {
+            eprintln!("[nudge] config live-reload disabled — watcher spawn failed: {e}");
+            None
+        }
+    };
 
     // Spotlight window: horizontally centered, vertical center at 40% of screen
     // per spec §1. Computed once at launch from primary monitor dimensions.

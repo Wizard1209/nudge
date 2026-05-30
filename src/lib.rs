@@ -86,6 +86,7 @@ mod wasm_entry {
 mod app;
 pub mod autostart;
 pub mod config;
+pub mod config_watcher;
 #[cfg(target_os = "windows")]
 pub mod daisy;
 pub mod hotkey;
