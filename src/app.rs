@@ -12,7 +12,8 @@ pub const CLEAR_COLOR_TRANSPARENT: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
 
 /// Placeholder / hint text colour. egui's dark default is ~gray(120), which
 /// washes out against the translucent card. Bumped to gray(170) so hints
-/// like "Что я делаю?" are comfortably legible. Set both on the egui visuals
+/// like "Что я делаю?" (the popup's question copy — kept Russian as the
+/// product placeholders) are comfortably legible. Set both on the egui visuals
 /// (so the widget defaults match) and on each field's hint RichText.
 const HINT_TEXT_COLOR: egui::Color32 = egui::Color32::from_gray(170);
 

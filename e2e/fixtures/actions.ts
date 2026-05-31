@@ -1,8 +1,9 @@
 import type { Page } from "puppeteer"
 
 // Canvas-relative coordinates for the three input rows in the 800×600 viewport.
-// Row 1 = "Что я делаю?" (auto-focused), Row 2 = "Хуйня?" (Tab away from Row 1),
-// Row 3 = minutes. Tied to draw_card's top_offset = 0.25 * 600 = 150 (spec §1).
+// Row 1 = "Что я делаю?" (auto-focused, Russian product copy — see spec §3),
+// Row 2 = "Хуйня?" (Tab away from Row 1), Row 3 = minutes. Tied to draw_card's
+// top_offset = 0.25 * 600 = 150 (spec §1).
 export const FIELD_DOING_Y = 170
 export const FIELD_BULLSHIT_Y = 212
 export const FIELD_MINUTES_Y = 254

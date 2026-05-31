@@ -1,65 +1,82 @@
 # Nudge — interval journaling for focus
 
-Периодический spotlight-popup, который спрашивает тебя: "что ты делаешь?" и "не хуйню ли ты делаешь?". Ответы пишутся в append-only NDJSON-журнал.
+A periodic spotlight popup that asks you "what are you doing?" and "is it
+bullshit?". Answers are written to an append-only NDJSON journal.
 
-## Как работает
+## How it works
 
-1. Nudge сидит в системном трее, тикает таймер
-2. Таймер истёк → появляется spotlight-popup по центру экрана (поверх всего, как Spotlight / Claude quick chat)
-3. Пользователь отвечает на вопросы → Enter → popup исчезает, таймер перезапускается
-4. Ответы записываются в `journal-rust.ndjson`
+1. Nudge sits in the system tray, the timer ticks.
+2. Timer expires → a spotlight popup appears in the center of the screen
+   (always on top, like Spotlight / Claude quick chat).
+3. The user answers → Enter → the popup hides, the timer restarts.
+4. Answers are appended to `journal-rust.ndjson`.
 
 ## Popup
 
-Минималистичное окно по центру экрана, поверх всех окон. Появляется с фокусом на первом поле.
+Minimalist window in the center of the screen, on top of all other windows.
+Opens focused on the first field.
 
-### Поля (переключение через Tab)
+### Fields (Tab to switch)
 
-| # | Поле | Тип | Описание |
+| # | Field (Russian product copy — the actual questions) | Type | Description |
 |---|------|-----|----------|
-| 1 | Что я делаю? | текст | Свободный ввод, фокус при открытии |
-| 2 | Не хуйню ли я делаю? | текст | Свободный ввод, рефлексия |
-| 3 | Следующий nudge через | число (мин) | Предзаполнено текущим интервалом (по умолчанию 10 мин) |
+| 1 | Что я делаю? | text | Free-form input, focused on open |
+| 2 | Не хуйню ли я делаю? | text | Free-form input, reflection |
+| 3 | Следующий nudge через | number (min) | Pre-filled with the current interval (default 10 min) |
 
-- **Enter** — сохранить и закрыть
-- **Esc** — закрыть без сохранения (таймер всё равно перезапускается)
+- **Enter** — save and close
+- **Esc** — close without saving (the timer still restarts)
 
-## Журнал
+## Journal
 
-NDJSON файл (`journal-rust.ndjson`), append-only, одна JSON-запись на строку:
+NDJSON file (`journal-rust.ndjson`), append-only, one JSON record per line:
 
 ```jsonl
-{"schema_version":1,"event_type":"submitted","entry_id":"01JS1S8R5W4Y4S4M8Q6A8X7R2V","captured_at":"2026-04-08T14:30:00.000+03:00","implementation":"rust","trigger_source":"timer","doing":"пишу требования к nudge","bullshit":"нет вроде норм","next_interval_minutes":10}
-{"schema_version":1,"event_type":"submitted","entry_id":"01JS1S9FDRW4K4M7R4F5R9A5A2","captured_at":"2026-04-08T14:40:00.000+03:00","implementation":"rust","trigger_source":"timer","doing":"залип в ютуб","bullshit":"да","next_interval_minutes":5}
+{"schema_version":1,"event_type":"submitted","entry_id":"01JS1S8R5W4Y4S4M8Q6A8X7R2V","captured_at":"2026-04-08T14:30:00.000+03:00","implementation":"rust","trigger_source":"timer","doing":"writing requirements","bullshit":"no","next_interval_minutes":10}
+{"schema_version":1,"event_type":"submitted","entry_id":"01JS1S9FDRW4K4M7R4F5R9A5A2","captured_at":"2026-04-08T14:40:00.000+03:00","implementation":"rust","trigger_source":"timer","doing":"got sucked into YouTube","bullshit":"yes","next_interval_minutes":5}
 ```
 
-Полный контракт: [docs/journal-spec.md](docs/journal-spec.md)
+Full contract: [docs/journal-spec.md](docs/journal-spec.md)
 
-## Трей
+## Tray
 
-- Иконка в системном трее
-- Тултип: `~N min` (округлено вверх, обновляется раз в минуту); `now` после истечения таймера
-- Правый клик: пауза / настройки / выход
-- TODO: показ оставшегося времени
+- Tray icon — a daisy that drops petals as the next nudge approaches (this
+  is the time-remaining indicator, see `docs/design-spec.md` §5).
+- Tooltip: `~N min` (rounded up, refreshed once per minute); `now` after the
+  timer expires.
+- Left click: open the popup (does not affect the timer).
+- Right click: context menu — `Show Nudge`, `Settings`, `Quit`.
 
-## Стек
+## Stack
 
-- **Rust** (native, без web-движков)
-- GUI: TBD (egui / iced / winapi — выберем экспериментально)
-- Цель: минимальный footprint (~10-20 MB RAM), мгновенный старт, один бинарник
+- **Rust** (native, no web engines).
+- GUI: eframe / egui (glow renderer, transparent window).
+- Goal: minimal footprint (~10-20 MB RAM), instant startup, single binary.
 
-## Дефолты
+## Defaults
 
-- Интервал: **10 минут** — настраивается в `config.json`
-  (поле `default_interval_minutes`, любое положительное число).
-- Журнал: `%USERPROFILE%\Documents\Nudge\journal-rust.ndjson`
-- Хоткей: **Ctrl+Shift+Space** — вызывает popup вручную из любого окна.
-  Настраивается в `%USERPROFILE%\Documents\Nudge\config.json` (поле `hotkey`).
-  Формат: модификаторы (`Ctrl`, `Alt`, `Shift`, `Win`) + одна клавиша
-  через `+`, например `Alt+J` или `Ctrl+F12`.
+- Interval: **10 minutes** — field `default_interval_minutes` in
+  `config.json`, any positive number (integer or decimal).
+- Journal: `%USERPROFILE%\Documents\Nudge\journal-rust.ndjson`
+- Hotkey: **Ctrl+Shift+Space** — opens the popup manually from any focused
+  window. Field `hotkey` in `%USERPROFILE%\Documents\Nudge\config.json`.
+  Format: modifiers (`Ctrl`, `Alt`, `Shift`, `Win`) + one key joined by `+`,
+  e.g. `Alt+J` or `Ctrl+F12`.
+- Launch with Windows: field `autostart` (bool) — kept in sync with
+  `HKCU\…\Run\Nudge`; see `docs/design-spec.md` §9.
 
-## TODO (после MVP)
+## Settings
 
-- [ ] Звуковой сигнал при popup
-- [ ] LLM-классификатор: автооценка "хуйня или нет" из текста обоих полей (если явно не указано → `null`). Лёгкая модель, локально или API
-- [ ] Голосовой ввод через ElevenLabs STT — кнопка/хоткей в popup для диктовки вместо набора
+The settings window opens from the tray menu (`Settings`) and edits the same
+`config.json` (hotkey, interval, autostart). Edits are picked up by the
+running app immediately via a file watcher. Full contract:
+`docs/design-spec.md` §9.
+
+## TODO (post-MVP)
+
+- [ ] Audio cue on popup.
+- [ ] LLM classifier: auto-evaluate "bullshit or not" from the text of both
+      fields (if not stated explicitly → `null`). Lightweight model, local or
+      API.
+- [ ] Voice input via ElevenLabs STT — a button / hotkey in the popup for
+      dictation instead of typing.

@@ -183,14 +183,14 @@ fn run_settings_ui() -> eframe::Result {
         .with_min_inner_size([400.0, 320.0])
         .with_decorations(true)
         .with_resizable(true)
-        .with_title("Nudge — Настройки");
+        .with_title("Nudge — Settings");
     let options = eframe::NativeOptions {
         viewport,
         ..Default::default()
     };
 
     eframe::run_native(
-        "Nudge — Настройки",
+        "Nudge — Settings",
         options,
         Box::new(move |cc| Ok(Box::new(SettingsApp::new(cc, cfg, provider, persist)))),
     )

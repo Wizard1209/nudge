@@ -38,7 +38,7 @@ describe("static initial-load appearance", () => {
         // Hint text appears once egui has settled.
         await wait(700)
         const png = decode((await nudgeFile.page.screenshot()) as Buffer)
-        // Row 2 ("Хуйня?") is unfocused on initial render → hint visible.
+        // Row 2 ("Хуйня?" placeholder, spec §3) is unfocused on initial render → hint visible.
         // Card left ≈ 160; glyphs start ~20 px in, so band is x≈180..270, y≈200..220.
         const peak = peakBrightness(png, 180, 200, 100, 20)
         console.log(`placeholder-hint peak: ${peak.toFixed(1)}`)

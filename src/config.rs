@@ -1,10 +1,12 @@
-//! On-disk user configuration. Currently just the global hotkey label.
+//! On-disk user configuration: hotkey, default interval, autostart.
 //!
 //! Lives next to the journal: `<Documents>/Nudge/config.json`. We chose JSON
 //! over TOML so we don't add a parser dependency (serde_json is already in
-//! the tree for the journal). The file format is intentionally
-//! human-editable — the readme tells users to edit it by hand; there's no
-//! settings UI yet.
+//! the tree for the journal). The file is the **source of truth** shared by
+//! the main process and the settings UI (`src/settings_app.rs`, spec §9):
+//! settings writes via `save()`, the main process picks up edits via the
+//! watcher in `src/config_watcher.rs`. It also remains human-editable by
+//! hand — that's the documented fallback when the UI isn't an option.
 //!
 //! Loading is forgiving: a missing file produces a default config, a
 //! malformed file logs to stderr and falls back to the default. We never

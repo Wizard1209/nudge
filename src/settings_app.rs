@@ -149,7 +149,7 @@ impl SettingsForm {
 
 /// Validation failure modes for [`SettingsForm::to_config`]. Today only the
 /// interval can fail; the variant carries the underlying parse error so the
-/// banner can show "что введено" verbatim.
+/// banner can show the offending input verbatim.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SettingsValidationError {
     Interval(IntervalParseError),
@@ -177,7 +177,7 @@ impl std::fmt::Display for IntervalParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Интервал должен быть положительным числом минут (введено: \"{}\")",
+            "Interval must be a positive number of minutes (got: \"{}\")",
             self.input
         )
     }
@@ -298,8 +298,8 @@ pub struct SettingsApp {
     /// the dedicated settings process; on WASM it's a no-op (no process).
     quit_requested: bool,
     /// True while the hotkey row is in capture mode. The TextEdit is hidden,
-    /// the row shows a "Нажмите комбинацию…" prompt, and per-frame input
-    /// polling drives `decide_capture` to fill in the field.
+    /// the row shows a "Press a combo…" prompt, and per-frame input polling
+    /// drives `decide_capture` to fill in the field.
     recording_hotkey: bool,
     /// Snapshot of the hotkey label taken when recording started — used by
     /// the cancel branch to restore the pre-recording value. `None` when
@@ -357,9 +357,9 @@ impl SettingsApp {
             Ok(cfg) => match (self.persist)(&cfg) {
                 Ok(()) => {
                     self.form.mark_clean();
-                    self.banner = Some("Сохранено".to_string());
+                    self.banner = Some("Saved".to_string());
                 }
-                Err(e) => self.banner = Some(format!("Ошибка сохранения: {e}")),
+                Err(e) => self.banner = Some(format!("Save failed: {e}")),
             },
             Err(e) => self.banner = Some(e.to_string()),
         }
@@ -379,9 +379,9 @@ impl SettingsApp {
         );
         match result {
             Ok(()) => self.banner = Some(if desired {
-                "Автозапуск включён".to_string()
+                "Autostart enabled".to_string()
             } else {
-                "Автозапуск выключен".to_string()
+                "Autostart disabled".to_string()
             }),
             Err(e) => self.banner = Some(format!("{e}")),
         }
@@ -407,19 +407,19 @@ impl eframe::App for SettingsApp {
         }
 
         let ui = root_ui;
-        ui.heading("Настройки");
+        ui.heading("Settings");
         ui.add_space(8.0);
 
-        // Row 1: hotkey. Two modes — the plain TextEdit + "Запись" button when
-        // idle, and a "Нажмите комбинацию…" prompt + Cancel button while
+        // Row 1: hotkey. Two modes — the plain TextEdit + "Record" button when
+        // idle, and a "Press a combo…" prompt + Cancel button while
         // recording. Recording captures the first supported combo through
         // `decide_capture` and stuffs `format(hk)` back into the form's
         // hotkey string; Save still does the persistence.
         ui.horizontal(|ui| {
-            ui.label("Глобальный хоткей:");
+            ui.label("Global hotkey:");
             if self.recording_hotkey {
-                ui.label(egui::RichText::new("Нажмите комбинацию…").italics());
-                if ui.button("Отмена").clicked() {
+                ui.label(egui::RichText::new("Press a combo…").italics());
+                if ui.button("Cancel").clicked() {
                     self.cancel_recording();
                 }
             } else {
@@ -429,7 +429,7 @@ impl eframe::App for SettingsApp {
                         .desired_width(220.0)
                         .hint_text("Ctrl+Shift+Space"),
                 );
-                if ui.button("Запись").clicked() {
+                if ui.button("Record").clicked() {
                     self.start_recording();
                 }
             }
@@ -468,7 +468,7 @@ impl eframe::App for SettingsApp {
 
         // Row 2: default interval
         ui.horizontal(|ui| {
-            ui.label("Интервал по умолчанию (мин):");
+            ui.label("Default interval (min):");
             ui.add(
                 egui::TextEdit::singleline(&mut self.form.interval_text)
                     .id(egui::Id::new("settings_interval"))
@@ -481,7 +481,7 @@ impl eframe::App for SettingsApp {
         // Row 3: autostart — immediate-on-toggle through the transactional rule.
         ui.horizontal(|ui| {
             let mut autostart = self.form.autostart;
-            let cb = ui.checkbox(&mut autostart, "Автозапуск с Windows");
+            let cb = ui.checkbox(&mut autostart, "Launch with Windows");
             if cb.changed() {
                 self.apply_autostart_toggle(autostart);
             }
@@ -495,10 +495,10 @@ impl eframe::App for SettingsApp {
         }
 
         ui.horizontal(|ui| {
-            if ui.button("Сохранить").clicked() {
+            if ui.button("Save").clicked() {
                 self.save();
             }
-            if ui.button("Отмена").clicked() {
+            if ui.button("Cancel").clicked() {
                 self.quit_requested = true;
             }
         });

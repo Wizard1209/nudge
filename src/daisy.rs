@@ -2,8 +2,8 @@
 //!
 //! A Bellis perennis ("marguerite"): 12 plump elliptical petals around a
 //! bright yellow center, white at the base fading to a soft pink at the
-//! outermost tip — the signature look that distinguishes маргаритка from a
-//! plain field daisy. Petals fall one by one as the nudge timer counts down
+//! outermost tip — the signature look that distinguishes a marguerite from
+//! a plain field daisy. Petals fall one by one as the nudge timer counts down
 //! (petal 0 at 12 o'clock falls first, then petal 1, …, clockwise).
 //! `DriftState` animates the just-fallen petal radially outward + slightly
 //! downward (gravity) while fading.
@@ -26,7 +26,7 @@ const PETAL_ORBIT: f32 = 20.0;
 const PETAL_LEN: f32 = 11.0;
 /// Half-width of a petal along its short (tangential) axis. Wider than a
 /// classic field daisy — gives the plump rounded look that reads as a
-/// маргаритка / tamagotchi-style flower.
+/// marguerite / tamagotchi-style flower.
 const PETAL_WIDTH: f32 = 4.6;
 /// Radius of the central yellow disk.
 const CENTER_RADIUS: f32 = 6.5;

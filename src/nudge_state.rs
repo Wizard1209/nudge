@@ -147,7 +147,7 @@ pub fn tooltip_for_remaining(d: Duration) -> String {
 /// Minute number that `tooltip_for_remaining` would render for this
 /// duration. The tray loop uses this to dedupe `set_tooltip` calls so the
 /// tooltip is only refreshed when the displayed number changes (spec §5:
-/// "обновляется раз в минуту"). The "now" state maps to 0.
+/// "updated once per minute"). The "now" state maps to 0.
 pub fn displayed_minutes(d: Duration) -> u64 {
     ceil_minutes(d)
 }
@@ -170,8 +170,8 @@ pub fn repaint_interval(popup_visible: bool) -> Option<Duration> {
 }
 
 /// Screen position for the spotlight window: horizontally centered; the top
-/// of the window sits at 25% of screen height (spec §1 — верхняя треть, на
-/// уровне естественного взгляда). Window height is irrelevant to the y anchor.
+/// of the window sits at 25% of screen height (spec §1 — upper third, at
+/// natural eye level). Window height is irrelevant to the y anchor.
 pub fn window_position(screen: (u32, u32), window: (u32, u32)) -> (i32, i32) {
     let (sw, sh) = (screen.0 as i32, screen.1 as i32);
     let (ww, _wh) = (window.0 as i32, window.1 as i32);
@@ -263,9 +263,9 @@ mod tests {
 
     #[test]
     fn submit_with_empty_fields_is_change_interval_without_journaling() {
-        // The dedicated "обновить интервал, ничего не записывая" path: Enter
-        // on empty fields resets the timer but writes nothing. Whitespace-only
-        // counts as empty.
+        // The dedicated "rearm the timer without writing anything" path:
+        // Enter on empty fields resets the timer but writes nothing.
+        // Whitespace-only counts as empty.
         for (doing, bullshit) in [("", ""), ("   ", "\t\n")] {
             let o =
                 decide_close(TriggerSource::Manual, Action::Submit, doing, bullshit, "5").unwrap();

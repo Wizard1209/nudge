@@ -29,7 +29,7 @@ const BUTTON_ROW_Y = 130
 // coordinates target the middle of each input box.
 const HOTKEY_INPUT_X = 237
 const INTERVAL_INPUT_X = 256
-// "Запись" / "Отмена" button on the hotkey row, immediately right of the
+// "Record" / "Cancel" button on the hotkey row, immediately right of the
 // TextEdit. Calibrated against a screenshot of the rendered canvas. Toggles
 // the recorder mode.
 const HOTKEY_RECORD_BUTTON_X = 380
@@ -93,13 +93,13 @@ test("editing interval and saving persists the new value", async ({ settings }) 
 })
 
 test("hotkey recorder captures Ctrl+Shift+A and Save persists it", async ({ settings }) => {
-    // End-to-end recorder flow: click "Запись" → the row enters capture
+    // End-to-end recorder flow: click "Record" → the row enters capture
     // mode → press Ctrl+Shift+A → the form's hotkey string flips to
     // "Ctrl+Shift+A" (canonical form) → click Save → localStorage carries
     // the new label.
     await settings.page.evaluate(() => localStorage.clear())
 
-    // Click the "Запись" button to enter capture mode.
+    // Click the "Record" button to enter capture mode.
     await settings.page.mouse.click(HOTKEY_RECORD_BUTTON_X, ROW_HOTKEY_Y)
     await wait(400)
 
@@ -136,7 +136,7 @@ test("hotkey recorder captures Ctrl+Shift+A and Save persists it", async ({ sett
 
 test("Escape while recording cancels and restores prior hotkey", async ({ settings }) => {
     // Bare Escape during capture is the cancel gesture — it must restore
-    // whatever the field held before the user clicked "Запись" (not flip
+    // whatever the field held before the user clicked "Record" (not flip
     // recording-state into the form). Save afterwards persists the original
     // value, NOT some half-captured combo.
     await settings.page.evaluate(() => localStorage.clear())

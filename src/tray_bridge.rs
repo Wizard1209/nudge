@@ -376,7 +376,7 @@ fn tray_thread_main(
     // State key: (petals_remaining, drift_progress_x100, drift_active).
     let mut last_state_key: (u8, u16, bool) = (255, 0, false);
     // Dedupe tooltip updates the same way — only call set_tooltip when the
-    // rendered minute number changes (spec §5: "обновляется раз в минуту").
+    // rendered minute number changes (spec §5: "updated once per minute").
     // `None` forces a refresh on the first loop iteration after a new timer.
     let mut last_tooltip_minutes: Option<u64> = None;
     // Latch so a single timer instance fires the popup at most once.
