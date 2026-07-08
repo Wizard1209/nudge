@@ -59,6 +59,17 @@ impl NudgeApp {
         visuals.widgets.inactive.fg_stroke.color = HINT_TEXT_COLOR;
         cc.egui_ctx.set_visuals(visuals);
 
+        // Force frame #1 ourselves. When the process starts without window
+        // activation (autostart at logon, spawn from a background shell) the
+        // OS delivers no input events to the fresh window, and the event
+        // loop never paints on its own: the window sits as a transparent
+        // never-rendered overlay, `ui()` never runs, so hwnd is never handed
+        // to the tray (its Show/hotkey wakeups need it) and the frozen
+        // first-launch timer can never be started by closing the popup.
+        // Observed live on Windows: launch unfocused → no frame until the
+        // first real input event hits the window.
+        cc.egui_ctx.request_repaint();
+
         Self {
             doing: String::new(),
             bullshit: String::new(),
@@ -527,11 +538,15 @@ impl eframe::App for NudgeApp {
                 }
             }
 
-            // Spec §4: initial popup shown by Self::new bypasses show_popup,
-            // so arm it here on the first frame — once hwnd is captured
-            // (native) and the page is ready (WASM).
+            // Spec §1/§4: the initial popup was flagged visible by Self::new
+            // without going through show_popup, so nothing has grabbed OS
+            // focus for it yet — launched from a context that doesn't hand
+            // new windows foreground (autostart at logon), it would sit
+            // unfocused and keyboard-dead. Now that hwnd is captured, route
+            // it through the same presentation path as every later popup:
+            // force_foreground + arm the focus-loss check.
             if self.popup_visible {
-                self.armed = self.current_foreground_matches();
+                self.show_popup(ctx, self.trigger_source);
             }
 
             self.center_once = false;
