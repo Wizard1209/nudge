@@ -17,10 +17,18 @@
 
 ## Известные падения e2e (пре-экзистинг, есть и на чистом master)
 
-- [ ] `settings.test.ts` → hotkey recorder captures Ctrl+Shift+A: рекордер
-  не ловит комбо, персистится старый `Ctrl+Shift+Space`.
-- [ ] `design-static.test.ts` → placeholder hint text is legible: peak
-  brightness 58 при пороге 140.
+- [x] `settings.test.ts` → hotkey recorder: тест промахивался мимо кнопки
+  Record — координата была откалибрована до перевода UI на английский
+  (короткая метка сдвинула ряд влево). Продукт работал; поправлена
+  координата + оба recorder-теста теперь проверяют, что режим записи
+  реально включился (иначе Escape-тест проходил вакуумно).
+- [x] `design-static.test.ts` → placeholder legibility: реальная регрессия
+  продукта, тест ловил честно. Две причины: egui 0.34 перезатирает цвет
+  hint-текста `visuals.weak_text_color()` (RichText-цвет мёртв), и тема по
+  умолчанию следует за ОС — кастомные visuals, установленные в конструкторе,
+  оставались в неактивной теме. Починено: `set_theme(Dark)` перед
+  `set_visuals` в обоих приложениях + `visuals.weak_text_color =
+  Some(HINT_TEXT_COLOR)`.
 
 ## Окно настроек
 

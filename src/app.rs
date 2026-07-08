@@ -13,8 +13,12 @@ pub const CLEAR_COLOR_TRANSPARENT: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
 /// Placeholder / hint text colour. egui's dark default is ~gray(120), which
 /// washes out against the translucent card. Bumped to gray(170) so hints
 /// like "Что я делаю?" (the popup's question copy — kept Russian as the
-/// product placeholders) are comfortably legible. Set both on the egui visuals
-/// (so the widget defaults match) and on each field's hint RichText.
+/// product placeholders) are comfortably legible. Must be applied via
+/// `visuals.weak_text_color`: egui 0.34's TextEdit overwrites any per-hint
+/// RichText color with `visuals.weak_text_color()` (widgets/text_edit/
+/// builder.rs:586), and the computed default — text color gamma-multiplied
+/// by `weak_text_alpha` — renders the hints nearly invisible (~peak 58)
+/// over the dark card.
 const HINT_TEXT_COLOR: egui::Color32 = egui::Color32::from_gray(170);
 
 pub struct NudgeApp {
@@ -57,6 +61,19 @@ impl NudgeApp {
         visuals.window_fill = egui::Color32::TRANSPARENT;
         visuals.widgets.noninteractive.fg_stroke.color = HINT_TEXT_COLOR;
         visuals.widgets.inactive.fg_stroke.color = HINT_TEXT_COLOR;
+        // The only place a hint color survives in egui 0.34 — TextEdit
+        // clobbers per-hint RichText colors with this (see HINT_TEXT_COLOR).
+        visuals.weak_text_color = Some(HINT_TEXT_COLOR);
+        // Pin the theme BEFORE installing the visuals. set_visuals only
+        // writes into the currently-active theme's style, and with the
+        // default ThemePreference::System egui flips to the OS theme
+        // between construction and frame #1 — on a light-themed OS every
+        // override above would sit unused in the dark style while the
+        // popup renders with stock light visuals (observed in the browser
+        // build: theme=Dark in new(), theme=Light by the first frame).
+        // The spotlight card is dark by design, so the theme is not a
+        // user preference here.
+        cc.egui_ctx.set_theme(egui::ThemePreference::Dark);
         cc.egui_ctx.set_visuals(visuals);
 
         // Force frame #1 ourselves. When the process starts without window
@@ -377,11 +394,10 @@ impl NudgeApp {
             row_rect,
             egui::TextEdit::singleline(value)
                 .id(field_id)
-                .hint_text(
-                    egui::RichText::new(hint)
-                        .size(16.0)
-                        .color(HINT_TEXT_COLOR),
-                )
+                // No .color() on the hint: egui 0.34 overwrites it with
+                // visuals.weak_text_color(), which new() sets to
+                // HINT_TEXT_COLOR. Only the size survives here.
+                .hint_text(egui::RichText::new(hint).size(16.0))
                 // egui 0.34: a custom `.frame(..)` is used verbatim, so its
                 // inner_margin — NOT `.margin(..)` — is what insets the text.
                 // `.margin()` alone (as in 0.31's `.frame(false)`) leaves the

@@ -1,5 +1,6 @@
 import { expect } from "vitest"
 import { test } from "../fixtures/settings"
+import { decode, avgBrightness } from "../fixtures/pixels"
 
 /**
  * Settings UI e2e tests — drive the same lib.rs `wasm_entry::start` that
@@ -30,9 +31,11 @@ const BUTTON_ROW_Y = 130
 const HOTKEY_INPUT_X = 237
 const INTERVAL_INPUT_X = 256
 // "Record" / "Cancel" button on the hotkey row, immediately right of the
-// TextEdit. Calibrated against a screenshot of the rendered canvas. Toggles
-// the recorder mode.
-const HOTKEY_RECORD_BUTTON_X = 380
+// TextEdit. Calibrated against a screenshot of the rendered canvas AFTER the
+// UI labels went English ("Global hotkey:" is narrower than the original
+// Russian label, which shifted the whole row left — the old 380 now missed
+// the button entirely). Toggles the recorder mode.
+const HOTKEY_RECORD_BUTTON_X = 344
 // Checkbox glyph for autostart sits at the very left of its row.
 const AUTOSTART_CHECKBOX_X = 9
 // Save button is the first (leftmost) button in the bottom row.
@@ -44,6 +47,21 @@ async function clickAt(page: Awaited<ReturnType<typeof test.extend<unknown>["pag
     await wait(200)
     await page.mouse.click(x, y)
     await wait(200)
+}
+
+/**
+ * Assert the hotkey row actually entered capture mode. In recording mode the
+ * light TextEdit box is replaced by the italic "Press a combo…" label on the
+ * dark panel, so the row region's average brightness collapses (~243 idle →
+ * ~63 recording). Without this guard a click that misses the Record button
+ * leaves the tests asserting against the idle form — the Escape-cancel test
+ * then passes vacuously and the capture test fails at the far end with an
+ * unhelpful "persisted value didn't change".
+ */
+async function assertRecordingEngaged(page: any): Promise<void> {
+    const png = decode((await page.screenshot()) as Buffer)
+    const avg = avgBrightness(png, 100, 34, 210, 16)
+    expect(avg, "hotkey row should show 'Press a combo…' (recording mode)").toBeLessThan(150)
 }
 
 async function readPersistedConfig(page: any): Promise<{
@@ -102,6 +120,7 @@ test("hotkey recorder captures Ctrl+Shift+A and Save persists it", async ({ sett
     // Click the "Record" button to enter capture mode.
     await settings.page.mouse.click(HOTKEY_RECORD_BUTTON_X, ROW_HOTKEY_Y)
     await wait(400)
+    await assertRecordingEngaged(settings.page)
 
     // Make sure the canvas has keyboard focus so egui sees the keys. The
     // recorder's per-frame poll reads ctx.input(); without focus, eframe-web
@@ -144,6 +163,7 @@ test("Escape while recording cancels and restores prior hotkey", async ({ settin
     // Enter recording mode.
     await settings.page.mouse.click(HOTKEY_RECORD_BUTTON_X, ROW_HOTKEY_Y)
     await wait(400)
+    await assertRecordingEngaged(settings.page)
 
     await settings.page.evaluate(() => {
         const c = document.getElementById("nudge_canvas") as HTMLCanvasElement | null
