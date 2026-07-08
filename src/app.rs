@@ -81,7 +81,12 @@ impl NudgeApp {
             // unfreezes it with the interval the user chose.
             timer: Timer::frozen(),
             trigger_source: TriggerSource::Timer,
-            popup_visible: true,
+            // Born hidden. The launch popup is NOT a special constructor
+            // state: the first frame performs a regular show_popup
+            // transition (see `ui`), so "visible" has exactly one entry
+            // point and the show side effects (foreground grab, arming)
+            // can't be skipped by construction.
+            popup_visible: false,
             error_message: None,
             card_rect: None,
             #[cfg(target_arch = "wasm32")]
@@ -538,16 +543,15 @@ impl eframe::App for NudgeApp {
                 }
             }
 
-            // Spec §1/§4: the initial popup was flagged visible by Self::new
-            // without going through show_popup, so nothing has grabbed OS
-            // focus for it yet — launched from a context that doesn't hand
-            // new windows foreground (autostart at logon), it would sit
-            // unfocused and keyboard-dead. Now that hwnd is captured, route
-            // it through the same presentation path as every later popup:
-            // force_foreground + arm the focus-loss check.
-            if self.popup_visible {
-                self.show_popup(ctx, self.trigger_source);
-            }
+            // Spec §1/§4: present the launch popup. The app is constructed
+            // hidden, so this is the one and only entry into the visible
+            // state — the same show_popup transition as timer/tray/hotkey
+            // opens, with the same side effects (force_foreground so the
+            // popup gets keyboard focus even when the launcher — autostart
+            // at logon — didn't hand us foreground, then arm the
+            // focus-loss check). Runs after hwnd capture above because
+            // force_foreground needs the handle.
+            self.show_popup(ctx, TriggerSource::Timer);
 
             self.center_once = false;
         }
