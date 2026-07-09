@@ -1,0 +1,20 @@
+# Dependencies & build output
+node_modules/
+dist/
+build/
+release/
+*.local
+
+# Tooling caches
+.pnpm-store/
+.puppeteer-cache/
+
+# Secrets & env
+.env
+
+# Personal / local project files
+CLAUDE.local.md
+TODO.md
+.mcp.json
+.claude/
+memory/

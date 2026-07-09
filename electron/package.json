@@ -1,0 +1,80 @@
+{
+  "name": "nudge-electron",
+  "version": "0.1.0",
+  "description": "Interval journaling for focus",
+  "type": "module",
+  "main": "dist/electron/main.js",
+  "scripts": {
+    "dev": "vite",
+    "dev:electron": "node scripts/dev-electron.js",
+    "build": "vite build",
+    "build:electron": "node scripts/build-electron.js",
+    "dist": "pnpm build && pnpm build:electron && electron-builder --win",
+    "typecheck": "tsc --noEmit",
+    "test:unit": "vitest run --config vitest.unit.config.mjs",
+    "test:e2e": "PUPPETEER_CACHE_DIR=.puppeteer-cache vitest run --config vitest.e2e.config.mjs",
+    "test:e2e:debug": "PUPPETEER_CACHE_DIR=.puppeteer-cache E2E_DEBUG=1 vitest run --config vitest.e2e.config.mjs",
+    "test:native": "vitest run --config vitest.native.config.mjs"
+  },
+  "keywords": [],
+  "author": "Wizard1209",
+  "license": "MIT",
+  "packageManager": "pnpm@10.28.2",
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^7.0.0",
+    "@tailwindcss/vite": "^4.2.2",
+    "electron": "^41.2.0",
+    "electron-builder": "^26.8.1",
+    "playwright": "^1.60.0",
+    "puppeteer": "^24.41.0",
+    "svelte": "^5.55.4",
+    "tailwindcss": "^4.2.2",
+    "typescript": "^6.0.2",
+    "vite": "^8.0.8",
+    "vitest": "^4.1.4"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron",
+      "puppeteer"
+    ]
+  },
+  "build": {
+    "appId": "com.wizard.nudge",
+    "productName": "Nudge",
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Nudge"
+    }
+  },
+  "dependencies": {
+    "ulid": "^3.0.2"
+  }
+}

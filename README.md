@@ -74,6 +74,16 @@ The settings window opens from the tray menu (`Settings`) and edits the same
 running app immediately via a file watcher. Full contract:
 `docs/design-spec.md` §9.
 
+## Development: the Electron prototype
+
+This repo holds two implementations of the same spec. Alongside the Rust app
+lives [`electron/`](electron/README.md) — the **prototyping harness** where new
+features and design changes are tried first, because Electron is fast to build
+and easy to inspect visually. The outcome is captured in the shared spec under
+[`docs/`](docs), the contract both implementations follow, and then ported to
+Rust. The released product is the Rust binary only; the Electron app is a
+workbench, fully rewritable from the spec.
+
 ## TODO (post-MVP)
 
 - [ ] Audio cue on popup.
