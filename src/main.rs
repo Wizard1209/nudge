@@ -173,9 +173,8 @@ fn run_settings_ui() -> eframe::Result {
     // main process reads from on launch. Move-captures the path; the
     // closure is held by SettingsApp for the lifetime of the window.
     let path_for_persist = config_path.clone();
-    let persist: settings_app::PersistFn = Box::new(move |c: &config::Config| {
-        config::save(&path_for_persist, c)
-    });
+    let persist: settings_app::PersistFn =
+        Box::new(move |c: &config::Config| config::save(&path_for_persist, c));
 
     let win_size = [520.0_f32, 400.0];
     let viewport = egui::ViewportBuilder::default()
@@ -203,7 +202,10 @@ fn main() -> eframe::Result {
 
     // Manual registry QA hook — runs the autostart lifecycle and exits before
     // any GUI / config work. Windows-only; a no-op stub elsewhere.
-    if std::env::args().skip(1).any(|a| a == "--autostart-selftest") {
+    if std::env::args()
+        .skip(1)
+        .any(|a| a == "--autostart-selftest")
+    {
         #[cfg(target_os = "windows")]
         run_autostart_selftest();
         #[cfg(not(target_os = "windows"))]
@@ -263,11 +265,7 @@ fn main() -> eframe::Result {
     // thread's message queue), and — after Task 5 — handles config-file
     // live-reload by re-reading `config_path` and diffing.
     #[cfg(target_os = "windows")]
-    tray_bridge::spawn_tray_thread(
-        Some(configured_hotkey),
-        config_path.clone(),
-        config.clone(),
-    );
+    tray_bridge::spawn_tray_thread(Some(configured_hotkey), config_path.clone(), config.clone());
     #[cfg(not(target_os = "windows"))]
     let _ = configured_hotkey; // unused on non-Windows targets for now
 
@@ -306,8 +304,10 @@ fn main() -> eframe::Result {
                 GetSystemMetrics(SM_CYSCREEN).max(1) as u32,
             )
         };
-        let (x, y) =
-            nudge_state::window_position((screen_w, screen_h), (win_size[0] as u32, win_size[1] as u32));
+        let (x, y) = nudge_state::window_position(
+            (screen_w, screen_h),
+            (win_size[0] as u32, win_size[1] as u32),
+        );
         egui::ViewportBuilder::default()
             .with_inner_size(win_size)
             .with_position([x as f32, y as f32])

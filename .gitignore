@@ -9,6 +9,7 @@ journal*.csv
 .env
 CLAUDE.local.md
 session-context.md
+TODO.md
 .worktrees/
 node_modules/
 dist/

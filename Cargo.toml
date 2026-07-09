@@ -2,6 +2,10 @@
 name = "nudge"
 version = "0.1.0"
 edition = "2024"
+description = "Interval journaling for focus — a periodic spotlight popup for Windows that asks what you're doing and appends the answers to an NDJSON journal"
+license = "MIT"
+repository = "https://github.com/Wizard1209/nudge"
+readme = "README.md"
 
 [lib]
 name = "nudge_web"

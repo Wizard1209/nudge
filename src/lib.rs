@@ -46,9 +46,8 @@ mod wasm_entry {
                 }
                 let provider: Box<dyn crate::autostart::AutostartProvider> =
                     Box::new(FakeProvider::new(cfg.autostart));
-                let persist: PersistFn = Box::new(|c: &config::Config| {
-                    config::save_to_localstorage(c)
-                });
+                let persist: PersistFn =
+                    Box::new(|c: &config::Config| config::save_to_localstorage(c));
 
                 eframe::WebRunner::new()
                     .start(
@@ -94,6 +93,6 @@ pub mod journal;
 pub mod nudge_state;
 pub mod settings_app;
 pub mod timer;
-pub mod word_jump;
 #[cfg(target_os = "windows")]
 pub mod tray_bridge;
+pub mod word_jump;

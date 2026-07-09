@@ -100,7 +100,11 @@ pub struct IntervalError {
 
 impl std::fmt::Display for IntervalError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Interval must be a positive number of minutes (got \"{}\")", self.input)
+        write!(
+            f,
+            "Interval must be a positive number of minutes (got \"{}\")",
+            self.input
+        )
     }
 }
 
@@ -130,7 +134,7 @@ pub fn parse_interval(text: &str) -> Result<Duration, IntervalError> {
 /// by the tooltip text and its dedup key so the two never disagree.
 fn ceil_minutes(d: Duration) -> u64 {
     let secs = d.as_secs();
-    if secs == 0 { 0 } else { (secs + 59) / 60 }
+    if secs == 0 { 0 } else { secs.div_ceil(60) }
 }
 
 /// Tray tooltip text for the time remaining until the next nudge.
@@ -218,7 +222,11 @@ mod tests {
         // the popup refires next frame. It still writes nothing and preserves
         // the form.
         let o = decide_close(TriggerSource::Timer, Action::Dismiss, "doing", "x", "5").unwrap();
-        assert_eq!(o.reset_timer, Some(five_min()), "timer-fired Esc must reset");
+        assert_eq!(
+            o.reset_timer,
+            Some(five_min()),
+            "timer-fired Esc must reset"
+        );
         assert!(!o.write_journal);
         assert!(!o.clear_form);
     }
@@ -290,8 +298,8 @@ mod tests {
         // path that yields no outcome — the caller keeps the popup open and
         // shows the error.
         for bad in ["0", "-5", "NaN"] {
-            let err = decide_close(TriggerSource::Manual, Action::Submit, "doing", "", bad)
-                .unwrap_err();
+            let err =
+                decide_close(TriggerSource::Manual, Action::Submit, "doing", "", bad).unwrap_err();
             assert_eq!(err.input, bad);
         }
     }
@@ -311,8 +319,14 @@ mod tests {
         // Garbage interval on a manual Esc: still no error, still no reset
         // (the fallback interval is computed but unused because manual Esc
         // doesn't reschedule).
-        let o = decide_close(TriggerSource::Manual, Action::Dismiss, "doing", "", "garbage")
-            .unwrap();
+        let o = decide_close(
+            TriggerSource::Manual,
+            Action::Dismiss,
+            "doing",
+            "",
+            "garbage",
+        )
+        .unwrap();
         assert_eq!(o.reset_timer, None);
     }
 
@@ -334,7 +348,10 @@ mod tests {
 
     #[test]
     fn parse_interval_whitespace() {
-        assert_eq!(parse_interval("  5  ").unwrap(), Duration::from_secs(5 * 60));
+        assert_eq!(
+            parse_interval("  5  ").unwrap(),
+            Duration::from_secs(5 * 60)
+        );
     }
 
     #[test]
@@ -365,8 +382,14 @@ mod tests {
         assert_eq!(tooltip_for_remaining(Duration::from_secs(60)), "~1 min");
         assert_eq!(tooltip_for_remaining(Duration::from_secs(61)), "~2 min");
         assert_eq!(tooltip_for_remaining(Duration::from_secs(9 * 60)), "~9 min");
-        assert_eq!(tooltip_for_remaining(Duration::from_secs(9 * 60 + 1)), "~10 min");
-        assert_eq!(tooltip_for_remaining(Duration::from_secs(30 * 60)), "~30 min");
+        assert_eq!(
+            tooltip_for_remaining(Duration::from_secs(9 * 60 + 1)),
+            "~10 min"
+        );
+        assert_eq!(
+            tooltip_for_remaining(Duration::from_secs(30 * 60)),
+            "~30 min"
+        );
     }
 
     #[test]

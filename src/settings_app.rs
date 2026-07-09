@@ -107,7 +107,9 @@ impl SettingsForm {
     pub fn mark_clean(&mut self) {
         self.original = Config {
             hotkey: self.hotkey.trim().to_string(),
-            default_interval_minutes: self.parsed_interval().unwrap_or(self.original.default_interval_minutes),
+            default_interval_minutes: self
+                .parsed_interval()
+                .unwrap_or(self.original.default_interval_minutes),
             autostart: self.autostart,
         };
         // Rehydrate text so trimming-on-save sticks visibly.
@@ -377,17 +379,17 @@ impl SettingsApp {
         // `&mut self.persist` inside the closure, so we shadow it with a
         // local FnOnce wrapper.
         let persist = &mut self.persist;
-        let result = self.form.toggle_autostart(
-            self.provider.as_ref(),
-            desired,
-            |cfg: &Config| persist(cfg),
-        );
+        let result = self
+            .form
+            .toggle_autostart(self.provider.as_ref(), desired, |cfg: &Config| persist(cfg));
         match result {
-            Ok(()) => self.banner = Some(if desired {
-                "Autostart enabled".to_string()
-            } else {
-                "Autostart disabled".to_string()
-            }),
+            Ok(()) => {
+                self.banner = Some(if desired {
+                    "Autostart enabled".to_string()
+                } else {
+                    "Autostart disabled".to_string()
+                })
+            }
             Err(e) => self.banner = Some(format!("{e}")),
         }
     }
@@ -439,10 +441,10 @@ impl eframe::App for SettingsApp {
                 }
             }
         });
-        if self.recording_hotkey {
-            if let Some(hint) = self.recording_hint {
-                ui.colored_label(egui::Color32::LIGHT_RED, hint);
-            }
+        if self.recording_hotkey
+            && let Some(hint) = self.recording_hint
+        {
+            ui.colored_label(egui::Color32::LIGHT_RED, hint);
         }
         ui.add_space(6.0);
 
@@ -609,7 +611,10 @@ mod tests {
         f.interval_text = "5".to_string();
         assert!(f.is_dirty());
         f.mark_clean();
-        assert!(!f.is_dirty(), "mark_clean makes the current state the new baseline");
+        assert!(
+            !f.is_dirty(),
+            "mark_clean makes the current state the new baseline"
+        );
     }
 
     #[test]
@@ -710,7 +715,11 @@ mod tests {
 
     #[test]
     fn decide_capture_supported_key_captures() {
-        let mods = Modifiers { ctrl: true, shift: true, ..Modifiers::NONE };
+        let mods = Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Modifiers::NONE
+        };
         let out = decide_capture(mods, &[Key::A]);
         match out {
             CaptureOutcome::Captured(hk) => {

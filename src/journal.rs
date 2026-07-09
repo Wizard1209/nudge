@@ -36,10 +36,16 @@ fn validate_event(event: &JournalEvent) -> Result<(), JournalError> {
     let invalid = |detail: String| Err(JournalError::Validation { detail });
 
     if event.schema_version != 1 {
-        return invalid(format!("schema_version must be 1, got {}", event.schema_version));
+        return invalid(format!(
+            "schema_version must be 1, got {}",
+            event.schema_version
+        ));
     }
     if event.event_type != "submitted" {
-        return invalid(format!("event_type must be 'submitted', got '{}'", event.event_type));
+        return invalid(format!(
+            "event_type must be 'submitted', got '{}'",
+            event.event_type
+        ));
     }
     if event.entry_id.is_empty() {
         return invalid("entry_id must be non-empty".to_string());
@@ -101,13 +107,13 @@ pub fn write_event(path: &std::path::Path, event: &JournalEvent) -> Result<(), J
     validate_event(event)?;
 
     // Ensure parent dir exists
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).map_err(|e| JournalError::Io {
-                path: path_str.clone(),
-                detail: e.to_string(),
-            })?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(|e| JournalError::Io {
+            path: path_str.clone(),
+            detail: e.to_string(),
+        })?;
     }
 
     let line = serialize_event(event)?;
@@ -141,8 +147,7 @@ pub fn write_event_to_localstorage(event: &JournalEvent) -> Result<(), JournalEr
         }
     }
     fn js_err_to_string(e: wasm_bindgen::JsValue) -> String {
-        e.as_string()
-            .unwrap_or_else(|| format!("{:?}", e))
+        e.as_string().unwrap_or_else(|| format!("{:?}", e))
     }
 
     validate_event(event)?;
@@ -358,7 +363,11 @@ mod tests {
         #[test]
         fn fresh_write_creates_dir_and_file() {
             let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("nested").join("deep").join("journal.ndjson");
+            let path = dir
+                .path()
+                .join("nested")
+                .join("deep")
+                .join("journal.ndjson");
 
             write_event(&path, &test_event()).unwrap();
 

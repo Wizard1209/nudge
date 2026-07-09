@@ -40,20 +40,20 @@ use std::time::Duration;
 
 use base64::Engine as _;
 
-use windows::core::BOOL;
 use windows::Win32::Foundation::{HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC,
     DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, HGDIOBJ, ReleaseDC, SRCCOPY,
     SelectObject,
 };
-use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+use windows::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
 use windows::Win32::UI::HiDpi::{
-    SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetWindowRect, GetWindowThreadProcessId, IsWindowVisible,
 };
+use windows::core::BOOL;
 
 /// Spawn → popup-visible settle. eframe init + tray bootstrap + foregrounding.
 const STARTUP_WAIT: Duration = Duration::from_secs(4);
@@ -147,7 +147,12 @@ fn try_spawn_and_capture(margin: i32) -> Option<(Capture, i32, i32)> {
     std::thread::sleep(Duration::from_millis(400));
     let w = (rect.right - rect.left).max(1);
     let h = (rect.bottom - rect.top).max(1);
-    let cap = Capture::take(rect.left - margin, rect.top - margin, w + 2 * margin, h + 2 * margin);
+    let cap = Capture::take(
+        rect.left - margin,
+        rect.top - margin,
+        w + 2 * margin,
+        h + 2 * margin,
+    );
 
     // If the window didn't survive to this point, the pixels above may be
     // desktop-after-hide rather than the popup — discard and retry.
@@ -210,10 +215,10 @@ fn native_window_renders_card_centered_and_transparent() {
     // Opaque-black-over-wallpaper → inside much darker than outside.
     const P: usize = 12; // patch size
     let inside = [
-        (win_x0 + 6, win_y0 + 6),                         // TL
-        (win_x0 + wu - 6 - P, win_y0 + 6),                // TR
-        (win_x0 + 6, win_y0 + hu - 6 - P),                // BL
-        (win_x0 + wu - 6 - P, win_y0 + hu - 6 - P),       // BR
+        (win_x0 + 6, win_y0 + 6),                   // TL
+        (win_x0 + wu - 6 - P, win_y0 + 6),          // TR
+        (win_x0 + 6, win_y0 + hu - 6 - P),          // BL
+        (win_x0 + wu - 6 - P, win_y0 + hu - 6 - P), // BR
     ];
     let outside = [
         (2, 2),
@@ -236,7 +241,9 @@ fn native_window_renders_card_centered_and_transparent() {
     eprintln!(
         "[render-diag] card width_frac={width_frac:.2} (want >=0.55), center off x={cx_off:.2} y={cy_off:.2} (want small)"
     );
-    eprintln!("[render-diag] worst corner opacity gap={max_gap:.1} (want < {OPAQUE_DARKER_THAN_OUTSIDE})");
+    eprintln!(
+        "[render-diag] worst corner opacity gap={max_gap:.1} (want < {OPAQUE_DARKER_THAN_OUTSIDE})"
+    );
 
     // 1. Card fills + centers (catches the top-left/scale regression).
     assert!(
@@ -454,7 +461,8 @@ impl Capture {
         let (w, h, raw) = if (scale - 1.0).abs() > 1e-3 {
             let nw = (self.w as f32 * scale).round().max(1.0) as u32;
             let nh = (self.h as f32 * scale).round().max(1.0) as u32;
-            let resized = image::imageops::resize(&src, nw, nh, image::imageops::FilterType::Lanczos3);
+            let resized =
+                image::imageops::resize(&src, nw, nh, image::imageops::FilterType::Lanczos3);
             (nw, nh, resized.into_raw())
         } else {
             (self.w as u32, self.h as u32, src.into_raw())
@@ -528,11 +536,15 @@ extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
 
 /// The largest visible top-level window owned by `pid` — the eframe popup.
 fn find_app_window(pid: u32) -> Option<(HWND, RECT)> {
-    let mut data = EnumData { pid, found: Vec::new() };
+    let mut data = EnumData {
+        pid,
+        found: Vec::new(),
+    };
     unsafe {
         let _ = EnumWindows(Some(enum_proc), LPARAM(&mut data as *mut _ as isize));
     }
-    data.found.sort_by_key(|&(_, _, area)| std::cmp::Reverse(area));
+    data.found
+        .sort_by_key(|&(_, _, area)| std::cmp::Reverse(area));
     data.found.first().map(|&(hwnd, rect, _)| (hwnd, rect))
 }
 

@@ -116,8 +116,7 @@ impl NudgeApp {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn now_timestamp() -> String {
-        chrono::Local::now()
-            .to_rfc3339_opts(chrono::SecondsFormat::Millis, false)
+        chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, false)
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -180,9 +179,11 @@ impl NudgeApp {
         #[cfg(target_os = "windows")]
         {
             use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
-            let Some(hwnd_val) = self.hwnd else { return false };
+            let Some(hwnd_val) = self.hwnd else {
+                return false;
+            };
             let fg = unsafe { GetForegroundWindow() };
-            return !fg.0.is_null() && fg.0 as isize == hwnd_val;
+            !fg.0.is_null() && fg.0 as isize == hwnd_val
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -315,10 +316,7 @@ impl NudgeApp {
         egui::Frame::NONE
             .fill(egui::Color32::from_rgba_unmultiplied(24, 24, 27, 220))
             .corner_radius(egui::CornerRadius::same(16))
-            .stroke(egui::Stroke::new(
-                1.0,
-                egui::Color32::from_white_alpha(16),
-            ))
+            .stroke(egui::Stroke::new(1.0, egui::Color32::from_white_alpha(16)))
             .shadow(egui::epaint::Shadow {
                 offset: [0, 12],
                 blur: 40,
@@ -356,19 +354,12 @@ impl NudgeApp {
         self.card_rect = Some(inner.inner);
     }
 
-    fn row_field(
-        ui: &mut egui::Ui,
-        value: &mut String,
-        hint: &str,
-        key: &str,
-    ) -> egui::Response {
+    fn row_field(ui: &mut egui::Ui, value: &mut String, hint: &str, key: &str) -> egui::Response {
         const ROW_HEIGHT: f32 = 40.0;
         let field_id = egui::Id::new(key);
         let width = ui.available_width();
-        let (row_rect, _) = ui.allocate_exact_size(
-            egui::vec2(width, ROW_HEIGHT),
-            egui::Sense::hover(),
-        );
+        let (row_rect, _) =
+            ui.allocate_exact_size(egui::vec2(width, ROW_HEIGHT), egui::Sense::hover());
         let is_focused = ui.ctx().memory(|m| m.has_focus(field_id));
         if is_focused {
             // Replace egui's ASCII-only word jump with a Unicode-aware one
@@ -413,10 +404,7 @@ impl NudgeApp {
 
     fn divider(ui: &mut egui::Ui) {
         let width = ui.available_width();
-        let (rect, _) = ui.allocate_exact_size(
-            egui::vec2(width, 1.0),
-            egui::Sense::hover(),
-        );
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 1.0), egui::Sense::hover());
         ui.painter().hline(
             rect.x_range(),
             rect.center().y,
@@ -437,7 +425,12 @@ impl NudgeApp {
         Self::divider(ui);
         Self::row_field(ui, &mut self.bullshit, "Хуйня?", "row_bullshit");
         Self::divider(ui);
-        Self::row_field(ui, &mut self.next_minutes, "Следующий через (мин)", "row_minutes");
+        Self::row_field(
+            ui,
+            &mut self.next_minutes,
+            "Следующий через (мин)",
+            "row_minutes",
+        );
 
         // Show error message if journal write failed
         if let Some(err) = &self.error_message {
@@ -460,10 +453,7 @@ impl NudgeApp {
         egui::Frame::NONE
             .fill(fill)
             .corner_radius(egui::CornerRadius::same(14))
-            .stroke(egui::Stroke::new(
-                1.0,
-                egui::Color32::from_white_alpha(12),
-            ))
+            .stroke(egui::Stroke::new(1.0, egui::Color32::from_white_alpha(12)))
             .shadow(egui::epaint::Shadow {
                 offset: [0, 4],
                 blur: 12,
@@ -531,30 +521,26 @@ impl eframe::App for NudgeApp {
             #[cfg(target_os = "windows")]
             {
                 use raw_window_handle::HasWindowHandle;
-                if let Ok(wh) = _frame.window_handle() {
-                    if let raw_window_handle::RawWindowHandle::Win32(h) = wh.as_raw() {
-                        let hwnd_val = h.hwnd.get();
-                        self.hwnd = Some(hwnd_val);
-                        crate::tray_bridge::store_hwnd(hwnd_val);
+                if let Ok(wh) = _frame.window_handle()
+                    && let raw_window_handle::RawWindowHandle::Win32(h) = wh.as_raw()
+                {
+                    let hwnd_val = h.hwnd.get();
+                    self.hwnd = Some(hwnd_val);
+                    crate::tray_bridge::store_hwnd(hwnd_val);
 
-                        // Exclude window from ALT+TAB by applying WS_EX_TOOLWINDOW
-                        // (also hides from taskbar as a side effect; with_taskbar(false)
-                        // already handles the taskbar but tool-window style is what
-                        // reliably hides from ALT+TAB).
-                        unsafe {
-                            use windows::Win32::Foundation::HWND;
-                            use windows::Win32::UI::WindowsAndMessaging::{
-                                GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE,
-                                WS_EX_TOOLWINDOW,
-                            };
-                            let h = HWND(hwnd_val as *mut _);
-                            let ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
-                            let _ = SetWindowLongPtrW(
-                                h,
-                                GWL_EXSTYLE,
-                                ex | (WS_EX_TOOLWINDOW.0 as isize),
-                            );
-                        }
+                    // Exclude window from ALT+TAB by applying WS_EX_TOOLWINDOW
+                    // (also hides from taskbar as a side effect; with_taskbar(false)
+                    // already handles the taskbar but tool-window style is what
+                    // reliably hides from ALT+TAB).
+                    unsafe {
+                        use windows::Win32::Foundation::HWND;
+                        use windows::Win32::UI::WindowsAndMessaging::{
+                            GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW, WS_EX_TOOLWINDOW,
+                        };
+                        let h = HWND(hwnd_val as *mut _);
+                        let ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
+                        let _ =
+                            SetWindowLongPtrW(h, GWL_EXSTYLE, ex | (WS_EX_TOOLWINDOW.0 as isize));
                     }
                 }
             }
@@ -577,19 +563,14 @@ impl eframe::App for NudgeApp {
         // they restore the window + set flags. We check flags here.
         #[cfg(target_os = "windows")]
         {
-            if crate::tray_bridge::take_tray_clicked() {
-                if !self.popup_visible {
-                    self.show_popup(ctx, TriggerSource::Manual);
-                }
+            if crate::tray_bridge::take_tray_clicked() && !self.popup_visible {
+                self.show_popup(ctx, TriggerSource::Manual);
             }
 
             // Background timer thread restored window + set flag
-            if crate::tray_bridge::take_timer_fired() {
-                if !self.popup_visible {
-                    self.show_popup(ctx, TriggerSource::Timer);
-                }
+            if crate::tray_bridge::take_timer_fired() && !self.popup_visible {
+                self.show_popup(ctx, TriggerSource::Timer);
             }
-
         }
 
         // === WASM-only: timer check (update() always runs on WASM) ===
@@ -631,9 +612,7 @@ impl eframe::App for NudgeApp {
             if let Some(rect) = self.card_rect {
                 let clicked_outside = ctx.input(|i| {
                     i.pointer.any_click()
-                        && i.pointer
-                            .interact_pos()
-                            .map_or(false, |p| !rect.contains(p))
+                        && i.pointer.interact_pos().is_some_and(|p| !rect.contains(p))
                 });
                 if clicked_outside {
                     self.hide_popup(ctx, Action::SwitchAway);

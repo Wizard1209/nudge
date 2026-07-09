@@ -1,7 +1,9 @@
 # Nudge — interval journaling for focus
 
-A periodic spotlight popup that asks you "what are you doing?" and "is it
-bullshit?". Answers are written to an append-only NDJSON journal.
+A periodic spotlight popup for Windows that asks you "what are you doing?"
+and "is it bullshit?". Answers are written to an append-only NDJSON journal.
+
+![Nudge popup](assets/popup.png)
 
 ## How it works
 

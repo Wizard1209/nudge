@@ -38,9 +38,9 @@ use crate::config::Config;
 /// live UI action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigChange {
-    HotkeyChanged { from: String, to: String },
-    IntervalChanged,
-    AutostartChanged,
+    Hotkey { from: String, to: String },
+    Interval,
+    Autostart,
 }
 
 /// Compute the set of field-level changes from `old` to `new`. Empty
@@ -50,7 +50,7 @@ pub enum ConfigChange {
 pub fn diff(old: &Config, new: &Config) -> Vec<ConfigChange> {
     let mut out = Vec::new();
     if old.hotkey != new.hotkey {
-        out.push(ConfigChange::HotkeyChanged {
+        out.push(ConfigChange::Hotkey {
             from: old.hotkey.clone(),
             to: new.hotkey.clone(),
         });
@@ -59,10 +59,10 @@ pub fn diff(old: &Config, new: &Config) -> Vec<ConfigChange> {
     // equal — the user clearly didn't "change" it by re-saving the same
     // bogus value, and PartialEq on f64 would return false on NaN.
     if old.default_interval_minutes.to_bits() != new.default_interval_minutes.to_bits() {
-        out.push(ConfigChange::IntervalChanged);
+        out.push(ConfigChange::Interval);
     }
     if old.autostart != new.autostart {
-        out.push(ConfigChange::AutostartChanged);
+        out.push(ConfigChange::Autostart);
     }
     out
 }
@@ -74,9 +74,9 @@ pub fn diff(old: &Config, new: &Config) -> Vec<ConfigChange> {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(unused_imports)] // WatcherHandle is held by-value at the bin call site
-                        // via type inference (`Option<WatcherHandle>`) — the
-                        // bin never names the type, but it must stay public
-                        // for tests and downstream consumers of the lib.
+// via type inference (`Option<WatcherHandle>`) — the
+// bin never names the type, but it must stay public
+// for tests and downstream consumers of the lib.
 pub use native::{WatcherHandle, spawn};
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -146,10 +146,10 @@ mod native {
                     // don't spam the callback, just swallow.
                     return;
                 };
-                let matches = event
-                    .paths
-                    .iter()
-                    .any(|p| p.file_name().is_some_and(|n| n == file_name_for_cb.as_os_str()));
+                let matches = event.paths.iter().any(|p| {
+                    p.file_name()
+                        .is_some_and(|n| n == file_name_for_cb.as_os_str())
+                });
                 if matches {
                     (on_change_for_cb)();
                 }
@@ -189,7 +189,7 @@ mod tests {
         assert_eq!(changes.len(), 1);
         assert_eq!(
             changes[0],
-            ConfigChange::HotkeyChanged {
+            ConfigChange::Hotkey {
                 from: "Ctrl+Shift+Space".to_string(),
                 to: "Alt+J".to_string(),
             }
@@ -200,14 +200,14 @@ mod tests {
     fn diff_detects_interval_change() {
         let a = cfg_with("Ctrl+Shift+Space", 10.0, false);
         let b = cfg_with("Ctrl+Shift+Space", 5.0, false);
-        assert_eq!(diff(&a, &b), vec![ConfigChange::IntervalChanged]);
+        assert_eq!(diff(&a, &b), vec![ConfigChange::Interval]);
     }
 
     #[test]
     fn diff_detects_autostart_change() {
         let a = cfg_with("Ctrl+Shift+Space", 10.0, false);
         let b = cfg_with("Ctrl+Shift+Space", 10.0, true);
-        assert_eq!(diff(&a, &b), vec![ConfigChange::AutostartChanged]);
+        assert_eq!(diff(&a, &b), vec![ConfigChange::Autostart]);
     }
 
     #[test]
@@ -219,19 +219,16 @@ mod tests {
         let b = cfg_with("Alt+J", 5.0, true);
         let changes = diff(&a, &b);
         assert_eq!(changes.len(), 3);
-        assert!(matches!(
-            changes[0],
-            ConfigChange::HotkeyChanged { .. }
-        ));
-        assert_eq!(changes[1], ConfigChange::IntervalChanged);
-        assert_eq!(changes[2], ConfigChange::AutostartChanged);
+        assert!(matches!(changes[0], ConfigChange::Hotkey { .. }));
+        assert_eq!(changes[1], ConfigChange::Interval);
+        assert_eq!(changes[2], ConfigChange::Autostart);
     }
 
     #[test]
     fn diff_nan_interval_compares_equal_to_itself() {
         // `f64::NAN != f64::NAN` by IEEE 754 — but a config "re-saved"
         // with the same garbage value isn't a change. Use bit-equality
-        // so we don't fire a spurious IntervalChanged on every reload
+        // so we don't fire a spurious Interval on every reload
         // when the file happens to hold NaN.
         let a = cfg_with("X", f64::NAN, false);
         let b = cfg_with("X", f64::NAN, false);
@@ -250,11 +247,7 @@ mod tests {
         /// callback counter to advance past `prev`. Returns the new
         /// counter value. Times out by returning the (un-advanced)
         /// prev — the assertion in the caller surfaces the failure.
-        fn wait_for_callback(
-            counter: &Arc<AtomicUsize>,
-            prev: usize,
-            timeout: Duration,
-        ) -> usize {
+        fn wait_for_callback(counter: &Arc<AtomicUsize>, prev: usize, timeout: Duration) -> usize {
             let start = Instant::now();
             loop {
                 let cur = counter.load(Ordering::SeqCst);

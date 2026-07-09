@@ -26,5 +26,9 @@ scripts/build-e2e.sh
 python3 -m http.server 8080 --directory e2e/dist
 
 # Terminal 2: run tests (from e2e/)
+# Standard deterministic suite (what per-push CI runs):
 cd e2e && nvm use && npx vitest run
+# LLM-judge group (*.judge.test.ts, needs OPENAI_API_KEY in ../.env;
+# CI runs it only in the release workflow):
+npm run test:judge
 ```

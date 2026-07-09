@@ -25,15 +25,15 @@ use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{CloseHandle, FILETIME, HANDLE};
 use windows::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+    CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
 };
 use windows::Win32::System::Threading::{
-    GetThreadDescription, GetThreadTimes, GetProcessTimes, OpenProcess, OpenThread,
-    TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
-    THREAD_QUERY_LIMITED_INFORMATION,
+    GetProcessTimes, GetThreadDescription, GetThreadTimes, OpenProcess, OpenThread,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, THREAD_QUERY_LIMITED_INFORMATION,
+    TerminateProcess,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
+    INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput,
     VK_ESCAPE,
 };
 
@@ -196,28 +196,19 @@ fn enumerate_thread_cpu(pid: u32) -> std::collections::HashMap<u32, Duration> {
     unsafe {
         if Thread32First(snapshot, &mut entry).is_ok() {
             loop {
-                if entry.th32OwnerProcessID == pid {
-                    if let Ok(h) =
+                if entry.th32OwnerProcessID == pid
+                    && let Ok(h) =
                         OpenThread(THREAD_QUERY_LIMITED_INFORMATION, false, entry.th32ThreadID)
-                    {
-                        let mut creation = FILETIME::default();
-                        let mut exit = FILETIME::default();
-                        let mut kernel = FILETIME::default();
-                        let mut user = FILETIME::default();
-                        if GetThreadTimes(
-                            h,
-                            &mut creation,
-                            &mut exit,
-                            &mut kernel,
-                            &mut user,
-                        )
-                        .is_ok()
-                        {
-                            let total = filetime_to_duration(kernel) + filetime_to_duration(user);
-                            times.insert(entry.th32ThreadID, total);
-                        }
-                        let _ = CloseHandle(h);
+                {
+                    let mut creation = FILETIME::default();
+                    let mut exit = FILETIME::default();
+                    let mut kernel = FILETIME::default();
+                    let mut user = FILETIME::default();
+                    if GetThreadTimes(h, &mut creation, &mut exit, &mut kernel, &mut user).is_ok() {
+                        let total = filetime_to_duration(kernel) + filetime_to_duration(user);
+                        times.insert(entry.th32ThreadID, total);
                     }
+                    let _ = CloseHandle(h);
                 }
                 // Reset dwSize on each iteration — required by the API.
                 entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
@@ -250,7 +241,10 @@ fn send_escape() {
             },
         },
     };
-    let inputs = [make_event(KEYBD_EVENT_FLAGS(0)), make_event(KEYEVENTF_KEYUP)];
+    let inputs = [
+        make_event(KEYBD_EVENT_FLAGS(0)),
+        make_event(KEYEVENTF_KEYUP),
+    ];
     let size = std::mem::size_of::<INPUT>() as i32;
     let sent = unsafe { SendInput(&inputs, size) };
     assert_eq!(sent, inputs.len() as u32, "SendInput failed to inject Esc");

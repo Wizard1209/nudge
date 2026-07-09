@@ -44,7 +44,10 @@ impl fmt::Display for ParseError {
         match self {
             ParseError::Empty => write!(f, "hotkey string is empty"),
             ParseError::MissingKey => {
-                write!(f, "hotkey has only modifiers, no key (e.g. need \"Ctrl+Shift+A\", not \"Ctrl+Shift\")")
+                write!(
+                    f,
+                    "hotkey has only modifiers, no key (e.g. need \"Ctrl+Shift+A\", not \"Ctrl+Shift\")"
+                )
             }
             ParseError::MultipleKeys => {
                 write!(f, "hotkey has more than one non-modifier key")
@@ -86,9 +89,8 @@ pub fn parse(input: &str) -> Result<Hotkey, ParseError> {
             "SHIFT" => modifiers |= MOD_SHIFT,
             "WIN" | "SUPER" | "META" | "CMD" => modifiers |= MOD_WIN,
             _ => {
-                let canonical = canonicalize_key(&upper).ok_or_else(|| {
-                    ParseError::UnknownToken(tok.to_string())
-                })?;
+                let canonical = canonicalize_key(&upper)
+                    .ok_or_else(|| ParseError::UnknownToken(tok.to_string()))?;
                 if key.is_some() {
                     return Err(ParseError::MultipleKeys);
                 }
@@ -116,12 +118,11 @@ fn canonicalize_key(upper: &str) -> Option<String> {
         }
     }
     // Function keys F1..F24
-    if let Some(rest) = upper.strip_prefix('F') {
-        if let Ok(n) = rest.parse::<u8>() {
-            if (1..=24).contains(&n) {
-                return Some(format!("F{}", n));
-            }
-        }
+    if let Some(rest) = upper.strip_prefix('F')
+        && let Ok(n) = rest.parse::<u8>()
+        && (1..=24).contains(&n)
+    {
+        return Some(format!("F{}", n));
     }
     // Named keys we're willing to register globally. Deliberately conservative:
     // home/end/arrows/etc. can stay un-supported until someone asks. Most users
@@ -210,26 +211,73 @@ pub fn default_hotkey() -> Hotkey {
 // import is gated to non-wasm — same noise the rest of this module already
 // emits in that build. The library and the native bin both use this fn.
 #[allow(dead_code)]
-pub fn hotkey_from_egui(modifiers: eframe::egui::Modifiers, key: eframe::egui::Key) -> Option<Hotkey> {
+pub fn hotkey_from_egui(
+    modifiers: eframe::egui::Modifiers,
+    key: eframe::egui::Key,
+) -> Option<Hotkey> {
     use eframe::egui::Key;
 
     let token: &'static str = match key {
-        Key::A => "A", Key::B => "B", Key::C => "C", Key::D => "D",
-        Key::E => "E", Key::F => "F", Key::G => "G", Key::H => "H",
-        Key::I => "I", Key::J => "J", Key::K => "K", Key::L => "L",
-        Key::M => "M", Key::N => "N", Key::O => "O", Key::P => "P",
-        Key::Q => "Q", Key::R => "R", Key::S => "S", Key::T => "T",
-        Key::U => "U", Key::V => "V", Key::W => "W", Key::X => "X",
-        Key::Y => "Y", Key::Z => "Z",
-        Key::Num0 => "0", Key::Num1 => "1", Key::Num2 => "2", Key::Num3 => "3",
-        Key::Num4 => "4", Key::Num5 => "5", Key::Num6 => "6", Key::Num7 => "7",
-        Key::Num8 => "8", Key::Num9 => "9",
-        Key::F1 => "F1", Key::F2 => "F2", Key::F3 => "F3", Key::F4 => "F4",
-        Key::F5 => "F5", Key::F6 => "F6", Key::F7 => "F7", Key::F8 => "F8",
-        Key::F9 => "F9", Key::F10 => "F10", Key::F11 => "F11", Key::F12 => "F12",
-        Key::F13 => "F13", Key::F14 => "F14", Key::F15 => "F15", Key::F16 => "F16",
-        Key::F17 => "F17", Key::F18 => "F18", Key::F19 => "F19", Key::F20 => "F20",
-        Key::F21 => "F21", Key::F22 => "F22", Key::F23 => "F23", Key::F24 => "F24",
+        Key::A => "A",
+        Key::B => "B",
+        Key::C => "C",
+        Key::D => "D",
+        Key::E => "E",
+        Key::F => "F",
+        Key::G => "G",
+        Key::H => "H",
+        Key::I => "I",
+        Key::J => "J",
+        Key::K => "K",
+        Key::L => "L",
+        Key::M => "M",
+        Key::N => "N",
+        Key::O => "O",
+        Key::P => "P",
+        Key::Q => "Q",
+        Key::R => "R",
+        Key::S => "S",
+        Key::T => "T",
+        Key::U => "U",
+        Key::V => "V",
+        Key::W => "W",
+        Key::X => "X",
+        Key::Y => "Y",
+        Key::Z => "Z",
+        Key::Num0 => "0",
+        Key::Num1 => "1",
+        Key::Num2 => "2",
+        Key::Num3 => "3",
+        Key::Num4 => "4",
+        Key::Num5 => "5",
+        Key::Num6 => "6",
+        Key::Num7 => "7",
+        Key::Num8 => "8",
+        Key::Num9 => "9",
+        Key::F1 => "F1",
+        Key::F2 => "F2",
+        Key::F3 => "F3",
+        Key::F4 => "F4",
+        Key::F5 => "F5",
+        Key::F6 => "F6",
+        Key::F7 => "F7",
+        Key::F8 => "F8",
+        Key::F9 => "F9",
+        Key::F10 => "F10",
+        Key::F11 => "F11",
+        Key::F12 => "F12",
+        Key::F13 => "F13",
+        Key::F14 => "F14",
+        Key::F15 => "F15",
+        Key::F16 => "F16",
+        Key::F17 => "F17",
+        Key::F18 => "F18",
+        Key::F19 => "F19",
+        Key::F20 => "F20",
+        Key::F21 => "F21",
+        Key::F22 => "F22",
+        Key::F23 => "F23",
+        Key::F24 => "F24",
         Key::Space => "SPACE",
         Key::Enter => "ENTER",
         Key::Tab => "TAB",
@@ -330,7 +378,10 @@ mod tests {
     #[test]
     fn f25_is_rejected() {
         // F1..F24 are valid VK codes; F25 is not.
-        assert!(matches!(parse("Ctrl+F25"), Err(ParseError::UnknownToken(_))));
+        assert!(matches!(
+            parse("Ctrl+F25"),
+            Err(ParseError::UnknownToken(_))
+        ));
     }
 
     #[test]
@@ -416,13 +467,32 @@ mod tests {
         // bare-letter hotkey; the parser allows it (Cmd+A etc. are common,
         // but bare-A is also legal — just impractical).
         let letters = [
-            (Key::A, "A"), (Key::B, "B"), (Key::C, "C"), (Key::D, "D"),
-            (Key::E, "E"), (Key::F, "F"), (Key::G, "G"), (Key::H, "H"),
-            (Key::I, "I"), (Key::J, "J"), (Key::K, "K"), (Key::L, "L"),
-            (Key::M, "M"), (Key::N, "N"), (Key::O, "O"), (Key::P, "P"),
-            (Key::Q, "Q"), (Key::R, "R"), (Key::S, "S"), (Key::T, "T"),
-            (Key::U, "U"), (Key::V, "V"), (Key::W, "W"), (Key::X, "X"),
-            (Key::Y, "Y"), (Key::Z, "Z"),
+            (Key::A, "A"),
+            (Key::B, "B"),
+            (Key::C, "C"),
+            (Key::D, "D"),
+            (Key::E, "E"),
+            (Key::F, "F"),
+            (Key::G, "G"),
+            (Key::H, "H"),
+            (Key::I, "I"),
+            (Key::J, "J"),
+            (Key::K, "K"),
+            (Key::L, "L"),
+            (Key::M, "M"),
+            (Key::N, "N"),
+            (Key::O, "O"),
+            (Key::P, "P"),
+            (Key::Q, "Q"),
+            (Key::R, "R"),
+            (Key::S, "S"),
+            (Key::T, "T"),
+            (Key::U, "U"),
+            (Key::V, "V"),
+            (Key::W, "W"),
+            (Key::X, "X"),
+            (Key::Y, "Y"),
+            (Key::Z, "Z"),
         ];
         for (k, expected) in letters {
             let hk = hotkey_from_egui(Modifiers::NONE, k)
@@ -435,9 +505,16 @@ mod tests {
     #[test]
     fn digits_map_to_token() {
         let digits = [
-            (Key::Num0, "0"), (Key::Num1, "1"), (Key::Num2, "2"), (Key::Num3, "3"),
-            (Key::Num4, "4"), (Key::Num5, "5"), (Key::Num6, "6"), (Key::Num7, "7"),
-            (Key::Num8, "8"), (Key::Num9, "9"),
+            (Key::Num0, "0"),
+            (Key::Num1, "1"),
+            (Key::Num2, "2"),
+            (Key::Num3, "3"),
+            (Key::Num4, "4"),
+            (Key::Num5, "5"),
+            (Key::Num6, "6"),
+            (Key::Num7, "7"),
+            (Key::Num8, "8"),
+            (Key::Num9, "9"),
         ];
         for (k, expected) in digits {
             let hk = hotkey_from_egui(Modifiers::CTRL, k).unwrap();
@@ -450,12 +527,30 @@ mod tests {
     fn f_keys_map_to_token() {
         // F1..F24 — the same range vk_for_key registers globally.
         let f_keys = [
-            (Key::F1, "F1"), (Key::F2, "F2"), (Key::F3, "F3"), (Key::F4, "F4"),
-            (Key::F5, "F5"), (Key::F6, "F6"), (Key::F7, "F7"), (Key::F8, "F8"),
-            (Key::F9, "F9"), (Key::F10, "F10"), (Key::F11, "F11"), (Key::F12, "F12"),
-            (Key::F13, "F13"), (Key::F14, "F14"), (Key::F15, "F15"), (Key::F16, "F16"),
-            (Key::F17, "F17"), (Key::F18, "F18"), (Key::F19, "F19"), (Key::F20, "F20"),
-            (Key::F21, "F21"), (Key::F22, "F22"), (Key::F23, "F23"), (Key::F24, "F24"),
+            (Key::F1, "F1"),
+            (Key::F2, "F2"),
+            (Key::F3, "F3"),
+            (Key::F4, "F4"),
+            (Key::F5, "F5"),
+            (Key::F6, "F6"),
+            (Key::F7, "F7"),
+            (Key::F8, "F8"),
+            (Key::F9, "F9"),
+            (Key::F10, "F10"),
+            (Key::F11, "F11"),
+            (Key::F12, "F12"),
+            (Key::F13, "F13"),
+            (Key::F14, "F14"),
+            (Key::F15, "F15"),
+            (Key::F16, "F16"),
+            (Key::F17, "F17"),
+            (Key::F18, "F18"),
+            (Key::F19, "F19"),
+            (Key::F20, "F20"),
+            (Key::F21, "F21"),
+            (Key::F22, "F22"),
+            (Key::F23, "F23"),
+            (Key::F24, "F24"),
         ];
         for (k, expected) in f_keys {
             let hk = hotkey_from_egui(Modifiers::NONE, k).unwrap();
@@ -484,7 +579,11 @@ mod tests {
     #[test]
     fn modifiers_compose() {
         // Ctrl+Shift+A → both bits set.
-        let mods = Modifiers { ctrl: true, shift: true, ..Modifiers::NONE };
+        let mods = Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Modifiers::NONE
+        };
         let hk = hotkey_from_egui(mods, Key::A).unwrap();
         assert_eq!(hk.modifiers, MOD_CTRL | MOD_SHIFT);
         assert_eq!(hk.key.as_str(), "A");
@@ -494,7 +593,13 @@ mod tests {
     fn all_four_modifiers_compose() {
         // Ctrl+Alt+Shift+Cmd+J — all four bits set. Tests that mac_cmd folds
         // into our MOD_WIN bit (the parser treats Cmd as an alias for Win).
-        let mods = Modifiers { ctrl: true, alt: true, shift: true, mac_cmd: true, command: true };
+        let mods = Modifiers {
+            ctrl: true,
+            alt: true,
+            shift: true,
+            mac_cmd: true,
+            command: true,
+        };
         let hk = hotkey_from_egui(mods, Key::J).unwrap();
         assert_eq!(hk.modifiers, MOD_CTRL | MOD_ALT | MOD_SHIFT | MOD_WIN);
         assert_eq!(hk.key.as_str(), "J");
@@ -506,11 +611,25 @@ mod tests {
         // otherwise the recorder writes a label that fails to register at
         // next launch, silently.
         for k in [
-            Key::Home, Key::End, Key::Insert, Key::Delete,
-            Key::PageUp, Key::PageDown,
-            Key::ArrowUp, Key::ArrowDown, Key::ArrowLeft, Key::ArrowRight,
-            Key::Comma, Key::Period, Key::Semicolon, Key::Quote,
-            Key::Minus, Key::Plus, Key::Equals, Key::Slash, Key::Backslash,
+            Key::Home,
+            Key::End,
+            Key::Insert,
+            Key::Delete,
+            Key::PageUp,
+            Key::PageDown,
+            Key::ArrowUp,
+            Key::ArrowDown,
+            Key::ArrowLeft,
+            Key::ArrowRight,
+            Key::Comma,
+            Key::Period,
+            Key::Semicolon,
+            Key::Quote,
+            Key::Minus,
+            Key::Plus,
+            Key::Equals,
+            Key::Slash,
+            Key::Backslash,
             Key::F25, // F25..F35 exist in egui but Win32 only goes F1..F24
         ] {
             assert!(
@@ -526,10 +645,24 @@ mod tests {
         // the same Hotkey. This is the contract that lets Save just write the
         // text label: the parser will accept it back on next launch.
         let samples: &[(Modifiers, Key)] = &[
-            (Modifiers { ctrl: true, shift: true, ..Modifiers::NONE }, Key::Space),
+            (
+                Modifiers {
+                    ctrl: true,
+                    shift: true,
+                    ..Modifiers::NONE
+                },
+                Key::Space,
+            ),
             (Modifiers::ALT, Key::J),
             (Modifiers::NONE, Key::F12),
-            (Modifiers { ctrl: true, alt: true, ..Modifiers::NONE }, Key::Num7),
+            (
+                Modifiers {
+                    ctrl: true,
+                    alt: true,
+                    ..Modifiers::NONE
+                },
+                Key::Num7,
+            ),
             (Modifiers::CTRL, Key::Enter),
             (Modifiers::CTRL, Key::Backspace),
         ];

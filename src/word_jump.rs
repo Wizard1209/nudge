@@ -59,11 +59,7 @@ fn delete_char_range(s: &mut String, start_char: usize, end_char: usize) {
 /// Call BEFORE drawing the TextEdit. Removes handled events from the input
 /// queue so TextEdit does not double-process them. Also mirrors the action on
 /// `Alt` to match egui's mac binding parity.
-pub fn intercept_ctrl_word_keys(
-    ctx: &egui::Context,
-    field_id: egui::Id,
-    value: &mut String,
-) {
+pub fn intercept_ctrl_word_keys(ctx: &egui::Context, field_id: egui::Id, value: &mut String) {
     use egui::text::{CCursor, CCursorRange};
     use egui::{Event, Key};
 
@@ -85,9 +81,7 @@ pub fn intercept_ctrl_word_keys(
         return;
     }
 
-    let Some(mut state) =
-        egui::widgets::text_edit::TextEditState::load(ctx, field_id)
-    else {
+    let Some(mut state) = egui::widgets::text_edit::TextEditState::load(ctx, field_id) else {
         return;
     };
     let mut range = state.cursor.char_range().unwrap_or_else(|| {

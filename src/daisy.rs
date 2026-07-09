@@ -97,8 +97,7 @@ pub fn frame_at(duration: Duration, elapsed: Duration) -> DaisyFrame {
     let drift_dur = Duration::from_millis(250).min(petal_dur / 2);
 
     let drift = if petals_dropped > 0 && time_since_drop < drift_dur {
-        let progress =
-            (time_since_drop.as_secs_f32() / drift_dur.as_secs_f32()).clamp(0.0, 1.0);
+        let progress = (time_since_drop.as_secs_f32() / drift_dur.as_secs_f32()).clamp(0.0, 1.0);
         Some(DriftState {
             petal_index: petals_dropped - 1,
             progress,
@@ -149,18 +148,17 @@ pub fn render(petals_remaining: u8, drift: Option<DriftState>) -> Vec<u8> {
                     best_color = c;
                 }
             }
-            if let Some(d) = drift {
-                if d.petal_index < PETAL_COUNT {
-                    let radial_off = d.progress * 8.0;
-                    // Slight gravity arc — petals drift outward + downward.
-                    let gravity_y = d.progress * d.progress * 6.0;
-                    let fade = (1.0 - d.progress).clamp(0.0, 1.0);
-                    let (a, c) =
-                        petal_sample(d.petal_index, radial_off, gravity_y, fade, px, py);
-                    if a > best_alpha {
-                        best_alpha = a;
-                        best_color = c;
-                    }
+            if let Some(d) = drift
+                && d.petal_index < PETAL_COUNT
+            {
+                let radial_off = d.progress * 8.0;
+                // Slight gravity arc — petals drift outward + downward.
+                let gravity_y = d.progress * d.progress * 6.0;
+                let fade = (1.0 - d.progress).clamp(0.0, 1.0);
+                let (a, c) = petal_sample(d.petal_index, radial_off, gravity_y, fade, px, py);
+                if a > best_alpha {
+                    best_alpha = a;
+                    best_color = c;
                 }
             }
 
@@ -170,8 +168,7 @@ pub fn render(petals_remaining: u8, drift: Option<DriftState>) -> Vec<u8> {
             let r = (dx * dx + dy * dy).sqrt();
             let center_a = soft_disk(r, CENTER_RADIUS);
 
-            let (rr, gg, bb, aa) =
-                composite(best_color, best_alpha, COLOR_CENTER, center_a);
+            let (rr, gg, bb, aa) = composite(best_color, best_alpha, COLOR_CENTER, center_a);
             let idx = ((y * ICON_SIZE + x) * 4) as usize;
             buf[idx] = rr;
             buf[idx + 1] = gg;
@@ -240,12 +237,7 @@ fn lerp_rgb(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
 }
 
 /// "Above over below" alpha compositing (yellow center over white petals).
-fn composite(
-    below: [u8; 3],
-    a_below: f32,
-    above: [u8; 3],
-    a_above: f32,
-) -> (u8, u8, u8, u8) {
+fn composite(below: [u8; 3], a_below: f32, above: [u8; 3], a_above: f32) -> (u8, u8, u8, u8) {
     let a_out = a_above + a_below * (1.0 - a_above);
     if a_out <= 0.001 {
         return (0, 0, 0, 0);
@@ -281,7 +273,10 @@ mod tests {
         // last drop, well past the 250 ms drift window → no drift.
         let f = frame_at(DUR_120S, Duration::from_secs(35));
         assert_eq!(f.petals_remaining, 9);
-        assert!(f.drift.is_none(), "5 s after a drop is past the drift window");
+        assert!(
+            f.drift.is_none(),
+            "5 s after a drop is past the drift window"
+        );
         assert!(!f.should_fire);
         assert_eq!(f.petal_duration, Duration::from_secs(10));
         assert_eq!(f.time_since_drop, Duration::from_secs(5));
@@ -295,7 +290,10 @@ mod tests {
         assert_eq!(f.petals_remaining, 9);
         let d = f.drift.expect("a petal just dropped → drift present");
         assert_eq!(d.petal_index, 2);
-        assert!(d.progress.abs() < 1e-6, "progress ≈ 0 at the instant of drop");
+        assert!(
+            d.progress.abs() < 1e-6,
+            "progress ≈ 0 at the instant of drop"
+        );
         assert_eq!(f.time_since_drop, Duration::ZERO);
         assert!(!f.should_fire);
     }
@@ -304,7 +302,10 @@ mod tests {
     fn fires_only_after_final_drift_completes() {
         // drift_dur = 250 ms, so should_fire flips at duration + 250 ms.
         let just_before = frame_at(DUR_120S, DUR_120S + Duration::from_millis(200));
-        assert!(!just_before.should_fire, "200 ms past expiry < 250 ms drift");
+        assert!(
+            !just_before.should_fire,
+            "200 ms past expiry < 250 ms drift"
+        );
 
         let just_after = frame_at(DUR_120S, DUR_120S + Duration::from_millis(300));
         assert!(just_after.should_fire, "300 ms past expiry ≥ 250 ms drift");
@@ -359,7 +360,7 @@ mod tests {
         let i = ((3 * ICON_SIZE + (CENTER as u32)) * 4) as usize;
         let r = buf[i];
         let g = buf[i + 1];
-        let b = buf[i + 2];
+        let _b = buf[i + 2];
         let a = buf[i + 3];
         assert!(a > 60, "tip should be at least partially opaque");
         // Pink ≈ (240, 130, 165): R high, G clearly less than R, B between.
@@ -384,7 +385,10 @@ mod tests {
         let a = render(PETAL_COUNT, None);
         let b = render(
             PETAL_COUNT - 1,
-            Some(DriftState { petal_index: 0, progress: 0.0 }),
+            Some(DriftState {
+                petal_index: 0,
+                progress: 0.0,
+            }),
         );
         for y in 2..16 {
             for x in 26..38 {
@@ -403,7 +407,10 @@ mod tests {
     fn drift_fades_at_progress_one() {
         let buf = render(
             PETAL_COUNT - 1,
-            Some(DriftState { petal_index: 0, progress: 1.0 }),
+            Some(DriftState {
+                petal_index: 0,
+                progress: 1.0,
+            }),
         );
         assert!(alpha_at(&buf, 32, 8) < 10);
     }
@@ -420,7 +427,10 @@ mod tests {
         println!("\n=== drift (petal 0, progress=0.5) ===");
         dump_ascii(&render(
             PETAL_COUNT - 1,
-            Some(DriftState { petal_index: 0, progress: 0.5 }),
+            Some(DriftState {
+                petal_index: 0,
+                progress: 0.5,
+            }),
         ));
     }
 
@@ -439,9 +449,21 @@ mod tests {
                     if a > 200 { '@' } else { 'o' }
                 } else if r as i32 - g as i32 > 30 {
                     // Pink-ish
-                    if a > 200 { 'P' } else if a > 100 { 'p' } else { '.' }
+                    if a > 200 {
+                        'P'
+                    } else if a > 100 {
+                        'p'
+                    } else {
+                        '.'
+                    }
                 } else {
-                    if a > 200 { '#' } else if a > 100 { '*' } else { '.' }
+                    if a > 200 {
+                        '#'
+                    } else if a > 100 {
+                        '*'
+                    } else {
+                        '.'
+                    }
                 };
                 row.push(ch);
             }

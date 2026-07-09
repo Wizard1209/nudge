@@ -40,7 +40,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::config;
 use crate::config_watcher::{self, ConfigChange};
 use crate::daisy;
-use crate::hotkey::{self, Hotkey, MOD_ALT as MY_MOD_ALT, MOD_CTRL, MOD_SHIFT as MY_MOD_SHIFT, MOD_WIN as MY_MOD_WIN};
+use crate::hotkey::{
+    self, Hotkey, MOD_ALT as MY_MOD_ALT, MOD_CTRL, MOD_SHIFT as MY_MOD_SHIFT, MOD_WIN as MY_MOD_WIN,
+};
 use crate::nudge_state;
 
 // ---------- shared state ---------------------------------------------------
@@ -216,13 +218,12 @@ fn vk_for_key(key: &str) -> Option<u32> {
             return Some(ch as u32);
         }
     }
-    if let Some(rest) = key.strip_prefix('F') {
-        if let Ok(n) = rest.parse::<u8>() {
-            if (1..=24).contains(&n) {
-                // VK_F1 = 0x70 … VK_F24 = 0x87
-                return Some(0x70 + (n as u32) - 1);
-            }
-        }
+    if let Some(rest) = key.strip_prefix('F')
+        && let Ok(n) = rest.parse::<u8>()
+        && (1..=24).contains(&n)
+    {
+        // VK_F1 = 0x70 … VK_F24 = 0x87
+        return Some(0x70 + (n as u32) - 1);
     }
     match key {
         "SPACE" => Some(0x20),     // VK_SPACE
@@ -275,11 +276,7 @@ fn try_register_hotkey(hk: &Hotkey) -> bool {
 
 // ---------- the tray thread itself -----------------------------------------
 
-fn tray_thread_main(
-    hotkey: Option<Hotkey>,
-    config_path: PathBuf,
-    initial_config: config::Config,
-) {
+fn tray_thread_main(hotkey: Option<Hotkey>, config_path: PathBuf, initial_config: config::Config) {
     unsafe {
         TRAY_THREAD_ID.store(GetCurrentThreadId(), Ordering::SeqCst);
     }
@@ -315,9 +312,8 @@ fn tray_thread_main(
     let quit_id = quit_item.id().clone();
 
     let initial_rgba = daisy::render(daisy::PETAL_COUNT, None);
-    let initial_icon =
-        tray_icon::Icon::from_rgba(initial_rgba, daisy::ICON_SIZE, daisy::ICON_SIZE)
-            .expect("failed to create initial tray icon");
+    let initial_icon = tray_icon::Icon::from_rgba(initial_rgba, daisy::ICON_SIZE, daisy::ICON_SIZE)
+        .expect("failed to create initial tray icon");
     // Tooltip will be refreshed by the loop below as soon as eframe pushes
     // a timer via set_timer_state. Until then the popup is visible (first
     // launch), so the user never sees this placeholder anyway.
@@ -431,9 +427,7 @@ fn tray_thread_main(
         let key = (petals_remaining, drift_scaled, drift.is_some());
         if key != last_state_key {
             let rgba = daisy::render(petals_remaining, drift);
-            if let Ok(icon) =
-                tray_icon::Icon::from_rgba(rgba, daisy::ICON_SIZE, daisy::ICON_SIZE)
-            {
+            if let Ok(icon) = tray_icon::Icon::from_rgba(rgba, daisy::ICON_SIZE, daisy::ICON_SIZE) {
                 let _ = tray.set_icon(Some(icon));
             }
             last_state_key = key;
@@ -509,7 +503,7 @@ fn apply_config_reload(
 
     for change in &changes {
         match change {
-            ConfigChange::HotkeyChanged { from, to } => {
+            ConfigChange::Hotkey { from, to } => {
                 eprintln!("[nudge] config reload: hotkey \"{from}\" → \"{to}\"");
                 // Unregister the previous binding (best-effort — if it
                 // wasn't actually registered, Win32 returns FALSE and
@@ -530,17 +524,16 @@ fn apply_config_reload(
                     *hotkey_registered = try_register_hotkey(&parsed);
                 }
             }
-            ConfigChange::IntervalChanged => {
+            ConfigChange::Interval => {
                 // Recorded only: the popup captured the launch-time
                 // default and the user owns the field afterwards.
                 eprintln!(
                     "[nudge] config reload: default_interval_minutes \
                      {} → {} (no live effect; applies at next startup)",
-                    previous_cfg.default_interval_minutes,
-                    new_cfg.default_interval_minutes
+                    previous_cfg.default_interval_minutes, new_cfg.default_interval_minutes
                 );
             }
-            ConfigChange::AutostartChanged => {
+            ConfigChange::Autostart => {
                 // Settings process owns the registry write
                 // transactionally; we just refresh our cached copy.
                 eprintln!(
@@ -581,11 +574,6 @@ fn drain_messages() {
 
 fn wait_for_message(timeout_ms: u32) {
     unsafe {
-        let _ = MsgWaitForMultipleObjectsEx(
-            None,
-            timeout_ms,
-            QS_ALLINPUT,
-            MWMO_INPUTAVAILABLE,
-        );
+        let _ = MsgWaitForMultipleObjectsEx(None, timeout_ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
     }
 }

@@ -187,18 +187,19 @@ pub fn ensure_default_written(path: &std::path::Path) -> Result<(), ConfigError>
         return Ok(());
     }
     let path_str = path.display().to_string();
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).map_err(|e| ConfigError::Io {
-                path: path_str.clone(),
-                detail: e.to_string(),
-            })?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(|e| ConfigError::Io {
+            path: path_str.clone(),
+            detail: e.to_string(),
+        })?;
     }
-    let body = serde_json::to_string_pretty(&Config::default()).map_err(|e| ConfigError::Parse {
-        path: path_str.clone(),
-        detail: e.to_string(),
-    })?;
+    let body =
+        serde_json::to_string_pretty(&Config::default()).map_err(|e| ConfigError::Parse {
+            path: path_str.clone(),
+            detail: e.to_string(),
+        })?;
     fs::write(path, body).map_err(|e| ConfigError::Io {
         path: path_str,
         detail: e.to_string(),
@@ -220,13 +221,13 @@ pub fn save(path: &std::path::Path, config: &Config) -> Result<(), ConfigError> 
     use std::fs;
     let path_str = path.display().to_string();
 
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent).map_err(|e| ConfigError::Io {
-                path: path_str.clone(),
-                detail: e.to_string(),
-            })?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(|e| ConfigError::Io {
+            path: path_str.clone(),
+            detail: e.to_string(),
+        })?;
     }
 
     let body = serde_json::to_string_pretty(config).map_err(|e| ConfigError::Parse {
@@ -487,11 +488,7 @@ mod tests {
             // Forward-compat: future fields shouldn't refuse the file.
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("config.json");
-            std::fs::write(
-                &path,
-                r#"{"hotkey":"Ctrl+Shift+Space","future_field":42}"#,
-            )
-            .unwrap();
+            std::fs::write(&path, r#"{"hotkey":"Ctrl+Shift+Space","future_field":42}"#).unwrap();
             let (cfg, err) = load_or_default(&path);
             assert!(err.is_none());
             assert_eq!(cfg.hotkey, "Ctrl+Shift+Space");
@@ -585,11 +582,7 @@ mod tests {
         fn autostart_field_round_trips() {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("config.json");
-            std::fs::write(
-                &path,
-                r#"{"hotkey":"Ctrl+Shift+Space","autostart":true}"#,
-            )
-            .unwrap();
+            std::fs::write(&path, r#"{"hotkey":"Ctrl+Shift+Space","autostart":true}"#).unwrap();
             let (cfg, err) = load_or_default(&path);
             assert!(err.is_none());
             assert!(cfg.autostart);

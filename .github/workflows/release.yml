@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Releases run the full e2e surface: the standard deterministic suite plus
+  # the LLM-judge group (*.judge.test.ts), which needs OPENAI_API_KEY and is
+  # deliberately kept out of the per-push CI.
+  e2e-full:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: jetli/trunk-action@v0.5
+        with:
+          version: 'latest'
+      - run: scripts/build-e2e.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: e2e/.nvmrc
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+      - run: npm ci
+        working-directory: e2e
+      - name: Serve dist
+        run: |
+          python3 -m http.server 8080 --directory e2e/dist &
+          timeout 15 bash -c 'until curl -sf http://localhost:8080 >/dev/null; do sleep 0.5; done'
+      - name: Run standard e2e suite
+        run: xvfb-run -a npx vitest run
+        working-directory: e2e
+      - name: Run LLM-judge e2e suite
+        run: xvfb-run -a npm run test:judge
+        working-directory: e2e
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+  release:
+    needs: e2e-full
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y mingw-w64
+      - run: rustup target add x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --bin nudge --target x86_64-pc-windows-gnu
+      - run: cp target/x86_64-pc-windows-gnu/release/nudge.exe "nudge-${{ github.ref_name }}-x86_64-windows.exe"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: nudge-${{ github.ref_name }}-x86_64-windows.exe
+          generate_release_notes: true

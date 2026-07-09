@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y mingw-w64
+      - run: rustup target add x86_64-pc-windows-gnu && rustup component add rustfmt clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --target x86_64-pc-windows-gnu --all-targets -- -D warnings
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  test:
+    # Native unit/integration tests need a Windows host to execute the test
+    # binaries. The default MSVC toolchain is fine here: the tests exercise
+    # platform-independent logic plus Win32 APIs, both identical across ABIs.
+    # The shipped windows-gnu ABI is covered by the lint job (clippy
+    # cross-check) and the release build.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: jetli/trunk-action@v0.5
+        with:
+          version: 'latest'
+      - run: scripts/build-e2e.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: e2e/.nvmrc
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+      - run: npm ci
+        working-directory: e2e
+      - name: Serve dist
+        run: |
+          python3 -m http.server 8080 --directory e2e/dist &
+          timeout 15 bash -c 'until curl -sf http://localhost:8080 >/dev/null; do sleep 0.5; done'
+      # The puppeteer fixture launches headful Chrome (WebGL for the egui
+      # canvas), so the suite runs under a virtual display. This is the
+      # deterministic suite only — the LLM-judge group (*.judge.test.ts)
+      # runs in the release workflow on top of it.
+      - name: Run e2e tests
+        run: xvfb-run -a npx vitest run
+        working-directory: e2e

@@ -126,13 +126,6 @@ impl FakeProvider {
         }
     }
     #[cfg(test)]
-    pub fn failing_disable() -> Self {
-        Self {
-            fail_disable: true,
-            ..Self::new(true)
-        }
-    }
-    #[cfg(test)]
     pub fn unconfirmed() -> Self {
         Self {
             lie_on_confirm: true,
@@ -225,7 +218,13 @@ impl AutostartProvider for WindowsRegistryProvider {
             if rc != ERROR_SUCCESS {
                 return Err(format!("RegOpenKeyExW(Run): {rc:?}"));
             }
-            let set = RegSetValueExW(hkey, PCWSTR(name.as_ptr()), Some(0), REG_SZ, Some(data_bytes));
+            let set = RegSetValueExW(
+                hkey,
+                PCWSTR(name.as_ptr()),
+                Some(0),
+                REG_SZ,
+                Some(data_bytes),
+            );
             let _ = RegCloseKey(hkey);
             if set != ERROR_SUCCESS {
                 return Err(format!("RegSetValueExW(Nudge): {set:?}"));
@@ -307,7 +306,9 @@ impl AutostartProvider for WindowsRegistryProvider {
 mod tests {
     use super::*;
 
-    fn recording_persist(sink: &std::cell::RefCell<Option<Config>>) -> impl FnOnce(&Config) -> Result<(), ConfigError> + '_ {
+    fn recording_persist(
+        sink: &std::cell::RefCell<Option<Config>>,
+    ) -> impl FnOnce(&Config) -> Result<(), ConfigError> + '_ {
         move |c: &Config| {
             *sink.borrow_mut() = Some(c.clone());
             Ok(())
@@ -356,12 +357,15 @@ mod tests {
         let mut config = Config::default();
         let saved = std::cell::RefCell::new(None);
 
-        let err = apply_autostart(&provider, &mut config, true, recording_persist(&saved))
-            .unwrap_err();
+        let err =
+            apply_autostart(&provider, &mut config, true, recording_persist(&saved)).unwrap_err();
 
         assert!(matches!(err, AutostartError::Backend(_)));
         assert!(!config.autostart, "config not mutated on backend failure");
-        assert!(saved.borrow().is_none(), "persist never called on backend failure");
+        assert!(
+            saved.borrow().is_none(),
+            "persist never called on backend failure"
+        );
     }
 
     #[test]
@@ -371,8 +375,8 @@ mod tests {
         let mut config = Config::default();
         let saved = std::cell::RefCell::new(None);
 
-        let err = apply_autostart(&provider, &mut config, true, recording_persist(&saved))
-            .unwrap_err();
+        let err =
+            apply_autostart(&provider, &mut config, true, recording_persist(&saved)).unwrap_err();
 
         assert!(matches!(err, AutostartError::Backend(_)));
         assert!(!config.autostart);
