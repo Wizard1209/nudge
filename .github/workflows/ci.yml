@@ -23,9 +23,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v2
+      # Plain cargo-audit (not rustsec/audit-check): the action ignores
+      # .cargo/audit.toml, so the documented quick-xml ignores don't apply,
+      # and it needs checks:write the default token doesn't have.
+      - uses: taiki-e/install-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tool: cargo-audit
+      - run: cargo audit
 
   test:
     # Native unit/integration tests need a Windows host to execute the test
@@ -45,9 +49,8 @@ jobs:
       - uses: actions/checkout@v4
       - run: rustup target add wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - uses: jetli/trunk-action@v0.5
-        with:
-          version: 'latest'
+      - name: Install trunk
+        run: wget -qO- https://github.com/trunk-rs/trunk/releases/latest/download/trunk-x86_64-unknown-linux-gnu.tar.gz | tar -xzf - -C "$HOME/.cargo/bin"
       - run: scripts/build-e2e.sh
       - uses: actions/setup-node@v4
         with:

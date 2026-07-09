@@ -113,7 +113,7 @@ fn idle_cpu_is_under_threshold() {
             (*tid, after.checked_sub(before).unwrap_or_default())
         })
         .collect();
-    deltas.sort_by(|a, b| b.1.cmp(&a.1));
+    deltas.sort_by_key(|&(_, delta)| std::cmp::Reverse(delta));
     eprintln!(
         "[perf-diag] per-thread CPU over {:.1}s window (top 10):",
         wall_elapsed.as_secs_f64()
