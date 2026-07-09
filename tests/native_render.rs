@@ -84,6 +84,33 @@ fn spawn_and_capture(margin: i32) -> (Capture, i32, i32) {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
 
+    // The popup grabs foreground on launch and — per spec §4 — hides the
+    // moment it loses focus again. On a desktop the user is actively using,
+    // any keystroke or click between our spawn and our screenshot kills the
+    // window, so a single fixed sleep is a coin flip (see the 2026-05-25
+    // autopsy). Instead: poll for the window and capture the instant it has
+    // had one settle-beat to paint, re-verify it survived the capture, and
+    // retry the whole spawn a bounded number of times.
+    const ATTEMPTS: u32 = 4;
+    for attempt in 1..=ATTEMPTS {
+        match try_spawn_and_capture(margin) {
+            Some(res) => return res,
+            None => eprintln!(
+                "[native-render] attempt {attempt}/{ATTEMPTS}: popup hid before capture \
+                 (focus-loss switch-away, spec §4) or never appeared — respawning"
+            ),
+        }
+    }
+    panic!(
+        "could not capture nudge's popup in {ATTEMPTS} attempts — either it never rendered \
+         (regression) or the desktop is busy enough to steal focus within ~400ms every time"
+    );
+}
+
+/// One spawn → poll-for-window → settle → capture → verify-survived cycle.
+/// `None` means the popup was never found within `STARTUP_WAIT` or vanished
+/// around the capture (focus-loss race) — caller decides whether to retry.
+fn try_spawn_and_capture(margin: i32) -> Option<(Capture, i32, i32)> {
     let tmp = tempfile::tempdir().expect("tempdir");
     let config_path = tmp.path().join("config.json");
     std::fs::write(
@@ -101,22 +128,36 @@ fn spawn_and_capture(margin: i32) -> (Capture, i32, i32) {
     let mut guard = ChildGuard(child);
     let pid = guard.0.id();
 
-    // The popup is shown + foregrounded on startup and stays up (timer frozen
-    // until first close), so we capture it without dismissing.
-    std::thread::sleep(STARTUP_WAIT);
+    // Poll until the popup window exists (frame #1 is forced by the app, so
+    // this is fast — the budget only covers slow cold starts).
+    let poll_start = std::time::Instant::now();
+    let rect = loop {
+        if let Some((_hwnd, rect)) = find_app_window(pid) {
+            break rect;
+        }
+        if poll_start.elapsed() > STARTUP_WAIT {
+            let _ = guard.0.kill();
+            let _ = guard.0.wait();
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
 
-    let (_hwnd, rect) = find_app_window(pid)
-        .expect("could not find nudge's visible top-level window — did it crash or stay hidden?");
+    // One settle-beat so the first frames finish painting, then capture.
+    std::thread::sleep(Duration::from_millis(400));
     let w = (rect.right - rect.left).max(1);
     let h = (rect.bottom - rect.top).max(1);
-
     let cap = Capture::take(rect.left - margin, rect.top - margin, w + 2 * margin, h + 2 * margin);
+
+    // If the window didn't survive to this point, the pixels above may be
+    // desktop-after-hide rather than the popup — discard and retry.
+    let survived = find_app_window(pid).is_some();
 
     // Kill before the caller asserts so a failure never leaves nudge.exe behind.
     let _ = guard.0.kill();
     let _ = guard.0.wait();
 
-    (cap, w, h)
+    survived.then_some((cap, w, h))
 }
 
 #[test]
