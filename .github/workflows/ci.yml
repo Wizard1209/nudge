@@ -12,7 +12,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: sudo apt-get update && sudo apt-get install -y mingw-w64
       - run: rustup target add x86_64-pc-windows-gnu && rustup component add rustfmt clippy
       - uses: Swatinem/rust-cache@v2
@@ -22,7 +22,7 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Plain cargo-audit (not rustsec/audit-check): the action ignores
       # .cargo/audit.toml, so the documented quick-xml ignores don't apply,
       # and it needs checks:write the default token doesn't have.
@@ -39,20 +39,20 @@ jobs:
     # cross-check) and the release build.
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
       - run: cargo test
 
   e2e:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: rustup target add wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - name: Install trunk
         run: wget -qO- https://github.com/trunk-rs/trunk/releases/latest/download/trunk-x86_64-unknown-linux-gnu.tar.gz | tar -xzf - -C "$HOME/.cargo/bin"
       - run: scripts/build-e2e.sh
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version-file: e2e/.nvmrc
           cache: npm
