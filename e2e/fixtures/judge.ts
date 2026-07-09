@@ -7,7 +7,14 @@ import { PNG } from "pngjs"
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 config({ path: path.resolve(__dirname, "../../.env") })
 
-const client = new OpenAI()
+// Lazy: `new OpenAI()` throws without OPENAI_API_KEY, and this module is
+// imported by keyless standard-suite runs too (pixels.ts re-uses CARD_REGION).
+// A judge test without a key still fails loudly — just at visualAssert time,
+// not at import time in unrelated files.
+let client: OpenAI | undefined
+function getClient(): OpenAI {
+    return (client ??= new OpenAI())
+}
 
 export interface Judgment {
     pass: boolean
@@ -80,7 +87,7 @@ export async function visualAssert(
         | "medium"
         | "high"
 
-    const response = await client.chat.completions.create({
+    const response = await getClient().chat.completions.create({
         model,
         response_format: { type: "json_object" },
         // High cap so reasoning tokens don't starve the JSON; billed only for

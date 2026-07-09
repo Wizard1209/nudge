@@ -5,6 +5,7 @@ journal*.csv
 .codex
 .cargo/*
 !.cargo/config.toml
+!.cargo/audit.toml
 .claude/
 .env
 CLAUDE.local.md

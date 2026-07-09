@@ -1,0 +1,11 @@
+[advisories]
+ignore = [
+    # quick-xml < 0.41 memory-exhaustion DoS advisories. quick-xml is reached
+    # only through wayland-scanner, a Linux/Wayland build-time proc-macro in
+    # winit's dependency tree; the shipped x86_64-pc-windows-gnu binary never
+    # compiles or links it (`cargo tree -i quick-xml --target
+    # x86_64-pc-windows-gnu` is empty). wayland-scanner pins quick-xml 0.39,
+    # so the patched 0.41 is unreachable until winit's wayland stack updates.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+]
