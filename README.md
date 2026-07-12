@@ -83,12 +83,3 @@ and easy to inspect visually. The outcome is captured in the shared spec under
 [`docs/`](docs), the contract both implementations follow, and then ported to
 Rust. The released product is the Rust binary only; the Electron app is a
 workbench, fully rewritable from the spec.
-
-## TODO (post-MVP)
-
-- [ ] Audio cue on popup.
-- [ ] LLM classifier: auto-evaluate "bullshit or not" from the text of both
-      fields (if not stated explicitly → `null`). Lightweight model, local or
-      API.
-- [ ] Voice input via ElevenLabs STT — a button / hotkey in the popup for
-      dictation instead of typing.
