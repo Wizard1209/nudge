@@ -166,8 +166,8 @@ describe("journal / formatTimestamp", () => {
 });
 
 describe("journal / isJournalable", () => {
-  // Spec §4: "Если хотя бы одно из doing / bullshit непустое — пишет запись
-  // в журнал." Used to support the "change interval without journaling"
+  // Spec §4: "If at least one of doing / bullshit is non-empty — writes a
+  // journal entry." Used to support the "change interval without journaling"
   // workflow: manual open → tweak minutes → Enter with empty fields → timer
   // is updated, journal stays untouched.
   it("returns true when doing has content", () => {

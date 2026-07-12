@@ -61,7 +61,7 @@ export interface DaisyFrame {
  * Petal k starts falling at t = (k+1) * intervalMs/12 and is fully gone
  * after `fadeMs` of fall. The fade duration is clamped to one slot so a
  * falling petal never overlaps the next petal's departure on short
- * intervals (spec §5: «длительность падения сокращается»).
+ * intervals (spec §5: "the fall duration is shortened").
  */
 export function daisyFrame(elapsedMs: number, intervalMs: number, fadeMs: number): DaisyFrame {
   if (intervalMs <= 0) {

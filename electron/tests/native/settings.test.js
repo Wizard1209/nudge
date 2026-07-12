@@ -4,9 +4,9 @@ import { launchApp, settingsState, openSettingsWindow } from './fixtures/electro
 // Bug 1: "everything in a gray frame, and on first open only half is visible."
 // Two native defects:
 //   (a) the window has no backgroundColor and the renderer's <html>/<body> are
-//       transparent → the default white/gray window shows through ("серая рамка");
+//       transparent → the default white/gray window shows through ("gray frame");
 //   (b) the window uses show:true (default) so it appears BEFORE the renderer
-//       paints → a gray, half-rendered first frame ("видна только половина").
+//       paints → a gray, half-rendered first frame ("only half is visible").
 // The fix: dark window backgroundColor + dark html/body, and show the window
 // only on 'ready-to-show'. The frame/title bar itself stays (spec §9).
 describe('settings window — no gray flash, content fully painted', () => {

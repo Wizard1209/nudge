@@ -46,9 +46,9 @@ import { buildTrayIcon, daisyFrame, formatTooltip } from "./trayIcon";
 // takes) instead of needing a Vite dev server running.
 const isDev = !app.isPackaged && !process.env.NUDGE_FORCE_PROD;
 const DEFAULT_MINUTES = 10;
-// Spec §5: a petal fades out over ~250ms after it detaches; the popup waits
-// until that fall finishes («после того, как его падение успело отыграться
-// целиком») before appearing.
+// Spec §5: a petal fades out over ~250ms after it detaches; the popup appears
+// "not at the moment the last petal detaches, but after its fall has played
+// out completely".
 const PETAL_FADE_MS = 250;
 
 let win: BrowserWindow | null = null;
@@ -266,8 +266,8 @@ function updateTray() {
   // destroyed the Tray — touching a destroyed Tray throws "Object has been
   // destroyed" and surfaces as a crash on quit. Bail if it's gone.
   if (!tray || tray.isDestroyed()) return;
-  // Spec §5: «Пока попап открыт, иконка остаётся в том виде, в каком она
-  // была на момент открытия» — freeze the icon while the popup is up; it
+  // Spec §5: "While the popup is open the icon stays in whatever state it
+  // was at the moment of opening" — freeze the icon while the popup is up; it
   // resumes when the popup closes (startTimer triggers a fresh updateTray).
   if (win?.isVisible()) return;
   const frame = daisyFrame(elapsedSinceTimerStart(), timerIntervalMs, PETAL_FADE_MS);
