@@ -678,12 +678,22 @@ fn menu_bar_status_item_is_present() {
         !added.is_empty(),
         "launching nudge added no window to the menu bar\n  before: {before:#?}\n  during: {during:#?}"
     );
-    for w in &added {
-        assert!(
-            w.rect.y >= 0.0 && w.rect.y < 40.0,
-            "a status item sits in the menu bar strip at the top of the screen, not at {w:#?}"
-        );
-    }
+    // Only one of the additions has to be ours, and transient neighbours do
+    // turn up in this strip: a cursor resting over the menu bar adds a tooltip
+    // popover at a higher layer, and any other app's popover lands here too.
+    // Asserting the status-item shape on *every* addition therefore reds the
+    // test for a passing mouse rather than for a missing status item.
+    let status_items: Vec<MenuBarWindow> = added
+        .iter()
+        .filter(|w| w.rect.y >= 0.0 && w.rect.y < 40.0)
+        .copied()
+        .collect();
+    assert!(
+        !status_items.is_empty(),
+        "nudge added {} menu-bar window(s), none of them a status item sitting in the strip at \
+         the top of the screen: {added:#?}",
+        added.len()
+    );
 
     drop(app);
     // Control Center re-lays the strip out after the owner dies; give it a
@@ -691,7 +701,9 @@ fn menu_bar_status_item_is_present() {
     std::thread::sleep(Duration::from_secs(2));
     let after = menu_bar_windows();
 
-    let survivors: Vec<&MenuBarWindow> = added
+    // Only the windows identified as status items above are held to this: a
+    // transient popover that came and went proves nothing either way.
+    let survivors: Vec<&MenuBarWindow> = status_items
         .iter()
         .filter(|w| after.iter().any(|a| a.id == w.id))
         .collect();

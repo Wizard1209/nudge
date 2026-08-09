@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+#
+# Run tests/macos_native.rs against a real GUI session inside a Tart guest.
+#
+# The macOS counterpart of scripts/native-tests.sh, and it exists for the same
+# reason: the native tier needs a logged-in desktop that CI does not have. It
+# also solves a problem the Windows side does not have — a developer Mac whose
+# screen has locked cannot run these tests at all. Behind the lock screen
+# synthetic input, application activation and `screencapture -R <rect>` all
+# fail, while a guest keeps its own unlocked session regardless.
+#
+#   scripts/native-tests-macos.sh                # full cycle, leaves the VM up
+#   scripts/native-tests-macos.sh --stop         # ... and stop it afterwards
+#   scripts/native-tests-macos.sh -- <filter>    # extra args for the test binary
+#
+# First run needs a guest. The one this was built against:
+#   tart clone ghcr.io/cirruslabs/macos-tahoe-base:latest nudge-base
+# Those images already ship SIP disabled and TCC grants for ScreenCapture,
+# Accessibility and PostEvent, so nothing has to be seeded — but step 3 checks
+# rather than trusting. Keep a `tart clone` of a known-good guest as a golden
+# image; the clone is instant and free on disk (APFS clonefile).
+set -euo pipefail
+
+VM=${VM:-nudge-base}
+VM_USER=${VM_USER:-admin}
+VM_PASS=${VM_PASS:-admin}
+REPO=${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
+TART=${TART:-tart}
+# Outside the repo on purpose: this is a private key, and a default inside the
+# working tree is one `git add -A` away from being published.
+KEY=${VM_KEY:-$HOME/.config/nudge-vm/id_ed25519}
+
+STOP_AFTER=0
+TEST_ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --stop) STOP_AFTER=1; shift ;;
+    --) shift; TEST_ARGS=("$@"); break ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+say() { printf '\n== %s\n' "$*"; }
+
+# --- 1. start the guest ----------------------------------------------------
+# --no-graphics is enough: the guest still gets a virtual display, a
+# WindowServer and an auto-logged-in console session. Verified, not assumed —
+# step 3 proves it every run.
+if ! $TART list | awk -v v="$VM" '$2==v && $NF=="running"{f=1} END{exit !f}'; then
+  say "starting $VM"
+  nohup $TART run "$VM" --no-graphics >/tmp/tart-$VM.log 2>&1 &
+else
+  say "$VM already running"
+fi
+IP=$($TART ip "$VM" --wait 120)
+echo "guest ip: $IP"
+
+SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR)
+vs() { ssh -i "$KEY" "${SSH_OPTS[@]}" "$VM_USER@$IP" "$@"; }
+
+# --- 2. key-based ssh, once ------------------------------------------------
+# The guest's prompt is capital-P "Password:"; a lowercase expect pattern hangs
+# until the timeout with no clue as to why.
+mkdir -p "$(dirname "$KEY")"
+[[ -f $KEY ]] || ssh-keygen -t ed25519 -N '' -f "$KEY" -C nudge-vm >/dev/null
+if ! ssh -i "$KEY" "${SSH_OPTS[@]}" -o BatchMode=yes "$VM_USER@$IP" true 2>/dev/null; then
+  say "installing ssh key"
+  PUB=$(cat "$KEY.pub")
+  expect -c "
+    set timeout 60
+    log_user 0
+    spawn ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null $VM_USER@$IP \
+      \"mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '$PUB' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys\"
+    expect { -re {assword:} { send \"$VM_PASS\r\"; exp_continue } eof }
+  "
+  ssh -i "$KEY" "${SSH_OPTS[@]}" -o BatchMode=yes "$VM_USER@$IP" true
+fi
+
+# --- 3. wait for the desktop, then prove it is usable ----------------------
+# sshd answers while the guest is still showing the boot progress bar, so a
+# probe gated on ssh reachability screencaptures the Apple logo and reports a
+# healthy session. Dock and Finder running is the signal that auto-login
+# finished. A row in TCC.db is not evidence either; a capture that returns
+# window pixels is.
+say "waiting for the guest desktop"
+vs '
+  for i in $(seq 1 60); do
+    pgrep -qx Dock && pgrep -qx Finder && exit 0
+    sleep 2
+  done
+  echo "Dock/Finder never appeared — no Aqua session"; exit 1
+'
+say "checking the guest GUI session"
+vs '
+  set -e
+  console=$(stat -f%Su /dev/console)
+  [ "$console" = "'"$VM_USER"'" ] || { echo "no console session (owner=$console)"; exit 1; }
+  pgrep -q WindowServer || { echo "no WindowServer"; exit 1; }
+  ioreg -n Root -d1 -a | grep -q CGSSessionScreenIsLocked && { echo "guest screen is LOCKED"; exit 1; }
+  rm -f /tmp/_gui_probe.png
+  screencapture -x /tmp/_gui_probe.png
+  size=$(stat -f%z /tmp/_gui_probe.png)
+  [ "$size" -gt 500000 ] || { echo "screencapture produced only $size bytes — still booting?"; exit 1; }
+  osascript -e "tell application \"System Events\" to key code 53" >/dev/null
+  echo "console=$console  screencapture=${size}B  System Events keystroke: ok"
+'
+
+# --- 4. build on the host, ship the binaries -------------------------------
+# The test resolves the app through env!("CARGO_MANIFEST_DIR"), i.e. an
+# absolute HOST path. Recreating that exact path in the guest is simpler than
+# sharing a directory: `tart run --dir` needs the VM restarted and lands the
+# share under /Volumes/My Shared Files, where the hardcoded lookup would not
+# find it. Both binaries link only system frameworks, so the guest needs no
+# Rust toolchain and none is installed there.
+say "building on the host"
+( cd "$REPO" && cargo build --bin nudge && cargo test --no-run --test macos_native )
+TEST_BIN=$(cd "$REPO" && cargo test --no-run --test macos_native --message-format=json 2>/dev/null \
+  | /usr/bin/python3 -c 'import sys,json
+for l in sys.stdin:
+    try: m=json.loads(l)
+    except Exception: continue
+    if m.get("target",{}).get("name")=="macos_native" and m.get("executable"):
+        print(m["executable"])' | tail -1)
+[[ -n $TEST_BIN ]] || { echo "could not locate the macos_native test binary" >&2; exit 1; }
+echo "test binary: $TEST_BIN"
+
+say "shipping binaries to $REPO inside the guest"
+# The guest user differs from the host user, so the mirrored path lives under
+# somebody else's /Users tree and has to be created with sudo, then handed over.
+REPO_ROOT=$(printf '%s\n' "$REPO" | awk -F/ '{print "/"$2"/"$3}')
+vs "sudo mkdir -p '$REPO/target/debug/deps' && sudo chown -R $VM_USER:staff '$REPO_ROOT'"
+scp -q -i "$KEY" "${SSH_OPTS[@]}" "$REPO/target/debug/nudge" "$VM_USER@$IP:$REPO/target/debug/nudge"
+scp -q -i "$KEY" "${SSH_OPTS[@]}" "$TEST_BIN" "$VM_USER@$IP:$REPO/target/debug/deps/"
+GUEST_TEST="$REPO/target/debug/deps/$(basename "$TEST_BIN")"
+vs "chmod +x '$REPO/target/debug/nudge' '$GUEST_TEST'"
+
+# --- 5. run the suite ------------------------------------------------------
+# --test-threads=1 is load-bearing: the synthetic Esc is addressed by process
+# name, so two live `nudge` instances make the keystroke land on the wrong one
+# and the failure reads like a port regression rather than a harness collision.
+say "running the suite"
+set +e
+vs "'$GUEST_TEST' --ignored --nocapture --test-threads=1 ${TEST_ARGS[*]:-} 2>&1"
+RC=$?
+set -e
+
+[[ $STOP_AFTER -eq 1 ]] && { say "stopping $VM"; $TART stop "$VM"; }
+exit $RC
