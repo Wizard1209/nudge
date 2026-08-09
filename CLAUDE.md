@@ -12,6 +12,25 @@ cargo build --bin nudge --target x86_64-pc-windows-gnu
 ./target/x86_64-pc-windows-gnu/debug/nudge.exe
 ```
 
+### Build & run native (macOS)
+```sh
+cargo build --bin nudge && ./target/debug/nudge
+
+# The shipped form is a bundle, and it is not optional packaging: LSUIElement
+# and Launch Services agree with the running app only from inside one.
+DMG=1 ./scripts/build-macos-app.sh    # -> target/macos/Nudge.app + .dmg
+```
+
+### Run the macOS native tests
+```sh
+# Drives tests/macos_native.rs against a real desktop inside a Tart guest.
+# Do this even with your own screen unlocked: behind a lock screen synthetic
+# input, activation and rect captures all fail, so the guest is the
+# reproducible path rather than the fallback.
+scripts/native-tests-macos.sh
+scripts/native-tests-macos.sh -- popup_reappears    # one test
+```
+
 ### Build WASM (for e2e tests only)
 ```sh
 # Builds both popup (index.html) and settings (settings.html) into e2e/dist.

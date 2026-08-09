@@ -1,7 +1,8 @@
 # Nudge — interval journaling for focus
 
-A periodic spotlight popup for Windows that asks you "what are you doing?"
-and "is it bullshit?". Answers are written to an append-only NDJSON journal.
+A periodic spotlight popup for Windows and macOS that asks you "what are you
+doing?" and "is it bullshit?". Answers are written to an append-only NDJSON
+journal.
 
 ![Nudge popup](assets/popup.png)
 
@@ -59,13 +60,33 @@ Full contract: [docs/journal-spec.md](docs/journal-spec.md)
 
 - Interval: **10 minutes** — field `default_interval_minutes` in
   `config.json`, any positive number (integer or decimal).
-- Journal: `%USERPROFILE%\Documents\Nudge\journal-rust.ndjson`
+- Journal: `<Documents>/Nudge/journal-rust.ndjson` — `%USERPROFILE%\Documents`
+  on Windows, `~/Documents` on macOS.
 - Hotkey: **Ctrl+Shift+Space** — opens the popup manually from any focused
-  window. Field `hotkey` in `%USERPROFILE%\Documents\Nudge\config.json`.
-  Format: modifiers (`Ctrl`, `Alt`, `Shift`, `Win`) + one key joined by `+`,
-  e.g. `Alt+J` or `Ctrl+F12`.
-- Launch with Windows: field `autostart` (bool) — kept in sync with
-  `HKCU\…\Run\Nudge`; see `docs/design-spec.md` §9.
+  window. Field `hotkey` in `<Documents>/Nudge/config.json`. Format:
+  modifiers (`Ctrl`, `Alt`, `Shift`, `Win`) + one key joined by `+`, e.g.
+  `Alt+J` or `Ctrl+F12`. `Win` means Command on macOS.
+- Launch at login: field `autostart` (bool) — kept in sync with
+  `HKCU\…\Run\Nudge` on Windows and with a LaunchAgent plist at
+  `~/Library/LaunchAgents/com.wizard1209.nudge.plist` on macOS; see
+  `docs/design-spec.md` §9.
+
+## Installing on macOS
+
+Download the DMG from the Releases page, drag `Nudge.app` to Applications,
+then clear the download quarantine:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Nudge.app
+```
+
+That step is needed because the app carries an ad-hoc signature rather than a
+Developer ID, and macOS 15 removed the Control-click override that used to get
+past Gatekeeper. The alternative is one trip through System Settings › Privacy
+& Security › Open Anyway after the first launch is refused.
+
+Nudge runs as a menu-bar agent: no Dock icon, no Cmd-Tab entry, and the daisy
+in the menu bar is where Settings and Quit live.
 
 ## Settings
 

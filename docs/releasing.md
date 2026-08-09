@@ -17,19 +17,42 @@ Release.
    LLM vision judge). These are local-only for now — CI has no Windows runner
    with a live desktop. Skip only if they already ran on the same code
    recently.
-4. **Manual smoke of a release build on live Windows** — popup opens focused;
+4. **macOS ignored tests** — run `scripts/native-tests-macos.sh`, which drives
+   `tests/macos_native.rs` inside a Tart guest. All five must pass. They stay
+   out of CI for the same reason as the Windows pair, plus one of their own:
+   Screen Recording and Accessibility are baked into a runner image ahead of
+   time and cannot be granted during a job.
+
+   Run them in the guest even when your own screen is unlocked. Behind a lock
+   screen they cannot run at all — synthetic input, application activation and
+   rect captures all fail — so the guest is the reproducible path rather than
+   the fallback.
+5. **Manual smoke of a release build on live Windows** — popup opens focused;
    Enter appends a journal line; Esc closes without writing; tray daisy and
    menu work; global hotkey opens the popup; settings window saves.
+6. **Manual smoke of the macOS bundle** — `DMG=1 ./scripts/build-macos-app.sh`,
+   install `Nudge.app`, and check the same list. Two extra items that only
+   exist here: no Dock icon (`lsappinfo` should report `UIElement`), and Quit
+   from the menu-bar daisy actually exits — with `LSUIElement` on there is no
+   other way out.
 
 ## Tag
 
-5. `git tag vX.Y.Z && git push origin vX.Y.Z`
-6. Watch the Release workflow to completion — the judge e2e group failing
+7. `git tag vX.Y.Z && git push origin vX.Y.Z`
+8. Watch the Release workflow to completion — the judge e2e group failing
    loudly (missing/expired `OPENAI_API_KEY` secret) blocks the release, which
-   is intended.
+   is intended. The macOS job builds a universal `.app`, wraps it in a DMG and
+   hands it to the release job as an artifact, so a single job publishes both
+   files and two runners cannot race to create the tag.
 
 ## After
 
-7. Release page: the `.exe` is attached, generated notes look sane.
-8. Download the `.exe` from the Release page — not a local build — and smoke
-   it on Windows.
+9. Release page: the `.exe` and the `.dmg` are both attached, generated notes
+   look sane, and the notes carry the quarantine instructions.
+10. Download the `.exe` from the Release page — not a local build — and smoke
+    it on Windows.
+11. Download the `.dmg` the same way and install it on a Mac that has never
+    built the app. This is the only step that exercises Gatekeeper for real:
+    a locally built bundle carries no quarantine attribute, so it cannot show
+    you what a downloading user sees. Expect the first launch to be refused
+    and the documented `xattr -dr com.apple.quarantine` to clear it.
