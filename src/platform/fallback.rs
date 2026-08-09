@@ -22,6 +22,8 @@ use crate::hotkey::Hotkey;
 
 pub fn start(_hotkey: Option<Hotkey>, _config_path: std::path::PathBuf, _initial: config::Config) {}
 
+pub fn start_on_event_loop(_ctx: &egui::Context) {}
+
 pub fn note_window_handle(_handle: isize) {}
 
 pub fn set_tray_clicked() {}

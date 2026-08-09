@@ -172,6 +172,10 @@ impl Rect {
 /// to grab the window alone instead of a screen region.
 #[derive(Debug, Clone, Copy)]
 struct WindowInfo {
+    /// Carried for `capture_region`'s outstanding `screencapture -l <windowID>`
+    /// TODO — grabbing the window alone is what would make a transparency
+    /// assertion independent of the wallpaper behind it.
+    #[expect(dead_code, reason = "read once capture_region takes the -l path")]
     id: u32,
     rect: Rect,
     /// `kCGWindowIsOnscreen` — whether the window is actually presented right
@@ -425,12 +429,15 @@ fn harness_can_sandbox_and_capture() {
 // Acceptance criteria for the port
 // ---------------------------------------------------------------------------
 
-/// GREEN today — a regression guard rather than outstanding port work.
+/// The spotlight lands where spec §1 says, in points.
 ///
-/// The macOS arm of the viewport builder sets no position, so placement is
-/// whatever winit picks; measured, that turns out to be a stable, horizontally
-/// centred (475, 162) on a 1470x956 display, identical across five consecutive
-/// launches.
+/// The unit test for `window_position` cannot see the failure this catches.
+/// `CGWindowListCopyWindowInfo` reports points, `ViewportCommand::OuterPosition`
+/// takes points, but the *pixels* of this display are 2940x1912 — so a
+/// placement computed the Windows way (`GetSystemMetrics` returns physical
+/// pixels) would put the card at (-235, 478) and still pass a
+/// pure-arithmetic test. Only a measurement of the real window separates the
+/// two.
 ///
 /// Worth knowing before trusting any other geometry here: the AX path
 /// disagrees. System Events reports this same window at y=-1137/-1160 — with a
@@ -452,6 +459,26 @@ fn window_is_within_the_visible_screen() {
         window.rect.intersects(&display),
         "popup is off-screen at {:?} — invisible to the user despite a live process",
         window.rect
+    );
+
+    use nudge_web::nudge_state::{POPUP_SIZE, window_position};
+    let want = window_position((display.w as u32, display.h as u32), POPUP_SIZE);
+    assert_eq!(
+        (window.rect.x as i32, window.rect.y as i32),
+        want,
+        "spec §1 wants the card horizontally centred with its top at 25% of the \
+         {}x{}-point display. Feeding the same arithmetic this display's *pixels* \
+         instead would land it at {:?} — which is the mistake this assertion exists \
+         to catch, so check the units before adjusting the expectation.",
+        display.w,
+        display.h,
+        window_position(
+            (
+                CGDisplay::main().pixels_wide() as u32,
+                CGDisplay::main().pixels_high() as u32,
+            ),
+            POPUP_SIZE,
+        ),
     );
 }
 
@@ -513,14 +540,160 @@ fn popup_reappears_after_the_interval() {
     );
 }
 
-/// RED on the current tree — there is no status item at all. `tray-icon` is
-/// confined to `[target.'cfg(target_os = "windows")'.dependencies]`, and
-/// `mod daisy` (the petal countdown icon, pure pixel math with zero Win32) is
-/// not even compiled on macOS.
+/// The lowest `kCGWindowLayer` a menu-bar status item is drawn at. The menu
+/// bar itself and everything docked into it live at 20 and above; ordinary
+/// windows are at 0 and the spotlight popup, always-on-top, is at 3.
+const STATUS_ITEM_MIN_LAYER: i64 = 20;
+
+/// One on-screen window at the status-item layer or above.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct MenuBarWindow {
+    id: u32,
+    owner_pid: u32,
+    layer: i64,
+    rect: Rect,
+}
+
+/// Every on-screen window in the menu-bar strip.
+///
+/// Deliberately unfiltered by pid, because a status item is NOT owned by the
+/// process that creates it: on macOS 26 the menu bar is hosted by Control
+/// Center, and `CGWindowListCopyWindowInfo` attributes our item to *that* pid.
+/// Looking for a tray window under nudge's own pid finds nothing, ever — which
+/// is the trap this helper exists to keep the test out of. What is observable
+/// is the *set*: adding an item adds a window here and shifts its neighbours.
+fn menu_bar_windows() -> Vec<MenuBarWindow> {
+    let Some(windows) = CGDisplay::window_list_info(kCGWindowListOptionAll, None) else {
+        return Vec::new();
+    };
+
+    let owner_pid_key = unsafe { CFString::wrap_under_get_rule(kCGWindowOwnerPID) };
+    let bounds_key = unsafe { CFString::wrap_under_get_rule(kCGWindowBounds) };
+    let number_key = unsafe { CFString::wrap_under_get_rule(kCGWindowNumber) };
+    let on_screen_key = unsafe { CFString::wrap_under_get_rule(kCGWindowIsOnscreen) };
+    let layer_key = unsafe { CFString::wrap_under_get_rule(kCGWindowLayer) };
+
+    let mut found = Vec::new();
+    for i in 0..windows.len() {
+        let Some(entry) = windows.get(i) else {
+            continue;
+        };
+        let dict: CFDictionary<CFString, CFType> =
+            unsafe { TCFType::wrap_under_get_rule(*entry as CFDictionaryRef) };
+
+        let layer = dict
+            .find(&layer_key)
+            .and_then(|v| v.downcast::<CFNumber>())
+            .and_then(|n| n.to_i64())
+            .unwrap_or(0);
+        if layer < STATUS_ITEM_MIN_LAYER {
+            continue;
+        }
+        let on_screen = dict
+            .find(&on_screen_key)
+            .and_then(|v| v.downcast::<CFBoolean>())
+            .map(bool::from)
+            .unwrap_or(false);
+        if !on_screen {
+            continue;
+        }
+        let Some(cg_rect) = dict
+            .find(&bounds_key)
+            .and_then(|v| v.downcast::<CFDictionary>())
+            .and_then(|b| CGWindowRect::from_dict_representation(&b))
+        else {
+            continue;
+        };
+
+        found.push(MenuBarWindow {
+            id: dict
+                .find(&number_key)
+                .and_then(|v| v.downcast::<CFNumber>())
+                .and_then(|n| n.to_i64())
+                .unwrap_or(0) as u32,
+            owner_pid: dict
+                .find(&owner_pid_key)
+                .and_then(|v| v.downcast::<CFNumber>())
+                .and_then(|n| n.to_i64())
+                .unwrap_or(0) as u32,
+            layer,
+            rect: Rect {
+                x: cg_rect.origin.x,
+                y: cg_rect.origin.y,
+                w: cg_rect.size.width,
+                h: cg_rect.size.height,
+            },
+        });
+    }
+    found
+}
+
+/// The status item exists while the app runs, and only while it runs.
+///
+/// Needs no synthetic input and no Accessibility grant — the window list is
+/// readable by anyone — which makes this the one status-item assertion that
+/// can be made without driving the GUI. What it does NOT cover: that a left
+/// click summons the popup, and that a right click opens the Show / Settings /
+/// Quit menu. Those need real clicks on a real, unlocked screen.
+///
+/// Three snapshots rather than one, because "a window exists in the menu bar"
+/// is true of any Mac at rest. Only the *difference* across the app's lifetime
+/// is attributable to nudge, and requiring the new window to disappear again
+/// on quit is what rules out an unrelated item (a Wi-Fi popover, a clock tick)
+/// having appeared in the same second.
 #[test]
 #[ignore = "needs a GUI session; run via --ignored"]
 fn menu_bar_status_item_is_present() {
-    unimplemented!("TODO: CGWindowListCopyWindowInfo at the status-bar layer, filtered by pid")
+    let before = menu_bar_windows();
+    assert!(
+        !before.is_empty(),
+        "no menu-bar windows visible at all — the window server is not showing a menu bar to \
+         this session (a locked screen does this), so the difference below would be unreadable"
+    );
+
+    let app = SandboxedApp::launch();
+    let during = menu_bar_windows();
+
+    let added: Vec<MenuBarWindow> = during
+        .iter()
+        .filter(|w| !before.iter().any(|b| b.id == w.id))
+        .copied()
+        .collect();
+    // Under --nocapture this is what tells you *whose* pid hosts the item —
+    // Control Center's, not nudge's — and is the first thing to look at when
+    // the assertion below goes red.
+    eprintln!(
+        "[status-item] nudge pid {}; menu-bar windows {} before → {} during; added {added:#?}",
+        app.pid(),
+        before.len(),
+        during.len(),
+    );
+    assert!(
+        !added.is_empty(),
+        "launching nudge added no window to the menu bar\n  before: {before:#?}\n  during: {during:#?}"
+    );
+    for w in &added {
+        assert!(
+            w.rect.y >= 0.0 && w.rect.y < 40.0,
+            "a status item sits in the menu bar strip at the top of the screen, not at {w:#?}"
+        );
+    }
+
+    drop(app);
+    // Control Center re-lays the strip out after the owner dies; give it a
+    // beat before reading the third snapshot.
+    std::thread::sleep(Duration::from_secs(2));
+    let after = menu_bar_windows();
+
+    let survivors: Vec<&MenuBarWindow> = added
+        .iter()
+        .filter(|w| after.iter().any(|a| a.id == w.id))
+        .collect();
+    assert!(
+        survivors.is_empty(),
+        "the window(s) nudge added to the menu bar outlived the process, so they were never \
+         nudge's: {survivors:#?}"
+    );
 }
 
 /// RED on the current tree, and the last one to become reachable: it needs

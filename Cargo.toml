@@ -32,8 +32,14 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ulid = "1"
 
-[target.'cfg(target_os = "windows")'.dependencies]
+# The menu-bar / notification-area status item, on both shipping platforms.
+# One version for both so the icon, the menu and the tooltip are literally the
+# same code path; `platform::{windows,macos}` differ only in which thread owns
+# the item and what wakes the app.
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 tray-icon = "0.19"
+
+[target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_System_Registry", "Win32_Security"] }
 raw-window-handle = "0.6"
 
@@ -49,6 +55,27 @@ raw-window-handle = "0.6"
 # binary is a cost with no benefit.
 objc2-app-kit = "0.2"
 objc2-foundation = "0.2"
+# Global hotkey. On macOS this crate registers through Carbon's
+# `RegisterEventHotKey`, which needs no TCC grant and fires while the app is
+# unfocused — measured, including from a launchd-parented unsigned bundle, with
+# no permission dialog. That property is conditional on the binding: a media
+# key switches the crate onto a `CGEventTap`, which *does* need Input
+# Monitoring. `crate::hotkey`'s key allowlist (letters, digits, F1..F24, Space,
+# Enter, Tab, Escape, Backspace) contains no media key, so the Carbon path is
+# the only one this app can reach.
+global-hotkey = "0.8"
+# `flock` for the settings-window single-instance lockfile — the macOS
+# counterpart of the named Win32 mutex. Already in the tree via winit, so this
+# adds no crate to the build.
+libc = "0.2"
+# `EventLoopBuilderExtMacOS::with_activation_policy`, the only way to ask for
+# `NSApplicationActivationPolicy::Accessory` *before* the app finishes
+# launching. eframe does not re-export `egui_winit` (and therefore not
+# `winit`), so it has to be named here. `default-features = false` adds no
+# feature of our own — cargo unifies with what eframe already turns on — and
+# the version tracks eframe 0.34's winit 0.30 exactly, so this adds no crate
+# to the build. Bump it in lockstep with eframe.
+winit = { version = "0.30", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 dirs = "6"

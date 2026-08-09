@@ -8,12 +8,13 @@
 #     launch-at-login cannot be implemented against a bare binary the way the
 #     Windows build writes an exe path into HKCU\...\Run;
 #   * a bare Mach-O launched from Finder opens a Terminal window alongside it;
-#   * `LSUIElement` (no Dock icon, no Cmd-Tab entry) is a bundle property, and
-#     it is what replaces `with_taskbar(false)` + `WS_EX_TOOLWINDOW`.
+#   * `LSUIElement` (no Dock icon, no Cmd-Tab entry) states in the bundle what
+#     the binary already asks AppKit for at launch, so Launch Services agrees
+#     with the running app from the moment it is double-clicked.
 #
 # Usage:
-#   scripts/build-macos-app.sh                 # debug-friendly: Dock icon kept
-#   AGENT_MODE=1 scripts/build-macos-app.sh    # LSUIElement=1, menu-bar only
+#   scripts/build-macos-app.sh                 # menu-bar only (LSUIElement=1)
+#   AGENT_MODE=0 scripts/build-macos-app.sh    # keep the Dock icon, for debugging
 #
 # Requires: rustup target aarch64-apple-darwin, and the Command Line Tools for
 # codesign/plutil (full Xcode is not needed).
@@ -32,15 +33,19 @@ APP="${OUT_DIR}/${APP_NAME}.app"
 # workflow already checks against the git tag.
 VERSION="$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)"
 
-# LSUIElement hides the app from the Dock and Cmd-Tab. Do NOT default it on:
-# the macOS build currently has no menu-bar status item (tray-icon is confined
-# to the Windows dependency table), so an agent-mode bundle would have no icon,
-# no menu, and no visible window to close — it could only be killed from the
-# command line. Flip this on in the same change that lands the status item.
-if [[ "${AGENT_MODE:-0}" == "1" ]]; then
+# LSUIElement hides the app from the Dock and Cmd-Tab. On by default now that
+# the menu-bar status item exists: without it a user would have no way to quit
+# an app that has neither a Dock icon (the binary sets
+# `NSApplicationActivationPolicy::Accessory` itself, whatever this plist says)
+# nor a window between nudges. The status item's Quit entry is that way out.
+#
+# AGENT_MODE=0 withholds the key. Useful only for debugging a launch problem,
+# where a Dock icon is somewhere to force-quit from — it does NOT put one back,
+# since the activation policy is the app's own call.
+if [[ "${AGENT_MODE:-1}" == "1" ]]; then
   LSUIELEMENT="<key>LSUIElement</key><true/>"
 else
-  LSUIELEMENT="<!-- LSUIElement withheld: no status item exists yet to quit from -->"
+  LSUIELEMENT="<!-- LSUIElement withheld via AGENT_MODE=0 -->"
 fi
 
 # UNIVERSAL=1 adds the Intel slice. Off by default because the second target
@@ -106,7 +111,7 @@ codesign --force --deep -s - "${APP}"
 codesign --verify --verbose=2 "${APP}"
 
 echo "==> Built ${APP}"
-echo "    LSUIElement: $([[ "${AGENT_MODE:-0}" == "1" ]] && echo "on (no Dock icon)" || echo "off (Dock icon kept)")"
+echo "    LSUIElement: $([[ "${AGENT_MODE:-1}" == "1" ]] && echo "on" || echo "withheld")"
 
 # DMG=1 wraps the bundle for distribution. The staging directory carries an
 # /Applications symlink so the disk image opens with the usual drag target.

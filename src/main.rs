@@ -8,7 +8,7 @@ mod autostart;
 mod config;
 #[cfg(not(target_arch = "wasm32"))]
 mod config_watcher;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 mod daisy;
 mod hotkey;
 #[cfg(not(target_arch = "wasm32"))]
@@ -194,13 +194,23 @@ fn run_settings_ui() -> eframe::Result {
     use eframe::egui;
     use settings_app::SettingsApp;
 
-    // Single-instance guard — Windows-only. On non-Windows we don't ship
-    // the settings UI in practice (it's launched from the tray, which is
-    // Windows-only), but the code still needs to compile for `cargo build`
-    // on the linux dev host.
+    // Single-instance guard: the status-item menu spawns one process per
+    // "Settings" click, and without this each click would stack another
+    // window with its own unsynchronised copy of config.json.
+    //
+    // Both guards are held for the lifetime of the window — a named kernel
+    // mutex on Windows, a `flock`ed file under Application Support on macOS —
+    // and both mean the same thing when they refuse: someone else is already
+    // showing this window, so exit silently. The linux dev host has neither
+    // and needs neither; it has no menu to launch the settings UI from.
     #[cfg(target_os = "windows")]
     let _mutex_handle = match acquire_settings_singleton() {
         Some(h) => h,
+        None => return Ok(()),
+    };
+    #[cfg(target_os = "macos")]
+    let _settings_lock = match platform::acquire_settings_singleton() {
+        Some(l) => l,
         None => return Ok(()),
     };
 
@@ -358,9 +368,10 @@ fn main() -> eframe::Result {
     // registration (WM_HOTKEY is delivered to the registering thread's
     // message queue) and applies config-file live-reload.
     //
-    // On macOS there is nothing to start yet — the status item and the
-    // hotkey are the next slice of the port, and the interval timer runs on
-    // the main thread out of `App::logic` (see platform::macos).
+    // On macOS this only *records* what to build: the status item is an
+    // `NSStatusItem` and the hotkey goes through Carbon, and both need the
+    // main thread to already be an event loop. `platform::start_on_event_loop`
+    // (below, in the creator closure) does the building.
     platform::start(Some(configured_hotkey), config_path.clone(), config.clone());
 
     // Live-reload: watch `config.json` for changes (settings UI saves,
@@ -389,7 +400,10 @@ fn main() -> eframe::Result {
 
     // Spotlight window: horizontally centered, vertical center at 40% of screen
     // per spec §1. Computed once at launch from primary monitor dimensions.
-    let win_size = [520.0_f32, 320.0];
+    let win_size = [
+        nudge_state::POPUP_SIZE.0 as f32,
+        nudge_state::POPUP_SIZE.1 as f32,
+    ];
     #[cfg(target_os = "windows")]
     let viewport = {
         use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
@@ -413,7 +427,26 @@ fn main() -> eframe::Result {
             .with_taskbar(false)
             .with_title("Nudge")
     };
-    #[cfg(not(target_os = "windows"))]
+    // macOS: same chrome as Windows minus the two Win32-shaped calls.
+    // `with_taskbar(false)` has no macOS meaning — the Dock is an *app*
+    // property, set through the activation policy below — and the position
+    // cannot be set here at all, because the screen size is not knowable
+    // before the event loop exists (`platform::macos::apply_window_position`
+    // sends it on the first tick, in points).
+    //
+    // The rest is measured to work: transparency composites (the window's own
+    // surface reads 0,0,0,0 at the corners while the card is opaque at the
+    // centre), and `with_always_on_top` lands the window on level 3, floating
+    // over an active Finder window.
+    #[cfg(target_os = "macos")]
+    let viewport = egui::ViewportBuilder::default()
+        .with_inner_size(win_size)
+        .with_decorations(false)
+        .with_always_on_top()
+        .with_resizable(false)
+        .with_transparent(true)
+        .with_title("Nudge");
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     let viewport = egui::ViewportBuilder::default()
         .with_inner_size(win_size)
         .with_decorations(false)
@@ -421,15 +454,42 @@ fn main() -> eframe::Result {
         .with_resizable(false)
         .with_title("Nudge");
 
-    let options = eframe::NativeOptions {
+    #[cfg_attr(not(target_os = "macos"), expect(unused_mut))]
+    let mut options = eframe::NativeOptions {
         viewport,
         ..Default::default()
     };
 
+    // No Dock icon and no Cmd-Tab entry: this is a menu-bar app whose window
+    // is a transient overlay. `Accessory` is what `with_taskbar(false)` +
+    // `WS_EX_TOOLWINDOW` do on Windows.
+    //
+    // It has to be asked for *before* the app finishes launching, which is why
+    // it goes through the event-loop hook rather than a `setActivationPolicy`
+    // call of our own — the latter would run after `applicationDidFinishLaunching`
+    // and flash a Dock icon on the way past.
+    //
+    // An accessory app is not given the keyboard by default. What restores it
+    // is the `activateIgnoringOtherApps` in `platform::macos::focus_popup`,
+    // called on every reveal; without that call this line would produce a
+    // popup nobody can type into.
+    #[cfg(target_os = "macos")]
+    {
+        use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
+        options.event_loop_builder = Some(Box::new(|builder| {
+            builder.with_activation_policy(ActivationPolicy::Accessory);
+        }));
+    }
+
     eframe::run_native(
         "Nudge",
         options,
-        Box::new(move |cc| Ok(Box::new(NudgeApp::new(cc, default_minutes)))),
+        Box::new(move |cc| {
+            // The half of the OS integration that needs the main thread to
+            // already be the event loop: the status item and the hotkey.
+            platform::start_on_event_loop(&cc.egui_ctx);
+            Ok(Box::new(NudgeApp::new(cc, default_minutes)))
+        }),
     )
 }
 

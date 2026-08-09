@@ -35,7 +35,18 @@ use nudge_web::app::NudgeApp;
 fn the_card_comes_back_after_the_interval() {
     // 0.005 min = 300 ms. The constructor value is what lands in the
     // interval field, and the field is what the close reads back.
-    let mut harness = Harness::new_eframe(|cc| NudgeApp::new(cc, 0.005));
+    //
+    // `with_step_dt` is not tuning — the default (0.25 s) makes this harness
+    // lie about the schedule under test. egui subtracts the *predicted* frame
+    // time from every `request_repaint_after` so a wake cannot overshoot its
+    // target, and at a quarter-second per frame every wake this backend asks
+    // for (a petal drop is 25 ms on a 300 ms interval) is rounded down to
+    // "repaint immediately" — `Harness::run` then spins to `max_steps` on a
+    // schedule that is perfectly well-behaved at a real frame rate. 1/60 s is
+    // that real frame rate.
+    let mut harness = Harness::builder()
+        .with_step_dt(1.0 / 60.0)
+        .build_eframe(|cc| NudgeApp::new(cc, 0.005));
     harness.run();
     assert_eq!(
         harness.get_all_by_role(Role::TextInput).count(),

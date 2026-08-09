@@ -117,7 +117,7 @@ fn plist_is_written_confirmed_and_removed() {
     provider.write_plist().expect("write plist");
 
     assert!(plist.exists(), "{} was not created", plist.display());
-    let xml = std::fs::read_to_string(&plist).expect("read plist");
+    let xml = std::fs::read_to_string(plist).expect("read plist");
     assert_eq!(parse_plist_label(&xml).as_deref(), Some(LAUNCH_AGENT_LABEL));
     assert!(xml.contains("<key>RunAtLoad</key>"));
     assert!(
@@ -163,7 +163,7 @@ fn a_foreign_plist_at_our_path_is_not_reported_as_enabled() {
     let plist = &sb.plist;
     std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
     std::fs::write(
-        &plist,
+        plist,
         nudge_web::autostart::launch_agent_plist_xml("com.example.other", Path::new("/bin/true")),
     )
     .unwrap();

@@ -56,9 +56,9 @@ jobs:
       # CI's test-macos job only runs on push/PR, and tags hit neither, so the
       # portable tiers are re-run here rather than shipping unverified.
       - run: cargo test
-      # TODO: add AGENT_MODE=1 (LSUIElement) in the same change that lands the
-      # menu-bar status item. Until then the app must keep its Dock icon —
-      # agent mode without a status item leaves no way to quit but `kill`.
+      # LSUIElement is on by the build script's own default now that the
+      # menu-bar status item exists to quit from; see the comment beside
+      # AGENT_MODE in scripts/build-macos-app.sh.
       - name: Build .app and DMG
         run: UNIVERSAL=1 DMG=1 ./scripts/build-macos-app.sh
       - run: mv target/macos/Nudge-*.dmg "nudge-${{ github.ref_name }}-macos-universal.dmg"

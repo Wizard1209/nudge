@@ -32,6 +32,11 @@ pub fn start(hotkey: Option<Hotkey>, config_path: std::path::PathBuf, initial: c
     crate::tray_bridge::spawn_tray_thread(hotkey, config_path, initial);
 }
 
+/// No-op: `start` already built everything on its own thread, and none of it
+/// needs the event loop. The macOS arm is the one with work here — its status
+/// item and hotkey cannot exist until the main thread is the event loop's.
+pub fn start_on_event_loop(_ctx: &egui::Context) {}
+
 /// `tray_bridge::store_hwnd` under a name that doesn't presume a handle.
 pub fn note_window_handle(handle: isize) {
     crate::tray_bridge::store_hwnd(handle);

@@ -11,8 +11,9 @@
 //!   thread there owns the timer, the icon animation and the popup wakeup, so
 //!   the seam adds nothing: it only renames the two entry points whose
 //!   signatures carried Win32 types across the boundary.
-//! * **`macos`** — the interval timer, polled from `App::logic` on the main
-//!   thread. No tray, no hotkey yet.
+//! * **`macos`** — the interval timer, the menu-bar status item and the global
+//!   hotkey, all polled from `App::logic` on the main thread, because AppKit
+//!   and Carbon both insist on that thread.
 //! * **fallback** — no-ops, so a Linux dev host still compiles and runs the
 //!   popup (it just never nudges), which is the property the old
 //!   `cfg(not(any(windows, macos)))` arms in `main.rs` / `autostart.rs` have.
