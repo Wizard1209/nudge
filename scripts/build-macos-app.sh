@@ -43,13 +43,31 @@ else
   LSUIELEMENT="<!-- LSUIElement withheld: no status item exists yet to quit from -->"
 fi
 
-echo "==> Building ${APP_NAME} ${VERSION} for ${TARGET}"
-cargo build --release --bin nudge --target "${TARGET}"
+# UNIVERSAL=1 adds the Intel slice. Off by default because the second target
+# doubles build time and most machines running this are Apple Silicon; CI turns
+# it on so the published DMG opens on both.
+TARGETS=("${TARGET}")
+[[ "${UNIVERSAL:-0}" == "1" ]] && TARGETS+=("x86_64-apple-darwin")
+
+for t in "${TARGETS[@]}"; do
+  echo "==> Building ${APP_NAME} ${VERSION} for ${t}"
+  rustup target add "${t}" >/dev/null 2>&1 || true
+  cargo build --release --bin nudge --target "${t}"
+done
 
 echo "==> Assembling bundle"
 rm -rf "${APP}"
 mkdir -p "${APP}/Contents/MacOS" "${APP}/Contents/Resources"
-cp "target/${TARGET}/release/nudge" "${APP}/Contents/MacOS/nudge"
+
+if [[ ${#TARGETS[@]} -gt 1 ]]; then
+  # lipo rewrites the Mach-O, so it has to happen before codesign further down —
+  # gluing slices onto a signed binary invalidates the signature.
+  lipo -create -output "${APP}/Contents/MacOS/nudge" \
+    $(printf 'target/%s/release/nudge ' "${TARGETS[@]}")
+  echo "    slices: $(lipo -archs "${APP}/Contents/MacOS/nudge")"
+else
+  cp "target/${TARGET}/release/nudge" "${APP}/Contents/MacOS/nudge"
+fi
 
 cat > "${APP}/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -90,10 +108,28 @@ codesign --verify --verbose=2 "${APP}"
 echo "==> Built ${APP}"
 echo "    LSUIElement: $([[ "${AGENT_MODE:-0}" == "1" ]] && echo "on (no Dock icon)" || echo "off (Dock icon kept)")"
 
-# TODO: universal binary — add x86_64-apple-darwin, lipo the two slices before
-# signing. Ordering matters: lipo rewrites the Mach-O, so signing first would
-# invalidate the signature.
+# DMG=1 wraps the bundle for distribution. The staging directory carries an
+# /Applications symlink so the disk image opens with the usual drag target.
+if [[ "${DMG:-0}" == "1" ]]; then
+  echo "==> Building DMG"
+  DMG_PATH="${OUT_DIR}/${APP_NAME}-${VERSION}-macos.dmg"
+  STAGE="$(mktemp -d)"
+  cp -R "${APP}" "${STAGE}/"
+  ln -s /Applications "${STAGE}/Applications"
+  rm -f "${DMG_PATH}"
+  hdiutil create -volname "${APP_NAME} ${VERSION}" -srcfolder "${STAGE}" \
+    -ov -format UDZO "${DMG_PATH}" >/dev/null
+  rm -rf "${STAGE}"
+  echo "    ${DMG_PATH} ($(du -h "${DMG_PATH}" | cut -f1))"
+
+  # Downloading this DMG anywhere else attaches com.apple.quarantine, and an
+  # ad-hoc signature does not satisfy Gatekeeper. macOS 15 removed the
+  # Control-click override, so the receiving user needs either
+  #     xattr -dr com.apple.quarantine /Applications/Nudge.app
+  # or System Settings › Privacy & Security › Open Anyway. Say so in the
+  # release notes rather than letting people hit a bare "damaged" dialog.
+fi
+
 # TODO: AppIcon.icns into Contents/Resources + CFBundleIconFile. The tray daisy
 # in src/daisy.rs is generated at runtime and is 64x64; the app icon is a
 # separate asset that does not exist in the repo yet.
-# TODO: DMG via hdiutil create -volname -srcfolder -format UDZO.
