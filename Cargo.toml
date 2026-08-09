@@ -55,6 +55,18 @@ tempfile = "3"
 image = { version = "0.25", default-features = false, features = ["png"] }
 ureq = { version = "2", features = ["json"] }
 base64 = "0.22"
+# Headless AccessKit-driven tests against the real eframe apps (tests/kittest_card.rs).
+# Deliberately NOT the `snapshot` or `wgpu` features: snapshot rendering is only
+# implemented for egui_kittest's wgpu backend, and this project deliberately ships
+# glow (see the comment above the `eframe` dependency). Turning `wgpu` on here would
+# unify it back into every `cargo test`, and its rendered pixels would not be the
+# pixels the app actually ships anyway — the WASM e2e tier already asserts on real
+# glow output, so pixel assertions belong there, not in this tier.
+egui_kittest = { version = "0.34", features = ["eframe"] }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+core-graphics = "0.23"
+core-foundation = "0.9"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"

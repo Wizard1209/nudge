@@ -81,8 +81,7 @@ mod wasm_entry {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
-mod app;
+pub mod app;
 pub mod autostart;
 pub mod config;
 pub mod config_watcher;
