@@ -6,18 +6,23 @@
 //! Only the platform calls differ — `screencapture` here where that file uses
 //! GDI `BitBlt`.
 //!
-//! # These tests are the port's acceptance criteria, not its current behaviour
+//! # These tests are the port's acceptance criteria
 //!
-//! Two pass today — the harness control and window placement. The other three
-//! are unimplemented, and each names one capability the port has to restore:
-//! the interval timer, the menu-bar status item, and journal-writing driven by
-//! real keystrokes.
+//! All five are green. Each names one capability the port had to restore, and
+//! none can be satisfied by making the code merely compile: the harness
+//! control, window placement, the interval timer, the menu-bar status item,
+//! and journal-writing driven by real keystrokes.
 //!
-//! The macOS build compiles and runs, but its OS-integration layer is cfg'd
-//! out, so the compiler stays happy while the tray, the global hotkey and the
-//! timer are all absent. That is why `cargo build` is not a gate for this port
-//! and these tests are: turning them green is the definition of done, and none
-//! of them can be satisfied by making the code merely compile.
+//! What they do NOT cover, because it needs synthetic *mouse* input against
+//! a window the process does not own: clicking the status item to summon the
+//! popup, and its right-click Show / Settings / Quit menu. The item is hosted
+//! by Control Center, so `AXPress` on it does nothing — `tray-icon` overrides
+//! `mouseDown:`/`mouseUp:` on a custom `NSView` and only real `CGEvent` mouse
+//! events reach it.
+//!
+//! One environmental precondition they do not check for themselves: no other
+//! `nudge` may be running. Each test launches its own, and a leftover instance
+//! makes the launch popup fail to appear at all.
 //!
 //! # Running
 //!
@@ -57,6 +62,7 @@ use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
 use core_foundation::number::CFNumber;
 use core_foundation::string::CFString;
 use core_graphics::display::{CGDisplay, kCGWindowListOptionAll};
+use core_graphics::event::CGKeyCode;
 use core_graphics::geometry::CGRect as CGWindowRect;
 use core_graphics::window::{
     kCGWindowBounds, kCGWindowIsOnscreen, kCGWindowLayer, kCGWindowNumber, kCGWindowOwnerPID,
@@ -696,17 +702,143 @@ fn menu_bar_status_item_is_present() {
     );
 }
 
-/// RED on the current tree, and the last one to become reachable: it needs
-/// synthetic keyboard input, which requires the *PostEvent* grant on top of the
-/// two in the module header.
+/// The last one to become reachable: it needs synthetic keyboard input, which
+/// requires the *PostEvent* grant on top of the two in the module header.
 ///
-/// TODO: `CGEventPost` (the macOS `SendInput`) to type into field 1 and press
-/// Return, then assert exactly one NDJSON line with `event_type=submitted` and
-/// `implementation=rust`.
+/// This is the only test here that exercises the whole product loop rather than
+/// one capability — reveal, focus, type, submit, persist — and the only one
+/// whose readback is the artifact the user actually keeps.
+///
+/// Typing is the assertion that matters. Under
+/// `ActivationPolicy::Accessory` an app that appears on top but never becomes
+/// key still receives Esc and Return (winit maps those from the keycode) while
+/// silently dropping every character, because characters only reach egui via
+/// AppKit's `interpretKeyEvents:` → `insertText:`. A test that pressed Return
+/// alone would pass against exactly that broken app, so the journal line has to
+/// carry the typed text back: `doing == TYPED` is what separates "the popup has
+/// the keyboard" from "the popup has the key *codes*".
 #[test]
 #[ignore = "needs a GUI session + PostEvent grant; run via --ignored"]
 fn submitting_appends_one_journal_line() {
+    /// Something no placeholder or default could produce, so a matching journal
+    /// line can only have come from these keystrokes.
+    const TYPED: &str = "cgevent submit probe";
+
     let app = SandboxedApp::launch();
-    let _ = app.journal_path();
-    unimplemented!("TODO: CGEventPost-driven submit")
+    assert!(
+        popup_visible(app.pid()),
+        "the launch popup never appeared — nothing to type into, so a red here is a \
+         harness problem rather than a submit-path problem"
+    );
+    assert!(
+        !app.journal_path().exists(),
+        "the sandbox HOME already has a journal at {} before anything was typed",
+        app.journal_path().display()
+    );
+
+    // Field 1 (`doing`) holds focus from the first frame — `draw_form` calls
+    // `request_focus()` on it — so the text needs no Tab to get there.
+    type_text(TYPED);
+    press_return();
+
+    // Submit hides the popup, and the journal write happens on the same close
+    // path, so the window going off screen is the signal that the write either
+    // happened or failed. Poll rather than sleep a fixed time: the write is a
+    // few hundred microseconds, but the frame that runs it waits on eframe.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while popup_visible(app.pid()) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert!(
+        !popup_visible(app.pid()),
+        "Return did not close the popup — no keystroke reached the app at all, so the \
+         PostEvent grant or the GUI session is the thing to check first"
+    );
+
+    let journal = std::fs::read_to_string(app.journal_path()).unwrap_or_else(|e| {
+        panic!(
+            "no journal at {}: {e} — the popup closed, so Return arrived, but the \
+             characters before it did not: the app took the key codes without ever \
+             becoming key (`decide_close` writes nothing when every text field is empty)",
+            app.journal_path().display()
+        )
+    });
+
+    let lines: Vec<&str> = journal.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "one submit must append exactly one NDJSON line, got {}:\n{journal}",
+        lines.len()
+    );
+
+    let entry: serde_json::Value =
+        serde_json::from_str(lines[0]).expect("journal line is not valid JSON");
+    assert_eq!(entry["event_type"], "submitted");
+    assert_eq!(entry["implementation"], "rust");
+    assert_eq!(
+        entry["doing"], TYPED,
+        "the line was written but without the typed text, so Return reached the app \
+         and the characters did not"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Synthetic keyboard input
+// ---------------------------------------------------------------------------
+
+/// Virtual keycode for Return. Sent as a bare keycode with no unicode payload,
+/// because egui reads Return from the keycode and would ignore the text.
+const KEYCODE_RETURN: CGKeyCode = 36;
+
+/// The `CGEventSource` every synthetic key here is created from.
+///
+/// The state id makes no observable difference — `Private`, `HIDSystemState`
+/// and `CombinedSessionState` were measured in the guest to deliver and to drop
+/// characters in exactly the same situations. `CombinedSessionState` is the
+/// session-wide one, so it is the honest default rather than a fix for
+/// anything.
+fn event_source() -> core_graphics::event_source::CGEventSource {
+    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+    CGEventSource::new(CGEventSourceStateID::CombinedSessionState)
+        .expect("CGEventSourceCreate failed — is there a login session?")
+}
+
+/// Type `text` one character at a time, as `CGEventPost` key-down/key-up pairs
+/// carrying the character in the event's unicode string.
+///
+/// Per character rather than one event with the whole string: AppKit delivers a
+/// key event's unicode payload through a single `insertText:`, so a one-shot
+/// event would test a path no keyboard can produce. The pauses are what let
+/// eframe run a frame between characters — without them the events pile up in
+/// the queue and a dropped one looks like a dropped keystroke.
+fn type_text(text: &str) {
+    use core_graphics::event::{CGEvent, CGEventTapLocation};
+
+    for ch in text.chars() {
+        let mut buf = [0u16; 2];
+        let utf16 = ch.encode_utf16(&mut buf);
+        for down in [true, false] {
+            // Keycode 0 with an explicit unicode string: the character is what
+            // the app must receive, and hardcoding a per-character keycode table
+            // would only add a second place for the layout to disagree.
+            let event = CGEvent::new_keyboard_event(event_source(), 0, down)
+                .expect("CGEventCreateKeyboardEvent failed");
+            event.set_string_from_utf16_unchecked(utf16);
+            event.post(CGEventTapLocation::HID);
+            std::thread::sleep(Duration::from_millis(30));
+        }
+    }
+}
+
+/// Press and release Return, the submit gesture.
+fn press_return() {
+    use core_graphics::event::{CGEvent, CGEventTapLocation};
+
+    for down in [true, false] {
+        let event = CGEvent::new_keyboard_event(event_source(), KEYCODE_RETURN, down)
+            .expect("CGEventCreateKeyboardEvent failed");
+        event.post(CGEventTapLocation::HID);
+        std::thread::sleep(Duration::from_millis(60));
+    }
 }
