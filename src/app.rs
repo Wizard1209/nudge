@@ -152,16 +152,19 @@ impl NudgeApp {
         #[cfg(not(target_arch = "wasm32"))]
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
 
-        // Park the icon animator: with the popup on screen the icon
-        // shouldn't keep ticking down. It'll restart on hide_popup.
-        #[cfg(target_os = "windows")]
-        crate::tray_bridge::set_popup_visible(true);
+        // Park the countdown: with the popup on screen the timer shouldn't
+        // keep ticking down (nor the tray icon animate). Restarts on
+        // hide_popup.
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::platform::set_popup_visible(true);
 
-        #[cfg(target_os = "windows")]
-        if let Some(hwnd_val) = self.hwnd {
-            use windows::Win32::Foundation::HWND;
-            crate::tray_bridge::force_foreground(HWND(hwnd_val as *mut _));
-        }
+        // Take the keyboard. The window being visible is not enough on
+        // either platform — Win32 refuses SetForegroundWindow to a
+        // background process, and macOS hands out no key window without an
+        // AppKit activation — and a popup without focus is one the user
+        // cannot answer or dismiss.
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::platform::focus_popup(ctx);
 
         // Spec §4: focus-loss closes only if the popup actually got focus at
         // open-time. Snapshot the OS's foreground state synchronously now,
@@ -290,25 +293,29 @@ impl NudgeApp {
         #[cfg(not(target_arch = "wasm32"))]
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
 
-        // Native-only: hide window + schedule background timer wakeup
+        // Windows-only: hide the HWND directly as well. The viewport command
+        // above is what stops winit burning a core; this is what the tray
+        // thread's ShowWindow(SW_RESTORE) later undoes.
         #[cfg(target_os = "windows")]
-        {
-            if let Some(hwnd_val) = self.hwnd {
-                unsafe {
-                    use windows::Win32::Foundation::HWND;
-                    use windows::Win32::UI::WindowsAndMessaging::*;
-                    let _ = ShowWindow(HWND(hwnd_val as *mut _), SW_HIDE);
-                }
+        if let Some(hwnd_val) = self.hwnd {
+            unsafe {
+                use windows::Win32::Foundation::HWND;
+                use windows::Win32::UI::WindowsAndMessaging::*;
+                let _ = ShowWindow(HWND(hwnd_val as *mut _), SW_HIDE);
             }
+        }
 
-            // The tray thread handles both icon animation and the
-            // popup-fire wakeup (it ShowWindow's our HWND once the timer
-            // expires). Hand it the new deadline so it knows when.
+        // Native: hand the platform the new deadline, then tell it the popup
+        // is gone. Whatever owns the countdown there — the tray thread on
+        // Windows, `App::logic` on macOS — takes it from here and wakes the
+        // popup when it expires.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
             if let Some(interval) = outcome.reset_timer {
                 let deadline = std::time::Instant::now() + interval;
-                crate::tray_bridge::set_timer_state(deadline, interval);
+                crate::platform::set_timer_state(deadline, interval);
             }
-            crate::tray_bridge::set_popup_visible(false);
+            crate::platform::set_popup_visible(false);
         }
     }
 
@@ -508,6 +515,19 @@ impl eframe::App for NudgeApp {
         CLEAR_COLOR_TRANSPARENT
     }
 
+    /// Everything that has to keep running while the popup is hidden.
+    ///
+    /// eframe 0.34 calls `logic()` on every tick but `ui()` only while the
+    /// window is visible (`native/epi_integration.rs`). A hidden popup is the
+    /// normal state of this app — it is hidden for the whole interval — so
+    /// anything that has to notice the interval elapsing belongs here.
+    /// Drawing, and the state transitions that depend on what was drawn,
+    /// stay in `ui()`.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        crate::platform::tick(ctx);
+    }
+
     fn ui(&mut self, root_ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // eframe 0.34 replaced `App::update(ctx)` with `App::ui(ui)`. The
         // `ui` we're handed is the central panel (transparent, no margin); we
@@ -529,7 +549,7 @@ impl eframe::App for NudgeApp {
                 {
                     let hwnd_val = h.hwnd.get();
                     self.hwnd = Some(hwnd_val);
-                    crate::tray_bridge::store_hwnd(hwnd_val);
+                    crate::platform::note_window_handle(hwnd_val);
 
                     // Exclude window from ALT+TAB by applying WS_EX_TOOLWINDOW
                     // (also hides from taskbar as a side effect; with_taskbar(false)
@@ -561,17 +581,17 @@ impl eframe::App for NudgeApp {
             self.center_once = false;
         }
 
-        // === Native-only: check tray event flags ===
-        // Event handlers run on Windows message thread (set up in main.rs),
-        // they restore the window + set flags. We check flags here.
-        #[cfg(target_os = "windows")]
+        // === Native-only: check platform event flags ===
+        // Whoever noticed the event — the Windows tray thread, or `logic()`
+        // on macOS — has already made the window visible and raised a flag.
+        // The state transition itself happens here, once, for both.
+        #[cfg(not(target_arch = "wasm32"))]
         {
-            if crate::tray_bridge::take_tray_clicked() && !self.popup_visible {
+            if crate::platform::take_tray_clicked() && !self.popup_visible {
                 self.show_popup(ctx, TriggerSource::Manual);
             }
 
-            // Background timer thread restored window + set flag
-            if crate::tray_bridge::take_timer_fired() && !self.popup_visible {
+            if crate::platform::take_timer_fired() && !self.popup_visible {
                 self.show_popup(ctx, TriggerSource::Timer);
             }
         }

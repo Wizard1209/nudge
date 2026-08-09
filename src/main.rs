@@ -16,6 +16,8 @@ mod journal;
 #[cfg(not(target_arch = "wasm32"))]
 mod nudge_state;
 #[cfg(not(target_arch = "wasm32"))]
+mod platform;
+#[cfg(not(target_arch = "wasm32"))]
 mod settings_app;
 #[cfg(not(target_arch = "wasm32"))]
 mod timer;
@@ -346,20 +348,24 @@ fn main() -> eframe::Result {
         );
     }
 
-    // The tray icon, its menu, and the animation loop all live on a single
-    // dedicated thread (see tray_bridge::spawn_tray_thread). It runs its
-    // own message pump so animation keeps ticking even while eframe's
-    // popup window is SW_HIDE'd. The same thread also owns the global
-    // hotkey registration (WM_HOTKEY is delivered to the registering
-    // thread's message queue), and — after Task 5 — handles config-file
-    // live-reload by re-reading `config_path` and diffing.
-    #[cfg(target_os = "windows")]
-    tray_bridge::spawn_tray_thread(Some(configured_hotkey), config_path.clone(), config.clone());
-    #[cfg(not(target_os = "windows"))]
-    let _ = configured_hotkey; // unused on non-Windows targets for now
+    // Whatever OS integration this platform has, started before the event
+    // loop takes the main thread.
+    //
+    // On Windows that is the tray thread: the tray icon, its menu and the
+    // animation loop all live on one dedicated thread running its own
+    // message pump, so animation keeps ticking even while eframe's popup
+    // window is SW_HIDE'd. The same thread owns the global hotkey
+    // registration (WM_HOTKEY is delivered to the registering thread's
+    // message queue) and applies config-file live-reload.
+    //
+    // On macOS there is nothing to start yet — the status item and the
+    // hotkey are the next slice of the port, and the interval timer runs on
+    // the main thread out of `App::logic` (see platform::macos).
+    platform::start(Some(configured_hotkey), config_path.clone(), config.clone());
 
     // Live-reload: watch `config.json` for changes (settings UI saves,
-    // or hand-edits) and signal the tray thread to re-read + diff.
+    // or hand-edits) and ask the platform to re-read + diff — the tray
+    // thread on Windows, `platform::tick` on macOS.
     // Failures are non-fatal (rare: directory missing, OS watch limit
     // hit) — the app still works, the user just doesn't get live
     // reload until the next restart.
@@ -369,10 +375,10 @@ fn main() -> eframe::Result {
     // but local bindings here outlive the call, so a plain `let` is
     // enough; we name it `_watcher` (with the leading underscore) so
     // clippy doesn't flag the otherwise-unused binding.
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     let _watcher = match config_watcher::spawn(
         config_path.clone(),
-        Box::new(tray_bridge::request_config_reload),
+        Box::new(platform::request_config_reload),
     ) {
         Ok(h) => Some(h),
         Err(e) => {
