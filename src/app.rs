@@ -316,7 +316,10 @@ impl NudgeApp {
         egui::Frame::NONE
             .fill(egui::Color32::from_rgba_unmultiplied(24, 24, 27, 220))
             .corner_radius(egui::CornerRadius::same(16))
-            .stroke(egui::Stroke::new(1.0, egui::Color32::from_white_alpha(16)))
+            .stroke(egui::Stroke::new(
+                1.0_f32,
+                egui::Color32::from_white_alpha(16),
+            ))
             .shadow(egui::epaint::Shadow {
                 offset: [0, 12],
                 blur: 40,
@@ -408,7 +411,7 @@ impl NudgeApp {
         ui.painter().hline(
             rect.x_range(),
             rect.center().y,
-            egui::Stroke::new(1.0, egui::Color32::from_white_alpha(50)),
+            egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(50)),
         );
     }
 

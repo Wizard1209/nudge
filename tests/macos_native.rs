@@ -56,7 +56,7 @@ use core_foundation::boolean::CFBoolean;
 use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
 use core_foundation::number::CFNumber;
 use core_foundation::string::CFString;
-use core_graphics::display::{kCGWindowListOptionAll, CGDisplay};
+use core_graphics::display::{CGDisplay, kCGWindowListOptionAll};
 use core_graphics::geometry::CGRect as CGWindowRect;
 use core_graphics::window::{
     kCGWindowBounds, kCGWindowIsOnscreen, kCGWindowLayer, kCGWindowNumber, kCGWindowOwnerPID,
@@ -520,9 +520,7 @@ fn popup_reappears_after_the_interval() {
 #[test]
 #[ignore = "needs a GUI session; run via --ignored"]
 fn menu_bar_status_item_is_present() {
-    unimplemented!(
-        "TODO: CGWindowListCopyWindowInfo at the status-bar layer, filtered by pid"
-    )
+    unimplemented!("TODO: CGWindowListCopyWindowInfo at the status-bar layer, filtered by pid")
 }
 
 /// RED on the current tree, and the last one to become reachable: it needs

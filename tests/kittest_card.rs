@@ -65,7 +65,10 @@ fn focus_starts_on_the_first_field() {
     let harness = nudge_harness(10.0);
 
     let inputs: Vec<_> = harness.get_all_by_role(Role::TextInput).collect();
-    assert!(inputs[0].is_focused(), "focus_first put the caret in field 1");
+    assert!(
+        inputs[0].is_focused(),
+        "focus_first put the caret in field 1"
+    );
     assert!(!inputs[1].is_focused());
     assert!(!inputs[2].is_focused());
 }
@@ -198,7 +201,8 @@ impl AutostartProvider for RecordingProvider {
     fn enable(&self) -> Result<(), String> {
         self.enable_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.enabled.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.enabled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
     fn disable(&self) -> Result<(), String> {

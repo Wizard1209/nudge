@@ -79,6 +79,78 @@ fn run_autostart_selftest() -> ! {
     fail!("enable/disable cycle did not flip the value as expected");
 }
 
+/// The macOS counterpart: exercise the real LaunchAgent provider against the
+/// live `~/Library/LaunchAgents` + launchd domain and report PASS/FAIL,
+/// restoring whatever state we found.
+///
+/// This is not redundant with `tests/macos_autostart.rs`. Everything there
+/// that shells out to `launchctl` is `#[ignore]`d, because `HOME` cannot
+/// redirect launchd's per-user domain (it is keyed by uid): `enable` would
+/// bootstrap into the developer's live login session and `RunAtLoad` would
+/// make launchd exec the test binary, while `disable` would boot out — and
+/// kill — a Nudge they actually have running. So the launchctl path has no
+/// tier that runs unattended. This command is how it gets exercised, by hand,
+/// before shipping.
+#[cfg(target_os = "macos")]
+fn run_autostart_selftest() -> ! {
+    use autostart::{AutostartProvider, LAUNCH_AGENT_LABEL, MacLaunchAgentProvider};
+
+    macro_rules! fail {
+        ($($a:tt)*) => {{ eprintln!("[selftest] FAIL: {}", format!($($a)*)); std::process::exit(1); }};
+    }
+
+    let provider = match MacLaunchAgentProvider::for_current_exe() {
+        Ok(p) => p,
+        Err(e) => fail!("{e}"),
+    };
+    println!("[selftest] label   {LAUNCH_AGENT_LABEL}");
+    println!("[selftest] plist   {}", provider.plist_path().display());
+    println!("[selftest] program {}", provider.program().display());
+
+    let initial = match provider.is_enabled() {
+        Ok(v) => v,
+        Err(e) => fail!("is_enabled (initial): {e}"),
+    };
+    println!("[selftest] initial is_enabled = {initial}");
+
+    if let Err(e) = provider.enable() {
+        fail!("enable: {e}");
+    }
+    let after_enable = provider.is_enabled().unwrap_or(false);
+    println!("[selftest] after enable  -> is_enabled = {after_enable} (want true)");
+
+    // Idempotence is a real requirement here, not a nicety — the settings
+    // checkbox can be re-affirmed at any time. It is also the step that would
+    // catch a regression in `register`'s bootout-first ordering: without it,
+    // launchd rejects the second bootstrap with an unclassifiable exit 5.
+    if let Err(e) = provider.enable() {
+        fail!("enable (second time, must be idempotent): {e}");
+    }
+
+    if let Err(e) = provider.disable() {
+        fail!("disable: {e}");
+    }
+    let after_disable = provider.is_enabled().unwrap_or(true);
+    println!("[selftest] after disable -> is_enabled = {after_disable} (want false)");
+
+    // Leave the machine exactly as we found it.
+    let restore = if initial {
+        provider.enable()
+    } else {
+        provider.disable()
+    };
+    if let Err(e) = restore {
+        fail!("restore to {initial}: {e}");
+    }
+    println!("[selftest] restored is_enabled = {initial}");
+
+    if after_enable && !after_disable {
+        println!("[selftest] PASS");
+        std::process::exit(0);
+    }
+    fail!("enable/disable cycle did not flip the state as expected");
+}
+
 /// Acquire a process-wide named mutex so only one settings window exists at
 /// a time. The tray menu may be clicked multiple times in a row; without
 /// this guard each click would spawn a fresh window. We don't release the
@@ -142,10 +214,10 @@ fn run_settings_ui() -> eframe::Result {
         eprintln!("[nudge-settings] {e}");
     }
 
-    // Provider: real registry on Windows, an in-memory fake on non-Windows
-    // so the linux dev build compiles. Non-Windows users don't actually
-    // reach the settings window (no tray to spawn it), so the fake never
-    // runs in production.
+    // Provider: real registry on Windows, real LaunchAgent on macOS, an
+    // in-memory fake elsewhere so the linux dev build compiles. Those users
+    // don't actually reach the settings window (no tray to spawn it), so the
+    // fake never runs in production.
     //
     // On Windows we refuse to open the window with a fake substitute when
     // the real provider fails to construct (e.g. `current_exe()` returned
@@ -165,7 +237,23 @@ fn run_settings_ui() -> eframe::Result {
             }
         }
     };
-    #[cfg(not(target_os = "windows"))]
+    // Same refusal on macOS, for the same reason: the LaunchAgent provider is
+    // the only thing that touches ~/Library/LaunchAgents, and substituting a
+    // fake would flip the checkbox and persist `autostart: true` while launchd
+    // never learns about the app.
+    #[cfg(target_os = "macos")]
+    let provider: Box<dyn autostart::AutostartProvider> = {
+        match autostart::MacLaunchAgentProvider::for_current_exe() {
+            Ok(p) => Box::new(p),
+            Err(e) => {
+                eprintln!("[nudge-settings] cannot construct autostart provider: {e}");
+                return Err(eframe::Error::AppCreation(
+                    format!("cannot construct autostart provider: {e}").into(),
+                ));
+            }
+        }
+    };
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     let provider: Box<dyn autostart::AutostartProvider> =
         Box::new(autostart::FakeProvider::new(cfg.autostart));
 
@@ -200,17 +288,18 @@ fn main() -> eframe::Result {
     use app::NudgeApp;
     use eframe::egui;
 
-    // Manual registry QA hook — runs the autostart lifecycle and exits before
-    // any GUI / config work. Windows-only; a no-op stub elsewhere.
+    // Manual QA hook — runs the autostart lifecycle against the real OS
+    // (registry on Windows, LaunchAgent on macOS) and exits before any GUI /
+    // config work. A no-op stub on platforms with no real provider.
     if std::env::args()
         .skip(1)
         .any(|a| a == "--autostart-selftest")
     {
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
         run_autostart_selftest();
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         {
-            eprintln!("[nudge] --autostart-selftest is only supported on Windows");
+            eprintln!("[nudge] --autostart-selftest is only supported on Windows and macOS");
             std::process::exit(2);
         }
     }
