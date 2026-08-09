@@ -118,6 +118,11 @@ static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// `true` while the popup is on screen. `tick` parks on it exactly as the
 /// tray thread does: while the user is looking at the popup we neither count
 /// down nor animate. Starts `true` because the app opens with the launch popup.
+///
+/// Raised by [`reveal`], the moment the window is ordered in, and by
+/// `App::show_popup` a frame or more later when `ui()` catches up; cleared only
+/// by `App::hide_popup`. Both raise sites matter — see [`reveal`] for what the
+/// gap between them used to cost.
 static POPUP_VISIBLE: AtomicBool = AtomicBool::new(true);
 
 /// One-shot: the spotlight window has been moved to its spec §1 position.
@@ -145,9 +150,32 @@ thread_local! {
 }
 
 struct UiState {
-    tray: TrayIcon,
+    /// `None` when the status item could not be built. It is the only part of
+    /// this state that is optional-because-it-failed, and nothing else depends
+    /// on it: the hotkey and the live reload below are what keep working when
+    /// the menu bar refuses us.
+    tray: Option<TrayIcon>,
     /// The menu keeps only weak references to its items, so we own them.
     _menu_items: [MenuItem; 3],
+    /// Dedupe keys, so `set_icon` / `set_tooltip` are only called when what
+    /// they would display actually changes. The icon key is
+    /// `(petals attached, drifting petal + its progress in percent)`.
+    last_icon_key: Option<(u8, Option<(u8, u16)>)>,
+    last_tooltip_minutes: Option<u64>,
+    reload: ReloadState,
+}
+
+/// Everything a `config.json` change needs, kept apart from the status item on
+/// purpose.
+///
+/// These four fields used to sit in `UiState` next to a non-optional
+/// `TrayIcon`, which made them hostage to it: a status item that failed to
+/// build took the whole struct with it, and `apply_config_reload` — which
+/// early-returns on an absent `UiState` — then dropped every later edit to
+/// `config.json` for the lifetime of the process. Nothing here touches AppKit
+/// unless a hotkey is actually being re-registered, so this is also the part
+/// of the module that can be exercised without a menu bar.
+struct ReloadState {
     /// `None` when `GlobalHotKeyManager::new()` failed — the app runs on
     /// without a hotkey rather than refusing to start.
     hotkeys: Option<GlobalHotKeyManager>,
@@ -157,11 +185,6 @@ struct UiState {
     /// a reload diffs against, exactly as the tray thread keeps it on Windows.
     config_path: PathBuf,
     previous_cfg: config::Config,
-    /// Dedupe keys, so `set_icon` / `set_tooltip` are only called when what
-    /// they would display actually changes. The icon key is
-    /// `(petals attached, drifting petal + its progress in percent)`.
-    last_icon_key: Option<(u8, Option<(u8, u16)>)>,
-    last_tooltip_minutes: Option<u64>,
 }
 
 // ---------- lifecycle ------------------------------------------------------
@@ -204,13 +227,20 @@ pub fn start_on_event_loop(ctx: &egui::Context) {
                 .build()
                 .map_err(|e| e.to_string())
         }) {
-        Ok(t) => t,
+        Ok(t) => Some(t),
         Err(e) => {
             // Non-fatal, deliberately: without a status item the app is still
-            // a working nudger (timer + hotkey), just without its manual
-            // entry point. Refusing to start would be a worse trade.
+            // a working nudger (timer + hotkey + live config reload), just
+            // without its menu-bar entry point. Refusing to start would be a
+            // worse trade.
+            //
+            // Falling through — rather than returning — is the whole point.
+            // An early return here would skip the hotkey manager below and
+            // leave `UI` as `None`, which silently disables
+            // `apply_config_reload` for the rest of the process: every later
+            // edit to config.json would be drained by `tick` and dropped.
             eprintln!("[nudge] menu-bar status item unavailable: {e}");
-            return;
+            None
         }
     };
 
@@ -230,12 +260,14 @@ pub fn start_on_event_loop(ctx: &egui::Context) {
         *slot = Some(UiState {
             tray,
             _menu_items: menu_items,
-            hotkeys,
-            registered,
-            config_path,
-            previous_cfg: initial,
             last_icon_key: None,
             last_tooltip_minutes: None,
+            reload: ReloadState {
+                hotkeys,
+                registered,
+                config_path,
+                previous_cfg: initial,
+            },
         });
     });
 }
@@ -333,8 +365,21 @@ pub fn take_timer_fired() -> bool {
 
 /// Arm the timer. `duration` is what the petal countdown draws against;
 /// `deadline` is what the wake schedule and the tooltip count down to.
+///
+/// Wakes the event loop, because nothing else here will. A new deadline is
+/// only ever set from `hide_popup`, and `tick` refuses to schedule anything
+/// while `POPUP_VISIBLE` is still true — which it is at this point, since
+/// `hide_popup` clears it one line later. So the frame that turns this
+/// deadline into a `request_repaint_after` has to be asked for; without the
+/// wake the only thing producing it is the popup's own 1 Hz repaint request,
+/// issued earlier in the same `ui()` pass for an unrelated reason.
 pub fn set_timer_state(deadline: Instant, duration: Duration) {
-    *TIMER.lock().unwrap() = Some(ArmedTimer { deadline, duration });
+    // Scoped so the lock is released before `wake` — it takes a different
+    // mutex and calls into egui, and nothing here needs both at once.
+    {
+        *TIMER.lock().unwrap() = Some(ArmedTimer { deadline, duration });
+    }
+    wake();
 }
 
 pub fn set_popup_visible(visible: bool) {
@@ -367,6 +412,7 @@ pub fn tick(ctx: &egui::Context) {
     if SETTINGS_REQUESTED.swap(false, Ordering::SeqCst) {
         spawn_settings_process();
     }
+    reap_settings_children();
     if CONFIG_RELOAD_REQUESTED.swap(false, Ordering::SeqCst) {
         apply_config_reload();
     }
@@ -432,7 +478,27 @@ pub fn tick(ctx: &egui::Context) {
 /// The last `request_repaint` is not redundant: the window is hidden right now,
 /// so `ui()` is being skipped and cannot schedule the frame that will consume
 /// the flag we just raised.
+///
+/// # Why this claims `POPUP_VISIBLE` itself
+///
+/// `POPUP_VISIBLE` used to be written only by `show_popup`, i.e. from `ui()`,
+/// which cannot run in the same frame as this call: eframe samples
+/// `is_visible` at the top of the frame, before `logic()`, and gates `app.ui`
+/// on that sample (`glow_integration.rs` → `epi_integration.rs`). So between a
+/// reveal and its `show_popup` there is always at least one further `tick`
+/// that still saw the popup as hidden — and that tick would happily disarm the
+/// timer and raise `TIMER_FIRED` into a card `ui()` is about to open manually,
+/// where the flag is dropped. The deadline is then gone with nothing left to
+/// re-arm it (a manual Esc yields `reset_timer: None`) and the app never
+/// nudges again.
+///
+/// Claiming visibility at the moment the window is ordered in — which is what
+/// actually happened — closes that window: from here until `hide_popup`,
+/// `tick` parks, so the expiry cannot be consumed by anything other than the
+/// card `ui()` is about to show. An expiry that fell inside a manual reveal is
+/// simply still armed and still overdue when that card closes, and fires then.
 fn reveal(ctx: &egui::Context) {
+    set_popup_visible(true);
     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
     focus_popup(ctx);
     ctx.request_repaint();
@@ -513,20 +579,32 @@ fn refresh_status_item(frame: &daisy::DaisyFrame, remaining: Duration) {
         let Some(ui) = slot.as_mut() else {
             return;
         };
+        // Destructured so the tray and its two dedupe keys are disjoint
+        // borrows rather than one whole-struct one.
+        let UiState {
+            tray,
+            last_icon_key,
+            last_tooltip_minutes,
+            ..
+        } = ui;
+        // No status item (see `start_on_event_loop`): nothing to draw, and the
+        // dedupe keys stay untouched so a tray that never existed cannot leave
+        // stale ones behind.
+        let Some(tray) = tray.as_ref() else {
+            return;
+        };
 
-        if ui.last_icon_key != Some(icon_key) {
+        if *last_icon_key != Some(icon_key) {
             let rgba = daisy::render(frame.petals_remaining, frame.drift);
             if let Ok(icon) = tray_icon::Icon::from_rgba(rgba, daisy::ICON_SIZE, daisy::ICON_SIZE) {
-                let _ = ui.tray.set_icon(Some(icon));
+                let _ = tray.set_icon(Some(icon));
             }
-            ui.last_icon_key = Some(icon_key);
+            *last_icon_key = Some(icon_key);
         }
 
-        if ui.last_tooltip_minutes != Some(minutes) {
-            let _ = ui
-                .tray
-                .set_tooltip(Some(nudge_state::tooltip_for_remaining(remaining)));
-            ui.last_tooltip_minutes = Some(minutes);
+        if *last_tooltip_minutes != Some(minutes) {
+            let _ = tray.set_tooltip(Some(nudge_state::tooltip_for_remaining(remaining)));
+            *last_tooltip_minutes = Some(minutes);
         }
     });
 }
@@ -658,21 +736,61 @@ fn try_register_hotkey(manager: &GlobalHotKeyManager, hk: &Hotkey) -> Option<Glo
 
 // ---------- config live-reload ---------------------------------------------
 
+/// Settings processes we have spawned and not yet reaped. See
+/// [`spawn_settings_process`].
+static SETTINGS_CHILDREN: Mutex<Vec<std::process::Child>> = Mutex::new(Vec::new());
+
 /// Spawn a second instance of the binary with `--settings`, exactly as the
 /// Windows tray menu does. The two processes communicate ONLY through
-/// `config.json` (and `~/Library/LaunchAgents` for autostart). Fire-and-forget:
-/// a failed spawn is logged and ignored, since settings are editable by hand
-/// per spec §5. `--settings` is single-instance in its own right (see
-/// [`acquire_settings_singleton`]), so repeat clicks cannot stack windows.
+/// `config.json` (and `~/Library/LaunchAgents` for autostart). Fire-and-forget
+/// as far as *policy* goes: a failed spawn is logged and ignored, since
+/// settings are editable by hand per spec §5. `--settings` is single-instance
+/// in its own right (see [`acquire_settings_singleton`]), so repeat clicks
+/// cannot stack windows.
+///
+/// It is not fire-and-forget as far as the *process table* goes. Dropping the
+/// `Child` does not reap it: on Unix an exited child stays a zombie until its
+/// parent waits, and this parent is a menu-bar app that runs for days. The
+/// identical Windows line has no such consequence — there the handle is closed
+/// on drop and the process object goes away — which is why it was inherited
+/// unexamined. So we keep every `Child` and [`reap_settings_children`] waits on
+/// the exited ones from `tick`.
 fn spawn_settings_process() {
     match std::env::current_exe() {
-        Ok(exe) => {
-            if let Err(e) = std::process::Command::new(exe).arg("--settings").spawn() {
-                eprintln!("[nudge] could not open settings: {e}");
-            }
-        }
+        Ok(exe) => match std::process::Command::new(exe).arg("--settings").spawn() {
+            Ok(child) => SETTINGS_CHILDREN.lock().unwrap().push(child),
+            Err(e) => eprintln!("[nudge] could not open settings: {e}"),
+        },
         Err(e) => eprintln!("[nudge] could not locate own executable: {e}"),
     }
+}
+
+/// Wait on every settings process that has already exited, dropping it from
+/// the list. Non-blocking: a settings window still on screen stays in the list
+/// and is looked at again on the next tick.
+fn reap_settings_children() {
+    let mut children = SETTINGS_CHILDREN.lock().unwrap();
+    if children.is_empty() {
+        return;
+    }
+    reap_exited(&mut children);
+}
+
+/// The reaping itself, over a plain vector so it can be tested without
+/// spawning the real settings UI.
+fn reap_exited(children: &mut Vec<std::process::Child>) {
+    children.retain_mut(|child| match child.try_wait() {
+        // Exited and now waited for: no zombie left, stop tracking it.
+        Ok(Some(_)) => false,
+        // Still running.
+        Ok(None) => true,
+        // We will never learn anything more about this one; holding the
+        // `Child` forever would leak the slot as surely as the zombie did.
+        Err(e) => {
+            eprintln!("[nudge] could not wait on the settings process: {e}");
+            false
+        }
+    });
 }
 
 /// Re-read `config.json` and apply any live-meaningful diff, mirroring
@@ -686,52 +804,60 @@ fn spawn_settings_process() {
 fn apply_config_reload() {
     UI.with_borrow_mut(|slot| {
         let Some(ui) = slot.as_mut() else {
+            // Only reachable when `start` was never called — a test harness
+            // driving `NudgeApp` directly, which has no config to reload. A
+            // failed status item no longer lands here; see `start_on_event_loop`.
             return;
         };
-
-        let (new_cfg, err) = config::load_or_default(&ui.config_path);
-        if let Some(e) = err {
-            eprintln!("[nudge] config reload: {e} — keeping previous in-memory config");
-            return;
-        }
-
-        for change in config_watcher::diff(&ui.previous_cfg, &new_cfg) {
-            match change {
-                ConfigChange::Hotkey { from, to } => {
-                    eprintln!("[nudge] config reload: hotkey \"{from}\" → \"{to}\"");
-                    let Some(manager) = ui.hotkeys.as_ref() else {
-                        eprintln!("[nudge] config reload: no hotkey manager, leaving unbound");
-                        continue;
-                    };
-                    if let Some(previous) = ui.registered.take()
-                        && let Err(e) = manager.unregister(previous)
-                    {
-                        eprintln!("[nudge] config reload: unregistering \"{from}\" failed: {e}");
-                    }
-                    let (parsed, invalid) = new_cfg.resolved_hotkey();
-                    if invalid {
-                        eprintln!(
-                            "[nudge] config reload: hotkey \"{to}\" is unparseable, leaving unbound"
-                        );
-                    } else {
-                        ui.registered = try_register_hotkey(manager, &parsed);
-                    }
-                }
-                ConfigChange::Interval => eprintln!(
-                    "[nudge] config reload: default_interval_minutes {} → {} \
-                     (no live effect; applies at next startup)",
-                    ui.previous_cfg.default_interval_minutes, new_cfg.default_interval_minutes
-                ),
-                ConfigChange::Autostart => eprintln!(
-                    "[nudge] config reload: autostart {} → {} \
-                     (settings process owns the LaunchAgent)",
-                    ui.previous_cfg.autostart, new_cfg.autostart
-                ),
-            }
-        }
-
-        ui.previous_cfg = new_cfg;
+        reload_config(&mut ui.reload);
     });
+}
+
+/// The reload itself, over the state it actually needs — deliberately not over
+/// `UiState`, so it holds no opinion about whether a status item exists.
+fn reload_config(state: &mut ReloadState) {
+    let (new_cfg, err) = config::load_or_default(&state.config_path);
+    if let Some(e) = err {
+        eprintln!("[nudge] config reload: {e} — keeping previous in-memory config");
+        return;
+    }
+
+    for change in config_watcher::diff(&state.previous_cfg, &new_cfg) {
+        match change {
+            ConfigChange::Hotkey { from, to } => {
+                eprintln!("[nudge] config reload: hotkey \"{from}\" → \"{to}\"");
+                let Some(manager) = state.hotkeys.as_ref() else {
+                    eprintln!("[nudge] config reload: no hotkey manager, leaving unbound");
+                    continue;
+                };
+                if let Some(previous) = state.registered.take()
+                    && let Err(e) = manager.unregister(previous)
+                {
+                    eprintln!("[nudge] config reload: unregistering \"{from}\" failed: {e}");
+                }
+                let (parsed, invalid) = new_cfg.resolved_hotkey();
+                if invalid {
+                    eprintln!(
+                        "[nudge] config reload: hotkey \"{to}\" is unparseable, leaving unbound"
+                    );
+                } else {
+                    state.registered = try_register_hotkey(manager, &parsed);
+                }
+            }
+            ConfigChange::Interval => eprintln!(
+                "[nudge] config reload: default_interval_minutes {} → {} \
+                 (no live effect; applies at next startup)",
+                state.previous_cfg.default_interval_minutes, new_cfg.default_interval_minutes
+            ),
+            ConfigChange::Autostart => eprintln!(
+                "[nudge] config reload: autostart {} → {} \
+                 (settings process owns the LaunchAgent)",
+                state.previous_cfg.autostart, new_cfg.autostart
+            ),
+        }
+    }
+
+    state.previous_cfg = new_cfg;
 }
 
 #[cfg(test)]
@@ -943,18 +1069,35 @@ mod tests {
 
     // === the handler → tick → app edge =======================================
 
+    /// Every flag `tick` reads is a process global, so the tests that drive it
+    /// have to take turns. Poison is ignored: a panicking test has already
+    /// failed and must not take the rest of the file down with it.
+    static TICK_GLOBALS: Mutex<()> = Mutex::new(());
+
+    fn tick_globals() -> std::sync::MutexGuard<'static, ()> {
+        TICK_GLOBALS.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Put the module back in the state a fresh process starts in, so the
+    /// order libtest happens to pick cannot change what a test sees.
+    fn reset_globals() {
+        let _ = take_tray_clicked();
+        let _ = take_timer_fired();
+        let _ = MANUAL_OPEN_REQUESTED.swap(false, Ordering::SeqCst);
+        *TIMER.lock().unwrap() = None;
+        set_popup_visible(false);
+    }
+
     /// The middle link of the manual-open path: a handler raises a flag from
     /// outside any frame, and the *next* tick has to turn it into the
     /// `TRAY_CLICKED` edge `ui()` consumes. If `tick` dropped it, a status-item
     /// click while the popup is hidden — the only state the status item exists
     /// for — would do nothing at all.
-    ///
-    /// One test rather than two because the flags are process globals: two
-    /// tests asserting on them would race under libtest's default parallelism.
     #[test]
     fn tick_turns_a_handler_flag_into_the_edge_the_app_reads() {
+        let _guard = tick_globals();
+        reset_globals();
         let ctx = egui::Context::default();
-        let _ = take_tray_clicked();
 
         set_popup_visible(false);
         request_manual_open();
@@ -973,6 +1116,240 @@ mod tests {
             !take_tray_clicked(),
             "a trigger arriving while the card is already up must not queue up behind it"
         );
+    }
+
+    /// A reveal is not instantaneous: `ui()` cannot run in the same frame that
+    /// `tick` revealed in, so there is always at least one more `tick` before
+    /// the card is acknowledged. If the timer is allowed to expire in that gap
+    /// it disarms itself and raises `TIMER_FIRED` into a card `ui()` is about
+    /// to open as `Manual` — where the flag is dropped. A manual Esc then
+    /// yields `reset_timer: None`, so nothing re-arms, and the app never
+    /// nudges again.
+    #[test]
+    fn an_expiry_inside_a_manual_reveal_is_not_swallowed() {
+        let _guard = tick_globals();
+        reset_globals();
+        let ctx = egui::Context::default();
+
+        // The status item is clicked at the exact moment the interval runs
+        // out: hidden card, deadline already a second in the past (well past
+        // the 250 ms final drift, so `should_fire` is true).
+        let interval = Duration::from_secs(600);
+        set_timer_state(Instant::now() - Duration::from_secs(1), interval);
+        request_manual_open();
+
+        tick(&ctx);
+        assert!(take_tray_clicked(), "the manual open reaches the app");
+        assert!(
+            !take_timer_fired(),
+            "the manual branch returns before the expiry is even looked at"
+        );
+
+        // The frames between that reveal and the `show_popup` that
+        // acknowledges it. This is where the deadline used to be thrown away.
+        tick(&ctx);
+        tick(&ctx);
+        assert!(
+            !take_timer_fired(),
+            "an expiry must not be raised while a reveal is still unacknowledged"
+        );
+        assert!(
+            TIMER.lock().unwrap().is_some(),
+            "and the deadline must still be armed — nothing else would re-arm it"
+        );
+
+        // The user dismisses the manual card. `decide_close(Manual, Dismiss)`
+        // leaves the timer alone, so the nudge that came due during the manual
+        // open is still owed, and is delivered now.
+        set_popup_visible(false);
+        tick(&ctx);
+        assert!(
+            take_timer_fired(),
+            "the overdue nudge fires once the manual card is out of the way"
+        );
+        assert!(
+            TIMER.lock().unwrap().is_none(),
+            "and one deadline still fires exactly once"
+        );
+    }
+
+    /// `reveal` is what makes the assertion above hold, on both paths into it.
+    #[test]
+    fn a_reveal_claims_the_popup_as_visible() {
+        let _guard = tick_globals();
+        reset_globals();
+        let ctx = egui::Context::default();
+
+        reveal(&ctx);
+        assert!(
+            POPUP_VISIBLE.load(Ordering::SeqCst),
+            "the window has been ordered in; `tick` must park until `hide_popup` says otherwise"
+        );
+    }
+
+    /// A new deadline has to produce the tick that schedules it. Nothing else
+    /// here will: `set_timer_state` is only ever called from `hide_popup`,
+    /// where `POPUP_VISIBLE` is still true, and `tick` schedules nothing in
+    /// that state. Before this, the frame that armed the real deadline came
+    /// from the popup's own 1 Hz repaint request, issued a few lines earlier
+    /// in `ui()` for an unrelated reason — correct by accident.
+    #[test]
+    fn arming_a_deadline_wakes_the_event_loop() {
+        let _guard = tick_globals();
+        reset_globals();
+
+        // `start_on_event_loop` with no `PENDING_START` does exactly one
+        // thing: publish the context the wake goes through. That is the state
+        // the app is in from its creator closure onwards.
+        let ctx = egui::Context::default();
+        start_on_event_loop(&ctx);
+
+        // Run passes until the context settles: a fresh `Context` asks for a
+        // repaint on its first frames on its own, and a test that cannot tell
+        // that apart from our wake would pass with the wake removed.
+        let mut settled = false;
+        for _ in 0..8 {
+            ctx.begin_pass(egui::RawInput::default());
+            let _ = ctx.end_pass();
+            if !ctx.has_requested_repaint() {
+                settled = true;
+                break;
+            }
+        }
+        assert!(
+            settled,
+            "the harness must start from a context with nothing pending, \
+             or this test cannot see the wake it exists for"
+        );
+
+        set_timer_state(Instant::now() + Duration::from_secs(600), INTERVAL);
+        assert!(
+            ctx.has_requested_repaint(),
+            "arming a deadline must ask for the frame that will schedule it"
+        );
+
+        *WAKE_CTX.lock().unwrap() = None;
+    }
+
+    // === config live-reload ==================================================
+
+    /// The state a failed status item now leaves behind: no tray, and (if
+    /// `GlobalHotKeyManager::new` also failed) no hotkey manager either. A
+    /// reload must still run to completion in it — the defect was that this
+    /// code was unreachable, because a tray failure returned before `UI` was
+    /// ever populated and `apply_config_reload` then early-returned forever,
+    /// silently discarding every later edit to `config.json`.
+    #[test]
+    fn a_reload_applies_with_neither_a_status_item_nor_a_hotkey_manager() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.json");
+
+        let before = config::Config {
+            hotkey: "Ctrl+Shift+Space".to_string(),
+            default_interval_minutes: 10.0,
+            autostart: false,
+        };
+        let after = config::Config {
+            hotkey: "Alt+J".to_string(),
+            default_interval_minutes: 25.0,
+            autostart: true,
+        };
+        config::save(&path, &after).expect("write the edited config");
+
+        let mut state = ReloadState {
+            hotkeys: None,
+            registered: None,
+            config_path: path.clone(),
+            previous_cfg: before,
+        };
+        reload_config(&mut state);
+
+        assert_eq!(
+            state.previous_cfg, after,
+            "the baseline the next diff is computed against must be what is on disk"
+        );
+        assert!(
+            state.registered.is_none(),
+            "with no manager there is nothing to bind to, and nothing to pretend about"
+        );
+    }
+
+    /// The watcher must not be the thing that kills the app over a typo: a
+    /// file that no longer parses leaves the in-memory config alone.
+    #[test]
+    fn a_malformed_config_keeps_the_previous_baseline() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, "{ not json").expect("write a broken config");
+
+        let before = config::Config {
+            hotkey: "Ctrl+Shift+Space".to_string(),
+            default_interval_minutes: 10.0,
+            autostart: false,
+        };
+        let mut state = ReloadState {
+            hotkeys: None,
+            registered: None,
+            config_path: path,
+            previous_cfg: before.clone(),
+        };
+        reload_config(&mut state);
+
+        assert_eq!(state.previous_cfg, before);
+    }
+
+    // === spawned settings processes ==========================================
+
+    /// Rust's `Child` does not reap on drop and this process has no
+    /// `SIGCHLD`/`SIG_IGN` handler, so a settings window the user closes stays
+    /// in the process table as a zombie until its parent waits for it — and
+    /// the parent here is a menu-bar app that runs for days.
+    #[test]
+    fn an_exited_settings_child_is_waited_for_and_a_live_one_is_kept() {
+        let long = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn a long-lived child");
+        let long_pid = long.id();
+        let short = std::process::Command::new("/bin/sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .expect("spawn a short-lived child");
+        let short_pid = short.id();
+        let mut children = vec![long, short];
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while children.len() == 2 && Instant::now() < deadline {
+            reap_exited(&mut children);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        assert_eq!(
+            children.len(),
+            1,
+            "the exited child was dropped from the list"
+        );
+        assert_eq!(
+            children[0].id(),
+            long_pid,
+            "and it was the exited one, not the running one"
+        );
+
+        // The list shrinking only proves we stopped tracking it. What the bug
+        // was about is the process table, so ask the process table: a pid that
+        // was never waited for would still be there, in state `Z`.
+        let state = std::process::Command::new("/bin/ps")
+            .args(["-o", "state=", "-p", &short_pid.to_string()])
+            .output()
+            .expect("ps must run");
+        let state = String::from_utf8_lossy(&state.stdout).trim().to_string();
+        assert!(
+            state.is_empty(),
+            "pid {short_pid} is still in the process table as {state:?} — it was not reaped"
+        );
+
+        let _ = children[0].kill();
+        let _ = children[0].wait();
     }
 
     // === window placement ====================================================

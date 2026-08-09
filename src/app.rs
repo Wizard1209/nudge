@@ -39,11 +39,17 @@ pub struct NudgeApp {
     card_rect: Option<egui::Rect>,
     #[cfg(target_arch = "wasm32")]
     pill_rect: Option<egui::Rect>,
-    /// Snapshot taken in `show_popup`: did the OS hand us foreground at the
-    /// moment the popup opened? When true, per-frame focus-loss check is
-    /// active. When false (e.g. a fullscreen game refused to release
-    /// foreground), focus-loss never closes the popup — only Enter / Esc /
-    /// click-outside can. See spec §4.
+    /// Did this open of the popup ever actually get the keyboard? While true,
+    /// the per-frame focus-loss check is active. While false (e.g. a
+    /// fullscreen game refused to release foreground), focus-loss never closes
+    /// the popup — only Enter / Esc / click-outside can. See spec §4.
+    ///
+    /// Windows samples this once, in `show_popup`, because `GetForegroundWindow`
+    /// answers truthfully the instant `SetForegroundWindow` returns. macOS
+    /// cannot: `activateIgnoringOtherApps` is a request to the window server
+    /// that no same-call read reflects, so there it is a latch that closes on
+    /// the first frame the window is key. Both are "did this open get focus",
+    /// they just observe it at the only moment their OS can answer.
     armed: bool,
 
     // Native window handle for Win32 API calls.
@@ -167,18 +173,38 @@ impl NudgeApp {
         crate::platform::focus_popup(ctx);
 
         // Spec §4: focus-loss closes only if the popup actually got focus at
-        // open-time. Snapshot the OS's foreground state synchronously now,
-        // right after force_foreground (native) or as soon as the popup
-        // becomes visible (WASM). Stays fixed for the lifetime of this open.
-        self.armed = self.current_foreground_matches();
+        // open-time. This is the first sample. On Windows and WASM it is also
+        // the last one — the answer is already true here. On macOS it is
+        // almost certainly false and the latch in `ui` is what arms us; see
+        // `current_foreground_matches`.
+        self.armed = self.current_foreground_matches(ctx);
     }
 
     /// Source of truth for "is our popup the OS-foreground / page-focused
     /// surface right now?" — used both at open-time to set `armed` and in
-    /// the per-frame loop to detect focus loss. Goes through Win32 /
-    /// `document.hasFocus()` directly, not eframe's `viewport().focused`,
-    /// because the latter lags by a frame after WM_ACTIVATE / focus events.
-    fn current_foreground_matches(&self) -> bool {
+    /// the per-frame loop to detect focus loss.
+    ///
+    /// Windows and WASM go through `GetForegroundWindow` / `document.hasFocus()`
+    /// directly rather than eframe's `viewport().focused`, because there that
+    /// field is filled from a window event and so lags a frame behind
+    /// `WM_ACTIVATE`.
+    ///
+    /// **macOS reads `viewport().focused`, and the lag objection above does not
+    /// carry over.** egui-winit 0.34 refreshes that field from
+    /// `Window::has_focus()` in `update_viewport_info`, called at the top of
+    /// every frame immediately before `take_egui_input` (`egui-winit/src/lib.rs`
+    /// :1278, `eframe/src/native/glow_integration.rs`:557). On macOS
+    /// `Window::has_focus()` is `NSWindow::isKeyWindow` — a live AppKit read,
+    /// not a cached event — so this is exactly as current as an
+    /// `NSApplication::isActive` call made from here, and it answers the
+    /// sharper question: whether *this window* is the one Esc and Enter will
+    /// reach, which is the condition spec §4 is actually about. It also needs
+    /// no `MainThreadMarker`, so the arming logic stays reachable from the
+    /// headless kittest tier.
+    fn current_foreground_matches(&self, ctx: &egui::Context) -> bool {
+        // Only the macOS arm reads it; the others ask their OS directly.
+        let _ = ctx;
+
         #[cfg(target_os = "windows")]
         {
             use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
@@ -195,9 +221,65 @@ impl NudgeApp {
                 .and_then(|d| d.has_focus().ok())
                 .unwrap_or(false);
         }
-        #[cfg(not(any(target_os = "windows", target_arch = "wasm32")))]
+        #[cfg(target_os = "macos")]
         {
+            // `None` = winit has not reported on the window yet (first frames,
+            // and every kittest harness). Not focused is the safe reading:
+            // it delays arming, it cannot cause a close.
+            ctx.input(|i| i.viewport().focused) == Some(true)
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "macos", target_arch = "wasm32")))]
+        {
+            // The fallback host has no OS integration at all (see
+            // `platform::fallback`): it never nudges, nothing activates the
+            // window, and a focus-loss close would be the only spec §4
+            // behaviour present on a platform that has none of the rest.
             false
+        }
+    }
+
+    /// Arm the focus-loss check once the popup is observably focused, for the
+    /// platform whose activation call cannot answer synchronously.
+    ///
+    /// # Why a latch and not a snapshot, on macOS
+    ///
+    /// `show_popup` runs from `ui()`, and `ui()` cannot run in the same frame
+    /// as the reveal that preceded it: eframe samples `is_visible` at the top
+    /// of the frame, before `logic()` (and therefore before
+    /// `platform::macos::tick` reveals anything), then gates `app.ui` on that
+    /// sample. So by the time `show_popup` takes its snapshot, the
+    /// `activateIgnoringOtherApps` from the reveal is one or more frames old —
+    /// but `show_popup` has *also* just called `focus_popup` again, microseconds
+    /// earlier, and that call is a request to the window server which no read
+    /// on this thread reflects on return. `NSApplication::isActive` has the
+    /// same property; it is not a stronger reading of the same moment, it is
+    /// the same unanswerable question asked in objc.
+    ///
+    /// Whether the *earlier* activation has landed by then depends on the order
+    /// in which AppKit delivers the occlusion change that makes the window
+    /// visible and the key-window change that gives it the keyboard — which is
+    /// not something this code gets to decide, and not something a locked
+    /// screen can measure. A snapshot is therefore a coin flip, and a coin flip
+    /// that lands wrong reproduces the original bug with a plausible-looking
+    /// fix in place.
+    ///
+    /// A latch does not need the answer. Whichever frame the window becomes
+    /// key on — the one running `show_popup` or a later one — arms us then, and
+    /// the focus event that makes it key is itself a repaint, so the frame
+    /// exists. A window that never becomes key never arms, which is precisely
+    /// what spec §4 asks for.
+    ///
+    /// No-op everywhere else: Windows and WASM already had a true answer in
+    /// `show_popup`, and re-deciding it per frame would change shipped
+    /// behaviour on a platform this port cannot test.
+    fn latch_arming(&mut self, focused_now: bool) {
+        // Named unconditionally so the parameter is not "unused" on the
+        // platforms whose arm below is compiled out.
+        let _ = focused_now;
+
+        #[cfg(target_os = "macos")]
+        if focused_now {
+            self.armed = true;
         }
     }
 
@@ -644,10 +726,14 @@ impl eframe::App for NudgeApp {
             }
 
             // Window focus-loss → switch away (spec §4).
-            // `armed` was snapshotted in show_popup: true iff we actually got
-            // foreground at open-time. If we didn't, focus-loss never fires
-            // here — Esc / Enter / click-outside remain the only ways out.
-            if self.armed && !self.current_foreground_matches() {
+            // `armed` means this open of the popup did get the keyboard at
+            // some point — sampled in show_popup on Windows / WASM, latched
+            // here on macOS (see `latch_arming`). If it never did, focus-loss
+            // never fires and Esc / Enter / click-outside remain the only ways
+            // out.
+            let focused_now = self.current_foreground_matches(ctx);
+            self.latch_arming(focused_now);
+            if self.armed && !focused_now {
                 self.hide_popup(ctx, Action::SwitchAway);
                 return;
             }
