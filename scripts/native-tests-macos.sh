@@ -113,7 +113,7 @@ vs '
 # find it. Both binaries link only system frameworks, so the guest needs no
 # Rust toolchain and none is installed there.
 say "building on the host"
-( cd "$REPO" && cargo build --bin nudge && cargo test --no-run --test macos_native )
+( cd "$REPO" && cargo build --bin nudge --example control_backdrop && cargo test --no-run --test macos_native )
 TEST_BIN=$(cd "$REPO" && cargo test --no-run --test macos_native --message-format=json 2>/dev/null \
   | /usr/bin/python3 -c 'import sys,json
 for l in sys.stdin:
@@ -128,19 +128,46 @@ say "shipping binaries to $REPO inside the guest"
 # The guest user differs from the host user, so the mirrored path lives under
 # somebody else's /Users tree and has to be created with sudo, then handed over.
 REPO_ROOT=$(printf '%s\n' "$REPO" | awk -F/ '{print "/"$2"/"$3}')
-vs "sudo mkdir -p '$REPO/target/debug/deps' && sudo chown -R $VM_USER:staff '$REPO_ROOT'"
+vs "sudo mkdir -p '$REPO/target/debug/deps' '$REPO/target/debug/examples' && sudo chown -R $VM_USER:staff '$REPO_ROOT'"
 scp -q -i "$KEY" "${SSH_OPTS[@]}" "$REPO/target/debug/nudge" "$VM_USER@$IP:$REPO/target/debug/nudge"
+# The appearance tests photograph the card over a known pattern rather than
+# over whatever happens to be on the desktop; this is what puts it there.
+scp -q -i "$KEY" "${SSH_OPTS[@]}" "$REPO/target/debug/examples/control_backdrop" \
+  "$VM_USER@$IP:$REPO/target/debug/examples/control_backdrop"
 scp -q -i "$KEY" "${SSH_OPTS[@]}" "$TEST_BIN" "$VM_USER@$IP:$REPO/target/debug/deps/"
 GUEST_TEST="$REPO/target/debug/deps/$(basename "$TEST_BIN")"
-vs "chmod +x '$REPO/target/debug/nudge' '$GUEST_TEST'"
+vs "chmod +x '$REPO/target/debug/nudge' '$REPO/target/debug/examples/control_backdrop' '$GUEST_TEST'"
 
 # --- 5. run the suite ------------------------------------------------------
 # --test-threads=1 is load-bearing: the synthetic Esc is addressed by process
 # name, so two live `nudge` instances make the keystroke land on the wrong one
 # and the failure reads like a port regression rather than a harness collision.
+# GUEST_ENV prefixes the run with environment for the guest. It exists for
+# falsification passes — checking a new assertion goes red against a
+# deliberately broken build, rather than trusting that it is green for the
+# reason its name claims:
+#   GUEST_ENV="NUDGE_X=1" scripts/native-tests-macos.sh -- some_test
+GUEST_ENV=${GUEST_ENV:-}
+
+# Carry the judge's key across by hand. The test binary falls back to the
+# repo's .env when the variable is unset, but that file stays on the host —
+# only the binaries are shipped — so without this the vision judge silently
+# no-op-passes in the guest on a machine that is in fact configured. Passed as
+# environment rather than copied in, so the key leaves nothing behind in the VM.
+JUDGE_KEY=${OPENAI_API_KEY:-}
+if [[ -z $JUDGE_KEY && -f $REPO/.env ]]; then
+  JUDGE_KEY=$(sed -n 's/^OPENAI_API_KEY=//p' "$REPO/.env" | tr -d '"'\'' ' | head -1)
+fi
+if [[ -n $JUDGE_KEY ]]; then
+  GUEST_ENV="OPENAI_API_KEY=$JUDGE_KEY $GUEST_ENV"
+  echo "judge key: found (forwarding to the guest)"
+else
+  echo "judge key: none — the vision judge will skip"
+fi
+
 say "running the suite"
 set +e
-vs "'$GUEST_TEST' --ignored --nocapture --test-threads=1 ${TEST_ARGS[*]:-} 2>&1"
+vs "$GUEST_ENV '$GUEST_TEST' --ignored --nocapture --test-threads=1 ${TEST_ARGS[*]:-} 2>&1"
 RC=$?
 set -e
 

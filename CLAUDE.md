@@ -25,10 +25,16 @@ DMG=1 ./scripts/build-macos-app.sh    # -> target/macos/Nudge.app + .dmg
 ```sh
 # Drives tests/macos_native.rs against a real desktop inside a Tart guest.
 # Do this even with your own screen unlocked: behind a lock screen synthetic
-# input, activation and rect captures all fail, so the guest is the
+# input, activation and rect captures all fail, and the appearance tests need
+# a desktop with no full-screen window on it (a full-screen app sits in its own
+# Space, where the control backdrop cannot follow). The guest is the
 # reproducible path rather than the fallback.
 scripts/native-tests-macos.sh
 scripts/native-tests-macos.sh -- popup_reappears    # one test
+
+# The vision-judge test is a no-op pass without OPENAI_API_KEY in the guest's
+# environment:
+GUEST_ENV="OPENAI_API_KEY=$OPENAI_API_KEY" scripts/native-tests-macos.sh -- vision_judge
 ```
 
 ### Build WASM (for e2e tests only)

@@ -8,10 +8,17 @@
 //!
 //! # These tests are the port's acceptance criteria
 //!
-//! All five are green. Each names one capability the port had to restore, and
-//! none can be satisfied by making the code merely compile: the harness
-//! control, window placement, the interval timer, the menu-bar status item,
-//! and journal-writing driven by real keystrokes.
+//! All are green. Each names one capability the port had to restore, and none
+//! can be satisfied by making the code merely compile: the harness control,
+//! window placement, the interval timer, the menu-bar status item, and
+//! journal-writing driven by real keystrokes.
+//!
+//! The appearance group below them answers a different question — not "does
+//! the capability work" but "does the card look like the design says". It
+//! reads the window's own pixels rather than a screen region, and where it
+//! needs a backdrop it supplies one, because a translucent surface's defects
+//! are all differential against what is behind it and the developer's desktop
+//! is not a control.
 //!
 //! What they do NOT cover, because it needs synthetic *mouse* input against
 //! a window the process does not own: clicking the status item to summon the
@@ -51,6 +58,8 @@
 //! gets read as a port regression.
 
 #![cfg(target_os = "macos")]
+
+mod common;
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
@@ -178,10 +187,9 @@ impl Rect {
 /// to grab the window alone instead of a screen region.
 #[derive(Debug, Clone, Copy)]
 struct WindowInfo {
-    /// Carried for `capture_region`'s outstanding `screencapture -l <windowID>`
-    /// TODO — grabbing the window alone is what would make a transparency
-    /// assertion independent of the wallpaper behind it.
-    #[expect(dead_code, reason = "read once capture_region takes the -l path")]
+    /// What `capture_window` passes to `screencapture -l`, which is what makes
+    /// the appearance assertions independent of the wallpaper behind the
+    /// window.
     id: u32,
     rect: Rect,
     /// `kCGWindowIsOnscreen` — whether the window is actually presented right
@@ -374,13 +382,80 @@ fn main_display_frame() -> Rect {
     }
 }
 
-/// Capture a screen region to PNG.
+/// Capture one window on its own, alpha channel intact.
 ///
-/// TODO: prefer `screencapture -l <windowID>` once `window_rect` returns a
-/// window id. Capturing the window alone takes the wallpaper out of the frame,
-/// which is what lets the transparency assertion be independent of what is
-/// behind the window — the property the Windows harness gets for free by
-/// grabbing the HWND.
+/// `-l <windowID>` grabs the window's own output instead of a screen region,
+/// so the frame carries what the app painted and nothing of what is behind
+/// it. Every assertion about the card *itself* has to be made on this rather
+/// than on a region grab: over a region, "the card has no contour" and "the
+/// card has a contour the wallpaper happens to match" are the same picture.
+/// This is the property the Windows harness gets for free by grabbing the
+/// HWND.
+///
+/// `-o` omits the window shadow AppKit would otherwise composite into the
+/// frame, which widens every edge and moves the measured card bounds.
+///
+/// The inverse — what the *user* sees, the app blended with a real backdrop —
+/// is `capture_region` over `examples/control_backdrop.rs`.
+fn capture_window(id: u32, dest: &Path) -> image::RgbaImage {
+    let status = Command::new("screencapture")
+        .arg("-x")
+        .arg("-o")
+        .arg("-l")
+        .arg(id.to_string())
+        .arg(dest)
+        .status()
+        .expect("screencapture not runnable");
+
+    assert!(
+        status.success() && dest.exists(),
+        "screencapture -l produced nothing — grant Screen Recording to the terminal \
+         running cargo (System Settings › Privacy & Security › Screen Recording), \
+         then restart it so the running process picks the grant up"
+    );
+
+    image::open(dest)
+        .expect("captured file is not a decodable image")
+        .to_rgba8()
+}
+
+/// The painted card's bounds inside a window capture, as pixel indices.
+///
+/// Found on the alpha channel, which is unambiguous here: the popup clears its
+/// framebuffer to a fully transparent black (`CLEAR_COLOR_TRANSPARENT`), so
+/// everything the app did not paint is alpha 0. The 128 threshold also
+/// excludes the card's own drop shadow, which peaks well under half opacity
+/// just outside the card edge.
+fn card_bbox(img: &image::RgbaImage) -> (u32, u32, u32, u32) {
+    let (w, h) = img.dimensions();
+    let solid = |x: u32, y: u32| img.get_pixel(x, y).0[3] > 128;
+
+    let mid_y = h / 2;
+    let mid_x = w / 2;
+    let xs: Vec<u32> = (0..w).filter(|&x| solid(x, mid_y)).collect();
+    let ys: Vec<u32> = (0..h).filter(|&y| solid(mid_x, y)).collect();
+    assert!(
+        !xs.is_empty() && !ys.is_empty(),
+        "no painted pixels across the middle of the {w}x{h} window capture — \
+         the popup rendered nothing"
+    );
+    (xs[0], ys[0], *xs.last().unwrap(), *ys.last().unwrap())
+}
+
+/// Luminance of a captured pixel composited over black.
+///
+/// Black is the adversarial backdrop on purpose: it is where a dark card's
+/// shadow contributes nothing, so anything still visible here is drawn by the
+/// app rather than borrowed from what is behind the window.
+fn luma_over_black(img: &image::RgbaImage, x: u32, y: u32) -> f64 {
+    let [r, g, b, a] = img.get_pixel(x, y).0;
+    let a = f64::from(a) / 255.0;
+    a * (0.299 * f64::from(r) + 0.587 * f64::from(g) + 0.114 * f64::from(b))
+}
+
+/// Capture a screen region to PNG. What the user sees: the app composited with
+/// whatever is behind the window. For the card in isolation use
+/// `capture_window`.
 fn capture_region(rect: Rect, dest: &Path) {
     let status = Command::new("screencapture")
         .arg("-x")
@@ -793,6 +868,553 @@ fn submitting_appends_one_journal_line() {
         "the line was written but without the typed text, so Return reached the app \
          and the characters did not"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Appearance (spec §2-3)
+// ---------------------------------------------------------------------------
+//
+// These read `capture_window`, never a region grab. A region grab mixes the
+// app's output with the desktop, and mixing is precisely what hides this class
+// of defect: over the smooth wallpaper a developer happens to be running, a
+// missing contour and a present one differ by nothing measurable. The window
+// capture carries the app's own alpha, so the tests can composite it over the
+// backdrop that is hardest for the design — black — and ask what survives.
+
+/// Points to pixels for this capture. Not a constant: the same code runs on a
+/// 2x internal display and on a 1x external one, and every offset below is
+/// stated in the points the spec uses.
+fn capture_scale(img: &image::RgbaImage, window: &WindowInfo) -> f64 {
+    f64::from(img.width()) / window.rect.w
+}
+
+/// The popup's own pixels, with the environment checked first.
+///
+/// The visibility check is not defensive noise. A `-l` capture of a window the
+/// app has ordered out succeeds and returns a correctly-sized, entirely
+/// transparent frame, so without it the commonest environment fault — a
+/// leftover `nudge` from an earlier run, which suppresses the launch popup of
+/// every instance after it (see the module header) — arrives at the assertions
+/// disguised as "the card rendered nothing".
+fn capture_card(app: &SandboxedApp) -> (WindowInfo, image::RgbaImage) {
+    let window = window_rect(app.pid()).expect("no nudge window found");
+    assert!(
+        popup_visible(app.pid()),
+        "nudge has a window but it is not on screen, so there is nothing to \
+         photograph — check that no other nudge is running"
+    );
+    let img = capture_window(window.id, &app.home.path().join("card.png"));
+    (window, img)
+}
+
+/// Spec §2: the card's contour is what separates it from the desktop when the
+/// shadow cannot.
+///
+/// The shadow is dark, so over a dark window behind the popup — a maximised
+/// terminal, a dark-theme chat client — it contributes nothing and the card's
+/// boundary is whatever the fill alone provides, which against black is an 8%
+/// luminance step. This asserts the boundary survives that case: composited
+/// over black, a light hairline must run the card's straight edges.
+///
+/// Deliberately compared against the fill *at the same y* rather than against
+/// a fixed number. The rows differ in brightness — the focused row carries a
+/// tint — so a global threshold would either pass a contourless focused row or
+/// fail a correct plain one.
+#[test]
+#[ignore = "needs a GUI session + Screen Recording grant; run via --ignored"]
+fn card_contour_survives_a_dark_backdrop() {
+    let app = SandboxedApp::launch();
+    let (window, img) = capture_card(&app);
+    let scale = capture_scale(&img, &window);
+
+    let (x0, y0, x1, y1) = card_bbox(&img);
+    let pt = |v: f64| (v * scale).round() as u32;
+    // One point of stroke, then a clear sample of the fill past its antialias.
+    let rim_px = pt(1.0).max(1);
+    let fill_probe = rim_px + pt(3.0);
+    // Skip the rounded corners: there the "edge" is a diagonal and a
+    // horizontal probe crosses both stroke and background.
+    let (from, to) = (y0 + pt(24.0), y1 - pt(24.0));
+    assert!(from < to, "card too short to sample: {y0}..{y1}");
+
+    let mut weakest = f64::MAX;
+    let mut failures = 0;
+    for y in from..to {
+        for (edge, inward) in [(x0, 1i64), (x1, -1i64)] {
+            let at = |off: u32| {
+                let x = (i64::from(edge) + inward * i64::from(off)) as u32;
+                luma_over_black(&img, x, y)
+            };
+            let rim = (0..rim_px).map(at).fold(f64::MIN, f64::max);
+            let gap = rim - at(fill_probe);
+            weakest = weakest.min(gap);
+            if gap < 15.0 {
+                failures += 1;
+            }
+        }
+    }
+
+    let sampled = (to - from) * 2;
+    assert!(
+        failures * 10 < sampled,
+        "the card has no contour along {failures} of {sampled} sampled edge points \
+         (weakest rim-over-fill gap {weakest:.1}, need 15). Composited over black \
+         the shadow adds nothing, so without the hairline the card has no boundary \
+         at all — see CARD_STROKE in src/app.rs and spec §2."
+    );
+}
+
+/// Spec §3: the focused row is marked by a change of row *background*, with no
+/// outline of its own.
+///
+/// The failure this exists to catch is a highlight drawn as an inset plate:
+/// visually it is a second rounded rectangle nested inside the card, and
+/// because it cannot stay concentric with the card's corners it reads as a
+/// smudged double outline at the top of the card. Insetting is invisible to
+/// any assertion about *whether* a highlight exists, so the measurement has to
+/// be where the highlight ends horizontally, not whether it is there.
+///
+/// Three steps, so a red test says which one broke: that a highlight exists at
+/// all in the row that opens focused, then that it reaches the card edge
+/// sideways, then that it reaches its divider downwards. The two directions
+/// fail for different reasons and neither implies the other.
+#[test]
+#[ignore = "needs a GUI session + Screen Recording grant; run via --ignored"]
+fn focused_row_background_fills_its_row() {
+    let app = SandboxedApp::launch();
+    let (window, img) = capture_card(&app);
+    let scale = capture_scale(&img, &window);
+
+    let (x0, y0, x1, _) = card_bbox(&img);
+    let pt = |v: f64| (v * scale).round() as u32;
+    // Row 1 opens focused (spec §3); row 2 is the unfocused reference. Rows are
+    // ROW_HEIGHT tall with a 1pt divider, sampled at their vertical middles.
+    let focused_y = y0 + pt(20.0);
+    let plain_y = y0 + pt(61.0);
+    let middle_x = (x0 + x1) / 2;
+    // Just inside the contour — well within the inset an inset plate would
+    // leave blank, and clear of the stroke's own antialias.
+    let edge_x = x0 + pt(1.0).max(1) + pt(2.0);
+
+    let at_middle =
+        luma_over_black(&img, middle_x, focused_y) - luma_over_black(&img, middle_x, plain_y);
+    assert!(
+        at_middle >= 8.0,
+        "the focused row is not tinted at all (Δ{at_middle:.1} against the row below, \
+         need 8) — focus is invisible, so the edge measurement below would be \
+         meaningless"
+    );
+
+    let at_edge = luma_over_black(&img, edge_x, focused_y) - luma_over_black(&img, edge_x, plain_y);
+    assert!(
+        at_edge >= 8.0,
+        "the focused row is tinted in its middle (Δ{at_middle:.1}) but not at the card \
+         edge (Δ{at_edge:.1}) — the highlight is an inset plate, not a row background. \
+         Its own corners cannot stay concentric with the card's, which is what shows \
+         up as a double outline. See spec §3 and `row_field` in src/app.rs."
+    );
+
+    // Vertically, the same question. A row is bounded by the card above it and
+    // by the divider below, and the tint has to meet both — a tint that stops
+    // short leaves a strip of bare card between the highlight and the line,
+    // and the highlight reads as sitting crooked in its own row.
+    //
+    // The divider is found rather than assumed: it is the brightest row in the
+    // band under the focused one, and where it lands depends on the field's
+    // font metrics, not on the row height the code asks for.
+    let scan_from = focused_y;
+    let scan_to = y0 + pt(70.0);
+    let (divider_y, _) = (scan_from..scan_to)
+        .map(|y| (y, luma_over_black(&img, middle_x, y)))
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .expect("empty scan band");
+    let just_above_divider = luma_over_black(&img, middle_x, divider_y - pt(1.5).max(1))
+        - luma_over_black(&img, middle_x, plain_y);
+    assert!(
+        just_above_divider >= 8.0,
+        "the focused row is tinted at its top (Δ{at_middle:.1}) but not just above its \
+         divider (Δ{just_above_divider:.1}) — the tint is shorter than the row. The row is \
+         taller than the height `row_field` allocates for it, because the field's own \
+         margins overflow it and `put` advances the cursor by the larger amount; paint the \
+         tint on the band the cursor actually moved through, not on the allocated rect."
+    );
+}
+
+/// A full-screen control pattern from `examples/control_backdrop.rs`, put up
+/// behind the popup and taken down when the test ends.
+struct Backdrop(Child);
+
+impl Drop for Backdrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+impl Backdrop {
+    /// `pattern` is `checker` or `dark`. Launched *before* the app under test:
+    /// it takes no focus, but the popup is always-on-top too and wins the tie
+    /// within that level only by opening later.
+    ///
+    /// On a developer's own Mac this is the piece that fails: a full-screen
+    /// window belonging to any app lives in a Space of its own, and a backdrop
+    /// on the default Space is then simply not on the screen being
+    /// photographed — no window level can help. The guest runner
+    /// (`scripts/native-tests-macos.sh`) has a bare desktop and no Spaces,
+    /// which is why it is the reproducible path rather than the fallback.
+    /// Either way the caller checks the pattern is really there before
+    /// believing anything measured over it.
+    fn up(pattern: &str) -> Self {
+        let exe =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("target/debug/examples/control_backdrop");
+        let child = Command::new(&exe).arg(pattern).spawn().unwrap_or_else(|e| {
+            panic!(
+                "spawn {} — run `cargo build --example control_backdrop` first: {e}",
+                exe.display()
+            )
+        });
+        std::thread::sleep(STARTUP_GRACE);
+        Self(child)
+    }
+}
+
+/// Mean high-spatial-frequency energy of a region, as mean |Laplacian|.
+///
+/// This is the measurement that tells a blur from a dimming. Alpha scales a
+/// pattern's contrast but leaves its edges exactly where they were, so it
+/// lowers this in proportion; a blur removes the edges, and it collapses.
+fn high_frequency_energy(img: &image::RgbaImage, x0: u32, y0: u32, x1: u32, y1: u32) -> f64 {
+    let luma = |x: u32, y: u32| {
+        let [r, g, b, _] = img.get_pixel(x, y).0;
+        0.299 * f64::from(r) + 0.587 * f64::from(g) + 0.114 * f64::from(b)
+    };
+    let mut total = 0.0;
+    let mut n = 0u32;
+    for y in y0 + 1..y1 - 1 {
+        for x in x0 + 1..x1 - 1 {
+            total += (4.0 * luma(x, y)
+                - luma(x - 1, y)
+                - luma(x + 1, y)
+                - luma(x, y - 1)
+                - luma(x, y + 1))
+            .abs();
+            n += 1;
+        }
+    }
+    total / f64::from(n.max(1))
+}
+
+fn mean_luma(img: &image::RgbaImage, x0: u32, y0: u32, x1: u32, y1: u32) -> f64 {
+    let mut total = 0.0;
+    let mut n = 0u32;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let [r, g, b, _] = img.get_pixel(x, y).0;
+            total += 0.299 * f64::from(r) + 0.587 * f64::from(g) + 0.114 * f64::from(b);
+            n += 1;
+        }
+    }
+    total / f64::from(n.max(1))
+}
+
+/// One run of the popup over one control pattern, measured where the card
+/// actually is.
+///
+/// The card is located from the app's own alpha channel (`capture_window` →
+/// `card_bbox`) and only then looked up in the on-screen capture. Deriving it
+/// from assumed geometry instead is how a measurement ends up reading the
+/// desktop and reporting it as the card: the popup follows the *main* display,
+/// which on a machine with a second monitor attached is not necessarily the one
+/// a hardcoded region belongs to.
+///
+/// Returns `(card mean, card high-frequency energy, backdrop high-frequency
+/// energy, backdrop mean)` — the last two are the instrument's own reading,
+/// which the caller must check before believing the first two.
+fn measure_over(pattern: &str) -> (f64, f64, f64, f64) {
+    let _backdrop = Backdrop::up(pattern);
+    let app = SandboxedApp::launch();
+    let (window, own) = capture_card(&app);
+
+    // Where the card sits inside the window, in points.
+    let own_scale = capture_scale(&own, &window);
+    let (cx0, cy0, cx1, cy1) = card_bbox(&own);
+    let card = Rect {
+        x: window.rect.x + f64::from(cx0) / own_scale,
+        y: window.rect.y + f64::from(cy0) / own_scale,
+        w: f64::from(cx1 - cx0) / own_scale,
+        h: f64::from(cy1 - cy0) / own_scale,
+    };
+
+    // Grab the card and a strip of untouched backdrop beside it in ONE frame,
+    // so the two readings cannot disagree about when they were taken.
+    const MARGIN: f64 = 40.0;
+    let region = Rect {
+        x: card.x - MARGIN,
+        y: card.y - MARGIN,
+        w: card.w + 2.0 * MARGIN,
+        h: card.h + 2.0 * MARGIN,
+    };
+    let shot = app.home.path().join("over.png");
+    capture_region(region, &shot);
+    let img = image::open(&shot)
+        .expect("region capture is not a decodable image")
+        .to_rgba8();
+    let scale = f64::from(img.width()) / region.w;
+    let px = |v: f64| (v * scale).round() as u32;
+
+    // Inside: the middle row, clear of the divider lines and of the text.
+    let inside = (
+        px(MARGIN + card.w * 0.45),
+        px(MARGIN + card.h * 0.42),
+        px(MARGIN + card.w * 0.95),
+        px(MARGIN + card.h * 0.58),
+    );
+    // Outside: the margin above the card, which is backdrop and nothing else.
+    let outside = (
+        px(MARGIN),
+        px(4.0),
+        px(MARGIN + card.w * 0.5),
+        px(4.0) + px(MARGIN * 0.6),
+    );
+
+    (
+        mean_luma(&img, inside.0, inside.1, inside.2, inside.3),
+        high_frequency_energy(&img, inside.0, inside.1, inside.2, inside.3),
+        high_frequency_energy(&img, outside.0, outside.1, outside.2, outside.3),
+        mean_luma(&img, outside.0, outside.1, outside.2, outside.3),
+    )
+}
+
+/// Spec §2: the card is a frosted surface — what is behind the window reaches
+/// it, and reaches it blurred.
+///
+/// Two runs, because either half alone is satisfied by a wrong render. Over
+/// the checkerboard, an *opaque* card destroys the pattern just as completely
+/// as a blurred one does, so "the detail is gone" is not evidence of frosting.
+/// Against a flat dark field, a card that merely dims its backdrop responds in
+/// tone just as a frosted one does, so "the tone tracks the backdrop" is not
+/// evidence of blurring either. Only together do they exclude both.
+///
+/// The thresholds come from measurements on this tree, printed by the test:
+/// with the fill alone and no backdrop panel, the checker retained ~0.10 of its
+/// energy behind the card; with `platform::sync_card_backdrop` in place it
+/// measures 0.00.
+#[test]
+#[ignore = "needs a GUI session + Screen Recording grant; run via --ignored"]
+fn card_is_frosted_glass_not_a_tinted_pane() {
+    let (bright_mean, bright_hf, control_hf, control_mean) = measure_over("checker");
+    eprintln!(
+        "[frost] over checker: card mean={bright_mean:.1} hf={bright_hf:.2} | \
+         backdrop mean={control_mean:.1} hf={control_hf:.1}"
+    );
+    assert!(
+        control_hf > 20.0 && control_mean > 80.0,
+        "the checkerboard is not behind the popup (backdrop reads mean {control_mean:.1}, \
+         hf {control_hf:.1}) — nothing below this measures the card, it measures the \
+         developer's desktop. Build the instrument first: \
+         `cargo build --example control_backdrop`."
+    );
+
+    let (dark_mean, _, _, dark_control) = measure_over("dark");
+    eprintln!("[frost] over dark: card mean={dark_mean:.1} | backdrop mean={dark_control:.1}");
+    assert!(
+        dark_control < 40.0,
+        "the dark control field is not behind the popup either (reads {dark_control:.1})"
+    );
+
+    assert!(
+        bright_hf / control_hf < 0.02,
+        "the backdrop's detail survives behind the card ({:.3} of its energy, need under \
+         0.02) — the surface is dimming what is behind it, not blurring it. The frosted \
+         panel comes from `platform::sync_card_backdrop`; check it is inserted below the \
+         GL view and not above it.",
+        bright_hf / control_hf
+    );
+
+    assert!(
+        bright_mean - dark_mean > 5.0,
+        "the card reads the same over a bright backdrop ({bright_mean:.1}) as over a dark \
+         one ({dark_mean:.1}) — it is opaque, and the blur assertion above passes on an \
+         opaque card for free. Spec §2 wants what is behind the window to show through."
+    );
+}
+
+/// Spec §2: exactly one shadow.
+///
+/// The failure this catches is two of them at once. AppKit derives a window
+/// shadow from the window's alpha mask, so if the renderer also paints a soft
+/// shadow into that alpha, the silhouette AppKit outlines is bigger than the
+/// card and its edge lands out in open space — a dark ring detached from the
+/// contour, which is what "an outline behind the outline" looks like.
+///
+/// The measurement is **monotonicity, not steepness**. Measured on this tree,
+/// luminance walking outward from the card over a flat backdrop:
+///
+/// ```text
+///   px above card:      1     3     5     7     9    11    13    17    31
+///   renderer only:    176   179   182   185   188   191   194   200
+///   compositor only:  134   183   189   191   193   194   195   197   200
+///   both:             163   168   172   175   132   163   189   196   200
+/// ```
+///
+/// Steepness does not separate them: the compositor's shadow is legitimately
+/// tight, dropping 49 levels in the two pixels next to the card, which is more
+/// abrupt than anything the broken case does. What only the broken case has is
+/// a *reversal* — 175 at 7px, 132 at 9px — light, then dark again, further
+/// out. A shadow of any hardness only ever gets lighter with distance.
+///
+/// A flat bright backdrop, because neither of the other two can show this: a
+/// checkerboard's own cell edges are an order of magnitude larger than the
+/// signal, and a dark field cannot be darkened by a dark shadow.
+#[test]
+#[ignore = "needs a GUI session + Screen Recording grant; run via --ignored"]
+fn card_casts_one_soft_shadow_and_no_hard_rim() {
+    let _backdrop = Backdrop::up("light");
+    let app = SandboxedApp::launch();
+    let (window, own) = capture_card(&app);
+
+    let own_scale = capture_scale(&own, &window);
+    let (cx0, cy0, cx1, _) = card_bbox(&own);
+    let card_top = window.rect.y + f64::from(cy0) / own_scale;
+    let card_mid_x = window.rect.x + f64::from(cx0 + cx1) / (2.0 * own_scale);
+
+    // A tall thin strip straight up from the card's top edge. Above the card
+    // is where the app's own shadow is weakest (it is offset downwards), so it
+    // is where an added rim stands out most.
+    const REACH: f64 = 40.0;
+    let strip = Rect {
+        x: card_mid_x - 8.0,
+        y: card_top - REACH,
+        w: 16.0,
+        h: REACH,
+    };
+    let shot = app.home.path().join("above.png");
+    capture_region(strip, &shot);
+    let img = image::open(&shot)
+        .expect("strip capture is not a decodable image")
+        .to_rgba8();
+    let (w, h) = img.dimensions();
+
+    // One luminance per row, averaged across the strip's width to shrug off
+    // dither and sampling noise.
+    let profile: Vec<f64> = (0..h).map(|y| mean_luma(&img, 0, y, w, y + 1)).collect();
+
+    // The instrument: the far end of the strip must still be the untouched
+    // backdrop. If the app's shadow reaches all the way there, or something
+    // else is on screen, the steepness below is measured against nothing.
+    let far = profile[0];
+    assert!(
+        far > 150.0,
+        "the top of the strip reads {far:.0}, not the flat light backdrop — either the \
+         pattern is not behind the popup or the shadow reaches further than {REACH}pt, \
+         and nothing below this measures the shadow's shape"
+    );
+
+    // Walk outward from the card and look for the backdrop getting *darker*
+    // again. `profile` runs far-to-near, so reversing it walks away from the
+    // card, and any fall along the way is a shadow that is not this card's.
+    let (mut worst, mut worst_y) = (0.0_f64, 0usize);
+    for (i, pair) in profile
+        .iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .windows(2)
+        .enumerate()
+    {
+        let fall = pair[0] - pair[1];
+        if fall > worst {
+            worst = fall;
+            worst_y = i + 1;
+        }
+    }
+    eprintln!(
+        "[shadow] far={far:.0} near={:.0} largest reversal {worst:.1} at {worst_y}px above the card",
+        profile[profile.len() - 1],
+    );
+    eprintln!(
+        "[shadow] profile (px above card -> luma): {}",
+        (0..profile.len())
+            .rev()
+            .step_by(2)
+            .map(|i| format!("{}:{:.0}", profile.len() - i, profile[i]))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+
+    assert!(
+        worst < 6.0,
+        "the backdrop gets darker again {worst_y}px away from the card, by {worst:.1} levels — \
+         a shadow only ever lightens with distance, so this is a second one, cast by a \
+         silhouette that is not the card. On macOS that means the renderer and the \
+         compositor are both drawing: `CARD_SHADOW` in src/app.rs must be NONE wherever \
+         `sync_card_backdrop` calls setHasShadow(true)."
+    );
+}
+
+/// What the judge is asked. Deliberately does not enumerate the things the
+/// assertions above already measure: repeating them buys nothing, and a
+/// checklist is exactly what stops a judge from reporting the defect nobody
+/// thought to look for. It is told what the popup is, what is normal, and to
+/// say what is wrong.
+const JUDGE_PROMPT: &str = "\
+The image is a screenshot of a small 'spotlight'-style popup card for a \
+journaling app, floating over a checkerboard test pattern. The card is a dark \
+rounded panel with three stacked rows: a text field labelled 'Что я делаю?', a \
+text field labelled 'Хуйня?', and a number field (e.g. '10'). The first row is \
+focused and so has a lighter background.\n\n\
+The checkerboard is a deliberate test pattern, not part of the app. The card \
+is a frosted-glass surface, so the checkerboard is expected to be blurred away \
+to a smooth tone behind it — that is correct, never fail for it.\n\n\
+Judge the CARD as a piece of visual craft, as a designer reviewing a build \
+would. Fail it for anything that looks unfinished or broken: misaligned or \
+doubled outlines, corners that do not match, edges that stop short or overrun, \
+uneven padding, a row that differs from its neighbours without reason, \
+clipped or overlapping text, or a boundary you cannot find. Do not invent \
+faults — a plain, clean, unremarkable card passes.\n\n\
+Respond with ONLY a JSON object, no prose: \
+{\"pass\": true|false, \"reason\": \"<one concise sentence>\"}.";
+
+/// A coarse catch-all: gross visual breakage nobody wrote an assertion for.
+///
+/// **Its sensitivity was measured, and it is low.** Against two builds
+/// differing only in the defect that started this section — a focus highlight
+/// inset inside the card, its corners diverging from the card's own — the
+/// judge returned "pass" for both, at `detail=low` and at `detail=high`, on
+/// `gpt-5.4-mini` and on `gpt-5.5` at high reasoning effort, with a prompt
+/// that names "misaligned or doubled outlines" outright. So this is not a
+/// substitute for the pixel assertions above, and adding a subtle check here
+/// instead of there will silently not run. What it does catch, verified the
+/// same way: a card with a strip of backdrop cut through it comes back
+/// "pass": false, unprompted and correctly described.
+///
+/// Kept for that band — a blank card, a missing row, text in a corner, a
+/// surface torn open — where the specific assertions have nothing to say and
+/// a human would see the problem instantly.
+///
+/// It is shown the card over the control backdrop rather than over the desktop
+/// so its verdict is about the app and not about what the developer had open.
+#[test]
+#[ignore = "needs a GUI session, Screen Recording, an OPENAI_API_KEY + network; run via --ignored"]
+fn card_passes_the_vision_judge() {
+    let _backdrop = Backdrop::up("checker");
+    let app = SandboxedApp::launch();
+    let (window, _) = capture_card(&app);
+
+    // The whole window, so the judge sees the card's edges and the pattern
+    // around them — a crop to the card would hide exactly the boundary faults
+    // it is being asked about.
+    let shot = app.home.path().join("judged.png");
+    capture_region(window.rect, &shot);
+    if let Ok(path) = std::env::var("NUDGE_DUMP_PNG") {
+        std::fs::copy(&shot, &path).expect("copy judged image");
+        eprintln!("[llm-judge] wrote judged image to {path}");
+    }
+    let png = std::fs::read(&shot).expect("read judged image");
+
+    let Some((pass, reason)) = common::vision_verdict(&png, JUDGE_PROMPT) else {
+        return;
+    };
+    assert!(pass, "LLM vision judge FAILED: {reason}");
 }
 
 // ---------------------------------------------------------------------------
