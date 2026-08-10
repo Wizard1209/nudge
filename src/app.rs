@@ -21,6 +21,70 @@ pub const CLEAR_COLOR_TRANSPARENT: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
 /// over the dark card.
 const HINT_TEXT_COLOR: egui::Color32 = egui::Color32::from_gray(170);
 
+/// Card corner radius, in points. Shared by the card frame, the contour and
+/// the focused-row background so the three curves are concentric by
+/// construction — an inset highlight with its own smaller radius reads as a
+/// second, misaligned outline where the two corners diverge.
+pub(crate) const CARD_RADIUS: u8 = 16;
+
+/// Opacity of the card's fill. Two values, because the fill has two different
+/// jobs depending on whether the platform can put a frosted backdrop behind
+/// the window (spec §2).
+///
+/// With one — `platform::sync_card_backdrop` on macOS — the desktop reaching
+/// the card is already blurred, and the fill's job is only to tint it; at the
+/// near-opaque value the frost was measurably present and visually absent —
+/// over a bright checkerboard the card read one luminance level above what a
+/// fully opaque card would. Without a backdrop the fill *is* the surface, and
+/// the low value would leave whatever is behind the window legible straight
+/// through the card.
+///
+/// This is the one place the card's appearance depends on the OS, so it is a
+/// `cfg` rather than a question routed through the platform seam: the seam
+/// dispatches behaviour, and there is no behaviour here to dispatch. The
+/// browser build takes the no-backdrop value — it is the same egui code, and
+/// nothing draws a CSS filter behind its canvas.
+#[cfg(target_os = "macos")]
+const CARD_FILL_ALPHA: u8 = 120;
+#[cfg(not(target_os = "macos"))]
+const CARD_FILL_ALPHA: u8 = 220;
+
+/// The card's shadow, and which layer draws it.
+///
+/// macOS draws its own. Once egui paints none, the only thing in the window's
+/// alpha mask is the card, so AppKit's window shadow traces the card itself —
+/// the platform's shadow, with the falloff every other floating panel has.
+/// Keeping both is what laid a hard rim just outside the contour: AppKit
+/// shadows the alpha silhouette, and with egui's soft shadow in that alpha the
+/// silhouette is larger than the card and its edge lands away from the
+/// contour. One layer or the other, never both — see
+/// `card_casts_one_soft_shadow_and_no_hard_rim`.
+///
+/// Elsewhere egui draws it, because nothing else will.
+#[cfg(target_os = "macos")]
+const CARD_SHADOW: egui::epaint::Shadow = egui::epaint::Shadow::NONE;
+#[cfg(not(target_os = "macos"))]
+const CARD_SHADOW: egui::epaint::Shadow = egui::epaint::Shadow {
+    offset: [0, 12],
+    blur: 40,
+    spread: 0,
+    // `Color32::from_black_alpha` is not const; this is its expansion.
+    color: egui::Color32::from_rgba_premultiplied(0, 0, 0, 160),
+};
+
+/// The card's contour. Separation from the desktop cannot come from the
+/// shadow alone: the shadow is black, so over a dark background behind the
+/// window it contributes nothing and the card loses its boundary entirely.
+/// A light hairline is the only cue that survives both a bright and a dark
+/// backdrop, so it is load-bearing rather than decorative — see the
+/// `card_contour_*` assertions in `tests/macos_native.rs`.
+const CARD_STROKE: egui::Stroke = egui::Stroke {
+    width: 1.0,
+    // `Color32::from_white_alpha` is not const; this is its expansion —
+    // white premultiplied by the same alpha.
+    color: egui::Color32::from_rgba_premultiplied(60, 60, 60, 60),
+};
+
 pub struct NudgeApp {
     // Form fields
     doing: String,
@@ -403,18 +467,17 @@ impl NudgeApp {
 
     fn card_frame() -> egui::Frame {
         egui::Frame::NONE
-            .fill(egui::Color32::from_rgba_unmultiplied(24, 24, 27, 220))
-            .corner_radius(egui::CornerRadius::same(16))
-            .stroke(egui::Stroke::new(
-                1.0_f32,
-                egui::Color32::from_white_alpha(16),
+            .fill(egui::Color32::from_rgba_unmultiplied(
+                24,
+                24,
+                27,
+                CARD_FILL_ALPHA,
             ))
-            .shadow(egui::epaint::Shadow {
-                offset: [0, 12],
-                blur: 40,
-                spread: 0,
-                color: egui::Color32::from_black_alpha(160),
-            })
+            .corner_radius(egui::CornerRadius::same(CARD_RADIUS))
+            // No `.stroke()` here on purpose: a Frame paints its stroke *before*
+            // its content, so a row background (spec §3) would paint over it.
+            // `draw_card` paints the contour after the Area instead.
+            .shadow(CARD_SHADOW)
             // Zero inner margin so rows + dividers span full card width;
             // row content gets its own horizontal/vertical padding via TextEdit::margin.
             .inner_margin(egui::Margin::ZERO)
@@ -443,13 +506,38 @@ impl NudgeApp {
                     .response
                     .rect
             });
+
+        // Contour last: it has to survive the full-bleed row background that
+        // `row_field` paints over the card's own edge.
+        ctx.layer_painter(inner.response.layer_id).rect_stroke(
+            inner.inner,
+            egui::CornerRadius::same(CARD_RADIUS),
+            CARD_STROKE,
+            egui::StrokeKind::Inside,
+        );
+
         self.card_rect = Some(inner.inner);
     }
 
-    fn row_field(ui: &mut egui::Ui, value: &mut String, hint: &str, key: &str) -> egui::Response {
+    /// `corners` is the rounding the focused-row background takes: the card's
+    /// radius on the corners this row shares with the card, square elsewhere.
+    fn row_field(
+        ui: &mut egui::Ui,
+        value: &mut String,
+        hint: &str,
+        key: &str,
+        corners: egui::CornerRadius,
+    ) -> egui::Response {
         const ROW_HEIGHT: f32 = 40.0;
         let field_id = egui::Id::new(key);
         let width = ui.available_width();
+
+        // Reserve the background's slot before laying the field out. It has to
+        // be painted *under* the text, but its rect is not known until after —
+        // see below for why the row is not the height it asks for.
+        let background = ui.painter().add(egui::Shape::Noop);
+        let row_top = ui.cursor().top();
+
         let (row_rect, _) =
             ui.allocate_exact_size(egui::vec2(width, ROW_HEIGHT), egui::Sense::hover());
         let is_focused = ui.ctx().memory(|m| m.has_focus(field_id));
@@ -459,21 +547,19 @@ impl NudgeApp {
             // on Cyrillic text. Must run BEFORE TextEdit drains the events.
             word_jump::intercept_ctrl_word_keys(ui.ctx(), field_id, value);
 
-            // Subtle row tint, inset from the card edge and softly rounded
-            // so it visually sits INSIDE the card instead of butting up
-            // against the stroke/rounded corners. egui 0.34 corrected its
-            // alpha compositing (0.31 over-brightened low alphas — `2` there
-            // rendered like a +20 brightness jump); on 0.34 the same value is
-            // nearly invisible, so we use alpha 20 to land a clearly-visible
-            // but still-subtle highlight. Tuned against design-focus-highlight.
-            let inset_rect = row_rect.shrink2(egui::vec2(8.0, 4.0));
-            ui.painter().rect_filled(
-                inset_rect,
-                egui::CornerRadius::same(6),
-                egui::Color32::from_white_alpha(20),
-            );
+            // Spec §3: the focused row is marked by a change of *row
+            // background* — not by a plate with edges of its own. So the tint
+            // spans the row edge to edge and takes the card's radius on the
+            // corners it touches; a shrunk rect with a smaller radius cannot
+            // stay concentric with the card and shows up as a second outline.
+            //
+            // egui 0.34 corrected its alpha compositing (0.31 over-brightened
+            // low alphas — `2` there rendered like a +20 brightness jump); on
+            // 0.34 the same value is nearly invisible, so alpha 20 is what
+            // lands a clearly-visible but still-subtle highlight.
         }
-        ui.put(
+
+        let response = ui.put(
             row_rect,
             egui::TextEdit::singleline(value)
                 .id(field_id)
@@ -491,7 +577,26 @@ impl NudgeApp {
                 .margin(egui::Margin::symmetric(20, 12))
                 .font(egui::FontId::proportional(16.0))
                 .text_color(egui::Color32::from_rgb(235, 235, 240)),
-        )
+        );
+
+        if is_focused {
+            // The row is taller than `ROW_HEIGHT`: the TextEdit's own height is
+            // its 16pt line plus 12pt of margin top and bottom, and `put`
+            // advances the cursor by what the widget actually took, not by what
+            // was allocated for it. The divider therefore sits ~3pt below
+            // `row_rect`'s bottom edge, and a tint painted on `row_rect` stops
+            // short of it, leaving a strip of untinted card between the
+            // highlight and the line — the highlight reads as misaligned with
+            // its own row. So the tint is painted on the band the row really
+            // consumed, measured from the cursor rather than declared.
+            let row = egui::Rect::from_x_y_ranges(row_rect.x_range(), row_top..=ui.cursor().top());
+            ui.painter().set(
+                background,
+                egui::epaint::RectShape::filled(row, corners, egui::Color32::from_white_alpha(20)),
+            );
+        }
+
+        response
     }
 
     fn divider(ui: &mut egui::Ui) {
@@ -508,20 +613,40 @@ impl NudgeApp {
         // Reset spacing so dividers sit flush against rows
         ui.style_mut().spacing.item_spacing = egui::vec2(0.0, 0.0);
 
-        let doing_response = Self::row_field(ui, &mut self.doing, "Что я делаю?", "row_doing");
+        let top = egui::CornerRadius {
+            nw: CARD_RADIUS,
+            ne: CARD_RADIUS,
+            sw: 0,
+            se: 0,
+        };
+        let bottom = egui::CornerRadius {
+            nw: 0,
+            ne: 0,
+            sw: CARD_RADIUS,
+            se: CARD_RADIUS,
+        };
+
+        let doing_response = Self::row_field(ui, &mut self.doing, "Что я делаю?", "row_doing", top);
         if self.focus_first {
             doing_response.request_focus();
             self.focus_first = false;
         }
 
         Self::divider(ui);
-        Self::row_field(ui, &mut self.bullshit, "Хуйня?", "row_bullshit");
+        Self::row_field(
+            ui,
+            &mut self.bullshit,
+            "Хуйня?",
+            "row_bullshit",
+            egui::CornerRadius::ZERO,
+        );
         Self::divider(ui);
         Self::row_field(
             ui,
             &mut self.next_minutes,
             "Следующий через (мин)",
             "row_minutes",
+            bottom,
         );
 
         // Show error message if journal write failed
@@ -610,7 +735,7 @@ impl eframe::App for NudgeApp {
         crate::platform::tick(ctx);
     }
 
-    fn ui(&mut self, root_ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, root_ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         // eframe 0.34 replaced `App::update(ctx)` with `App::ui(ui)`. The
         // `ui` we're handed is the central panel (transparent, no margin); we
         // drive everything off its context exactly as the old `update` did.
@@ -626,7 +751,7 @@ impl eframe::App for NudgeApp {
             #[cfg(target_os = "windows")]
             {
                 use raw_window_handle::HasWindowHandle;
-                if let Ok(wh) = _frame.window_handle()
+                if let Ok(wh) = frame.window_handle()
                     && let raw_window_handle::RawWindowHandle::Win32(h) = wh.as_raw()
                 {
                     let hwnd_val = h.hwnd.get();
@@ -745,6 +870,12 @@ impl eframe::App for NudgeApp {
         // We paint only the floating card Area on top of it.
         if self.popup_visible {
             self.draw_card(ctx);
+            // The blur behind the card is an OS-side panel, so it has to be
+            // told where the card ended up — every frame, because the card's
+            // width tracks the screen and its height tracks its content.
+            if let Some(card) = self.card_rect {
+                crate::platform::sync_card_backdrop(ctx, frame, card);
+            }
         } else {
             // WASM: show pill with countdown at bottom-right
             // Native: window is SW_HIDE'd, nothing to render

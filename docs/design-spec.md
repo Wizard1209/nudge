@@ -37,10 +37,28 @@ explicitly. Otherwise the spec applies to both.
 ## 2. Card
 
 - Surface: semi-transparent with blur (frosted glass). Whatever is behind the
-  window — desktop or other apps — shows through blurred.
+  window — desktop or other apps — shows through blurred. The blur has to come
+  from the OS compositor, since the renderer cannot sample pixels behind its
+  own window: macOS supplies it, and there the fill is correspondingly lighter
+  because its job is only to tint the frost. **Windows and the browser build
+  have no blur today** and carry a near-opaque fill instead — without one, a
+  translucent card leaves the desktop legible straight through it.
 - Width is around 480px; height grows with content.
 - Corner radius is noticeable and soft.
 - Shadow: minimal by baseline; slightly softer is acceptable for aesthetics.
+  Exactly one layer draws it. Where the compositor can — macOS, from the
+  window's alpha mask — it is the compositor's, so the card casts the same
+  shadow as any other floating panel on that system and the renderer draws
+  none; elsewhere the renderer draws it, because nothing else will. Both at
+  once is not "a stronger shadow": the compositor traces the alpha silhouette,
+  which with a renderer shadow in it is larger than the card, so its edge falls
+  in open space as a dark ring detached from the contour.
+- Contour: a light hairline runs the full perimeter. It is what separates the
+  card from the desktop when the shadow cannot — the shadow is dark, so over a
+  dark window behind the popup it contributes nothing and the card would lose
+  its boundary. Anything drawn inside the card stays clear of the hairline and
+  concentric with it: a second curve at a different radius reads as a
+  misaligned double outline at the corners.
 - Three rows of equal height, separated by thin horizontal lines. The margin
   between the outer rows and the card edges matches the margin between fields.
 

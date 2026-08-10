@@ -45,3 +45,5 @@ pub fn request_config_reload() {}
 pub fn focus_popup(_ctx: &egui::Context) {}
 
 pub fn tick(_ctx: &egui::Context) {}
+
+pub fn sync_card_backdrop(_ctx: &egui::Context, _frame: &eframe::Frame, _card: egui::Rect) {}

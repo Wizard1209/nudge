@@ -38,10 +38,13 @@ ulid = "1"
 # the item and what wakes the app.
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 tray-icon = "0.19"
+# How both backends reach their native window handle out of `eframe::Frame`:
+# the HWND the tray thread posts to on Windows, the NSView the card's
+# frosted-glass backdrop is inserted next to on macOS.
+raw-window-handle = "0.6"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_System_Registry", "Win32_Security"] }
-raw-window-handle = "0.6"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Revealing a hidden window needs an AppKit activation call: with
@@ -53,8 +56,26 @@ raw-window-handle = "0.6"
 # accesskit_macos already link, so this adds no crate to the build. Bump both
 # together when winit moves to objc2 0.6, not before — two objc2 trees in one
 # binary is a cost with no benefit.
-objc2-app-kit = "0.2"
+#
+# Features are declared rather than inherited. winit already turns on all of
+# these except `NSVisualEffectView` and `objc2-quartz-core`, but cargo's
+# feature unification is a build-graph accident, not a contract — a future
+# winit that stops needing `NSGraphics` would break this crate's build with an
+# error pointing at code that never changed.
+objc2-app-kit = { version = "0.2", features = [
+    "NSVisualEffectView", # the frosted-glass panel behind the card, and its enums
+    "NSView",             # the class's superclass chain, plus window()/frame()
+    "NSResponder",
+    "NSGraphics",         # NSWindowOrderingMode, for inserting below the GL view
+    "NSWindow",
+    "NSAppearance",       # pin the material dark — the card is dark in every theme
+    "objc2-quartz-core",  # NSView::layer(), to clip the blur to the card's radius
+] }
 objc2-foundation = "0.2"
+# `Retained`, the smart pointer every AppKit object above comes back in.
+# Pinned to the 0.5 line for the same reason as objc2-app-kit 0.2: that is the
+# tree winit 0.30 already links.
+objc2 = "0.5"
 # Global hotkey. On macOS this crate registers through Carbon's
 # `RegisterEventHotKey`, which needs no TCC grant and fires while the app is
 # unfocused — measured, including from a launchd-parented unsigned bundle, with
