@@ -62,10 +62,19 @@ Full contract: [docs/journal-spec.md](docs/journal-spec.md)
   `config.json`, any positive number (integer or decimal).
 - Journal: `<Documents>/Nudge/journal-rust.ndjson` — `%USERPROFILE%\Documents`
   on Windows, `~/Documents` on macOS.
-- Hotkey: **Ctrl+Shift+Space** — opens the popup manually from any focused
-  window. Field `hotkey` in `<Documents>/Nudge/config.json`. Format:
-  modifiers (`Ctrl`, `Alt`, `Shift`, `Win`) + one key joined by `+`, e.g.
-  `Alt+J` or `Ctrl+F12`. `Win` means Command on macOS.
+- Config: `%USERPROFILE%\Documents\Nudge\config.json` on Windows,
+  `~/Library/Application Support/Nudge/config.json` on macOS. Not next to
+  the journal there: Documents is TCC-gated and iCloud-synced, and a
+  menu-bar agent should not have to ask for consent to read its own
+  settings. A file left in `~/Documents/Nudge/` by an earlier version is
+  moved on first launch.
+- Hotkey: **Ctrl+Shift+Space** (`⌃⇧Space`) — opens the popup manually from
+  any focused window. Field `hotkey` in `config.json`: any modifiers plus
+  one key. `Ctrl`/`⌃`, `Alt`/`Option`/`⌥`, `Shift`/`⇧`,
+  `Cmd`/`Win`/`⌘`, plus a letter, digit, `F1`–`F24`, `Space`, `Enter`,
+  `Tab`, `Esc` or `Backspace` — e.g. `⌥⌘J`, `Alt+J`, `Ctrl+F12`. Case,
+  spacing and the choice of spelling do not matter. `fn` cannot be part of
+  a hotkey on macOS; see `docs/design-spec.md` §5 for why.
 - Launch at login: field `autostart` (bool) — kept in sync with
   `HKCU\…\Run\Nudge` on Windows and with a LaunchAgent plist at
   `~/Library/LaunchAgents/com.wizard1209.nudge.plist` on macOS; see
@@ -92,8 +101,11 @@ in the menu bar is where Settings and Quit live.
 
 The settings window opens from the tray menu (`Settings`) and edits the same
 `config.json` (hotkey, interval, autostart). Edits are picked up by the
-running app immediately via a file watcher. Full contract:
-`docs/design-spec.md` §9.
+running app immediately via a file watcher.
+
+The hotkey field is editable — type any of the spellings above — and
+`Record` captures a combination instead: hold it until the bar fills, or
+press Esc to back out. Full contract: `docs/design-spec.md` §9.
 
 ## Development: the Electron prototype
 

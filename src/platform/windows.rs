@@ -60,3 +60,7 @@ pub fn tick(_ctx: &egui::Context) {}
 /// it is not implemented — the card there is a plain translucent fill, as it
 /// has always been.
 pub fn sync_card_backdrop(_ctx: &egui::Context, _frame: &eframe::Frame, _card: egui::Rect) {}
+
+/// No-op on Windows: the shortcut vocabulary here is words (`Ctrl+Shift+A`),
+/// and every glyph in that is in egui's default fonts.
+pub fn install_native_fonts(_ctx: &egui::Context) {}

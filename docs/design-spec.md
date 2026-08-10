@@ -190,15 +190,43 @@ app is running and "ripens" instead of a numeric countdown.
 - A system-wide hotkey opens the popup from any focused window. The effect
   is identical to a left click on the tray icon: the popup opens with
   `trigger_source = manual`, and opening does not affect the timer.
-- The combination is configured in `<Documents>/Nudge/config.json`, field
-  `hotkey`. Default: `Ctrl+Shift+Space`. Format: modifiers (`Ctrl` /
-  `Alt` / `Shift` / `Win`) and one key (letter, digit, `F1`..`F24`,
-  `Space`, `Enter`, `Tab`, `Escape`, `Backspace`) joined by `+`. Case and
-  whitespace around `+` are ignored.
-- If the config file is absent — a default is written on first launch. An
-  invalid string or a combo already taken by another app is not fatal: the
-  app starts without a hotkey and the error goes to stderr. The popup is
-  still reachable via the tray icon.
+- The combination is configured in `config.json` (§9), field `hotkey`.
+  Default: `Ctrl+Shift+Space`. A hotkey is **any number of modifiers plus
+  exactly one key**; a chord of modifiers alone is not one, and neither is
+  two keys.
+
+| | Accepted spellings | Registers as |
+|---|---|---|
+| Control | `Ctrl`, `Control`, `⌃` | Control |
+| Option / Alt | `Alt`, `Option`, `Opt`, `⌥` | Option on macOS, Alt on Windows |
+| Shift | `Shift`, `⇧` | Shift |
+| Command / Win | `Cmd`, `Command`, `Win`, `Super`, `Meta`, `⌘` | Command on macOS, the Windows key on Windows |
+| Key | `A`–`Z`, `0`–`9`, `F1`–`F24`, `Space` `␣`, `Enter` `Return` `↩`, `Tab` `⇥`, `Esc` `Escape` `⎋`, `Backspace` `⌫` | as named |
+
+- Case, whitespace and the choice of spelling are all ignored: `⌥⌘J`,
+  `Alt+Cmd+J` and `alt + cmd + j` are one hotkey. `+` between modifier
+  **symbols** is optional, because `⌥⌘J` is how macOS writes a shortcut and
+  that is the string the settings window puts in the field.
+- Written out, a hotkey takes the form the platform reading it uses:
+  `⌃⇧Space` on macOS, `Ctrl+Shift+Space` on Windows. This is a rendering,
+  not a second format — every spelling above parses on both platforms, so a
+  config file carried between machines keeps its meaning.
+- **`fn` cannot be part of a hotkey.** Not a gap to close later: neither
+  backend can express it. Carbon's `RegisterEventHotKey` takes four modifier
+  bits (Shift, Command, Option, Control) and macOS sets the `fn` flag by
+  itself for arrows and the F-row, so it is not a modifier a user can choose
+  in the first place. It never reaches the recorder either — the window
+  toolkit's modifier set is the same four.
+- Two keys that carry a macOS caveat: **`F1`–`F12`** need `fn` held on a Mac
+  unless *Use F1, F2, etc. as standard function keys* is on, and
+  **`F21`–`F24`** parse but fail to register there.
+- If the config file is absent — a default is written on first launch. A
+  combination that cannot be registered — unreadable, or already taken by
+  another app — is not fatal, and it does not fall back to the default
+  either: the app starts **without a hotkey**, says so on stderr, and stays
+  reachable through the tray icon. Silently binding a different combination
+  would take over a shortcut the user never asked for while hiding which one
+  failed. Live reload (§9) follows the same rule.
 
 ## 6. Pill (browser build only — tray emulation)
 
@@ -233,8 +261,29 @@ Not visual decisions, but they follow from the spec:
 
 The settings window is a separate surface from the popup, with its own chrome
 (title bar, frame, close button). It is an alternative way to edit the same
-file that lives at `<Documents>/Nudge/config.json` (§5) — no new entity, just
-a GUI on top of the existing config.
+`config.json` — no new entity, just a GUI on top of the existing config.
+
+### Where the file is
+
+| | Path |
+|---|---|
+| macOS | `~/Library/Application Support/Nudge/config.json` |
+| Windows | `%USERPROFILE%\Documents\Nudge\config.json` |
+
+Neither depends on where the binary was launched from, so a build tree, a
+copy in `/Applications` and a mounted DMG all read and write the same file.
+
+macOS does not put it next to the journal, and both reasons are about
+Documents rather than about Application Support: that folder is TCC-gated, so
+the first read prompts for consent from a menu-bar agent with no window on
+screen, and it is iCloud-synced on most machines, which would have two Macs
+fighting over one hotkey and the file watcher (below) seeing edits nobody
+made. The journal stays there on purpose — it is the user's own data, meant
+to be found and read, and syncing it is a feature.
+
+A config left in `~/Documents/Nudge/` by an earlier version is **moved**, once,
+before it is read. Copying instead would leave the settings window writing one
+file while a hand-editing user reads the other.
 
 ### Opening
 
@@ -251,15 +300,51 @@ a GUI on top of the existing config.
 
 | Field | Type | What it does |
 |---|---|---|
-| Global hotkey | text + recorder | A string in the §5 format (e.g. `Ctrl+Shift+Space`). Next to it is a `Record` button: clicking it puts the field into capture mode. The first supported combo (letters A-Z, digits 0-9, F1-F24, Space/Enter/Tab/Escape/Backspace + modifiers) is canonicalized via the §5 parser and dropped into the field. Bare Escape cancels recording and restores the previous value; an unsupported key keeps the field in recording mode with a hint. Recording only edits the staged value — `Save` is still required to write to `config.json`. |
+| Global hotkey | editable text + recorder | See below. |
 | Default interval (min) | text | A number, must be finite and positive; same rules as the minutes field of the popup in §3. |
-| Launch with Windows | checkbox | Controls registering the app to launch at session start (§5 — Windows only). |
+| Open at login / Launch with Windows | checkbox | Registers the app to launch at session start. The label names the platform's own mechanism, because that is what tells the user whether the setting applies to them. |
+
+#### The hotkey row
+
+The field always holds a **string in the §5 format**, shown in this
+platform's spelling, and it is always editable. Typing one is a first-class
+way to set a hotkey, not a fallback: every accepted spelling parses, so
+`⌥⌘J`, `Alt+Cmd+J` and `alt+cmd+j` all work. A stored value that parses is
+re-spelled for this platform on load; one that does not is shown exactly as
+stored, since it is the only copy of what the user typed.
+
+Next to it, `Record` captures a combination from the keyboard instead:
+
+- The row turns into a live read-out of what is held — the modifiers alone
+  while the chord is still being assembled (`⌥⌘…`), the full combination once
+  a key joins them — and a progress bar, under the line *"Hold the
+  combination until the bar fills. Esc cancels."*
+- A combination is taken when it has been held **unchanged for 0.8 s**. The
+  clock restarts on every change, so adding a modifier mid-hold does not
+  record the partial chord — this is what makes assembling a four-key
+  combination possible at all.
+- Releasing early records nothing, and a second press starts from zero
+  rather than resuming.
+- **Bare Escape cancels immediately** and restores the previous value; with
+  any modifier held, Escape is an ordinary key, so `⌃⎋` records.
+- Two keys at once are refused rather than arbitrated — nothing about the
+  input says which the user meant. A key outside the §5 set is refused with
+  a hint and recording continues.
+- Recording only edits the staged value; `Save` is still what writes to
+  `config.json`.
 
 ### Saving
 
 - **Hotkey and interval** are written to `config.json` by the `Save` button.
-  If the interval does not parse — a banner shows the error and the file is
-  not touched.
+  Both are validated first, and if either fails the file is not touched at
+  all — a banner shows the error, and for the hotkey it also states the
+  accepted vocabulary, since the banner is the only place that list appears.
+  A hotkey the app cannot register must not reach the file: the settings
+  window is the one surface that can put one there, and a save that reported
+  success would leave the next launch silently unbound.
+- What is written is the **canonical spelling**, not the typed text, and the
+  field is rehydrated with it — so what the user reads back is what is
+  stored, and a just-saved form does not read as edited.
 - **Autostart** is applied **immediately** on a checkbox click — under the
   transactional rule: first change OS state (registry), then confirm the
   system reports the new state, and only then write `autostart: true/false`

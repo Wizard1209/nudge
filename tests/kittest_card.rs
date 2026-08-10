@@ -243,6 +243,12 @@ fn settings_form_populates_from_a_config() {
     // separate ui.label()s, not wired via .labelled_by()).
     let inputs: Vec<_> = harness.get_all_by_role(Role::TextInput).collect();
     assert_eq!(inputs.len(), 2, "hotkey field + interval field");
+    // The stored spelling is the cross-platform one; the field shows this
+    // platform's — `⌥J` on macOS. Deriving the expectation the same way the
+    // window does would assert nothing, so this states both forms.
+    #[cfg(target_os = "macos")]
+    assert_eq!(inputs[0].value().as_deref(), Some("⌥J"));
+    #[cfg(not(target_os = "macos"))]
     assert_eq!(inputs[0].value().as_deref(), Some("Alt+J"));
     assert_eq!(inputs[1].value().as_deref(), Some("7"));
 

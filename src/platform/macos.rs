@@ -1002,6 +1002,53 @@ fn hide_card_backdrop() {
     });
 }
 
+// ---------- fonts ----------------------------------------------------------
+
+/// Where the modifier symbols come from. Apple Symbols is on the sealed
+/// system volume of every macOS, and it is the only stock face checked here
+/// that carries all eight of `⌃ ⌥ ⇧ ⌘ ⎋ ⇥ ⌫ ↩` (SF Pro and SF Mono are each
+/// missing `⇥` and `↩`; Menlo and Lucida Grande also have the full set, but
+/// they are text faces and this is only ever a fallback).
+const SYMBOL_FONT_PATH: &str = "/System/Library/Fonts/Apple Symbols.ttf";
+const SYMBOL_FONT_NAME: &str = "apple-symbols";
+
+/// Append Apple Symbols behind egui's default families, so a shortcut written
+/// the Mac way renders as symbols instead of tofu boxes.
+///
+/// It has to be a *fallback* rather than a replacement: the face is symbols
+/// only, so promoting it would strip the Latin and Cyrillic egui's bundled
+/// faces provide. egui resolves a glyph by walking the family's list in
+/// order, which makes "append" exactly the right operation.
+///
+/// A missing or unreadable file is logged and otherwise ignored. The failure
+/// mode is a hotkey label rendered as boxes — bad, but not worth refusing to
+/// open the window over, and the label is still readable as words in
+/// `config.json`.
+pub fn install_native_fonts(ctx: &egui::Context) {
+    let bytes = match std::fs::read(SYMBOL_FONT_PATH) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!(
+                "[nudge] no symbol font at {SYMBOL_FONT_PATH} ({e}); shortcut symbols will not render"
+            );
+            return;
+        }
+    };
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        SYMBOL_FONT_NAME.to_owned(),
+        std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+    );
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .push(SYMBOL_FONT_NAME.to_owned());
+    }
+    ctx.set_fonts(fonts);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

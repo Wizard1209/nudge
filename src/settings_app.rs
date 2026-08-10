@@ -60,7 +60,20 @@ pub struct SettingsForm {
 
 impl SettingsForm {
     /// Construct from a loaded config — every field starts in sync with disk.
+    ///
+    /// A hotkey that parses is *shown* in this platform's spelling whatever
+    /// the file says, so a config written by the Windows build, seeded by
+    /// first-run, or edited by hand reads as `⌃⇧Space` on a Mac rather than
+    /// `Ctrl+Shift+Space`. The baseline is normalised with it, so re-spelling
+    /// alone does not make the form look edited.
+    ///
+    /// One that does *not* parse is shown verbatim: it is the only copy of
+    /// what the user typed, and they need to see it to fix it.
     pub fn from_config(cfg: Config) -> Self {
+        let mut cfg = cfg;
+        if let Ok(hk) = hotkey::parse(&cfg.hotkey) {
+            cfg.hotkey = hotkey::format_native(&hk);
+        }
         Self {
             hotkey: cfg.hotkey.clone(),
             interval_text: format_interval(cfg.default_interval_minutes),
@@ -86,17 +99,32 @@ impl SettingsForm {
             || self.autostart != self.original.autostart
     }
 
-    /// Build a `Config` from the current form, validating the interval. The
-    /// `autostart` field is taken from the form's bool (which the caller
-    /// keeps in sync with the OS via `apply_autostart`). On a successful
-    /// save, the caller should call `mark_clean` so subsequent dirty checks
-    /// don't keep tripping.
+    /// The typed hotkey, parsed. The field accepts every spelling
+    /// [`hotkey::parse`] does — `⌥⌘J`, `Alt+Cmd+J`, `alt+cmd+j` — so typing
+    /// one is a first-class alternative to the recorder, not a fallback.
+    pub fn parsed_hotkey(&self) -> Result<Hotkey, hotkey::ParseError> {
+        hotkey::parse(&self.hotkey)
+    }
+
+    /// Build a `Config` from the current form, validating both editable
+    /// fields. The `autostart` field is taken from the form's bool (which the
+    /// caller keeps in sync with the OS via `apply_autostart`). On a
+    /// successful save, the caller should call `mark_clean` so subsequent
+    /// dirty checks don't keep tripping.
     pub fn to_config(&self) -> Result<Config, SettingsValidationError> {
+        // Both fields are validated before either is written, so a bad
+        // hotkey cannot leave a saved interval next to an unsaved combo.
         let interval = self
             .parsed_interval()
             .map_err(SettingsValidationError::Interval)?;
+        let hotkey = self
+            .parsed_hotkey()
+            .map_err(SettingsValidationError::Hotkey)?;
         Ok(Config {
-            hotkey: self.hotkey.trim().to_string(),
+            // Canonical, not as-typed: the file gets one spelling per
+            // combination, and the field is rehydrated with it on save so the
+            // user sees what was actually stored.
+            hotkey: hotkey::format_native(&hotkey),
             default_interval_minutes: interval,
             autostart: self.autostart,
         })
@@ -104,17 +132,15 @@ impl SettingsForm {
 
     /// Mark the form's current state as the new baseline — called after a
     /// successful Save so `is_dirty` reflects "diff against last save".
-    pub fn mark_clean(&mut self) {
-        self.original = Config {
-            hotkey: self.hotkey.trim().to_string(),
-            default_interval_minutes: self
-                .parsed_interval()
-                .unwrap_or(self.original.default_interval_minutes),
-            autostart: self.autostart,
-        };
-        // Rehydrate text so trimming-on-save sticks visibly.
-        self.hotkey = self.original.hotkey.clone();
-        self.interval_text = format_interval(self.original.default_interval_minutes);
+    /// `saved` is the `Config` that actually reached the disk, not a
+    /// re-derivation of it: the fields are rehydrated from it so what the
+    /// user reads back is the stored text — the canonical hotkey spelling
+    /// rather than however they typed it.
+    pub fn mark_clean(&mut self, saved: Config) {
+        self.hotkey = saved.hotkey.clone();
+        self.interval_text = format_interval(saved.default_interval_minutes);
+        self.autostart = saved.autostart;
+        self.original = saved;
     }
 
     /// Drive the autostart checkbox through the transactional rule. On
@@ -149,18 +175,23 @@ impl SettingsForm {
     }
 }
 
-/// Validation failure modes for [`SettingsForm::to_config`]. Today only the
-/// interval can fail; the variant carries the underlying parse error so the
-/// banner can show the offending input verbatim.
+/// Validation failure modes for [`SettingsForm::to_config`]. Each variant
+/// carries the underlying parse error so the banner can show the offending
+/// input verbatim.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SettingsValidationError {
     Interval(IntervalParseError),
+    Hotkey(hotkey::ParseError),
 }
 
 impl std::fmt::Display for SettingsValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SettingsValidationError::Interval(e) => write!(f, "{e}"),
+            // The parse error says what is wrong with the string; this adds
+            // what a correct one looks like, because the banner is the only
+            // place the accepted vocabulary is stated.
+            SettingsValidationError::Hotkey(e) => write!(f, "{e}. {}", hotkey::VOCABULARY),
         }
     }
 }
@@ -218,62 +249,131 @@ fn format_interval(n: f64) -> String {
 // Recorder decision logic — pure, no egui frame, fully unit-testable.
 // =============================================================================
 
-/// What the per-frame recorder loop wants the shell to do, given the current
-/// egui input snapshot. Split out from the eframe shell so the policy
-/// (cancel-on-bare-Esc, capture-first-supported-key, hint-on-unsupported)
-/// can be tested without spinning a real `Context`.
+/// How long one combination must be held **unchanged** before the recorder
+/// takes it.
+///
+/// The clock restarts on every change, so this is not a budget for assembling
+/// the chord — it is how long you keep still once you have. Fast enough that
+/// a deliberate press does not feel stuck, slow enough that passing through
+/// `⌘` on the way to `⌥⌘J` does not record `⌘J`.
+pub const HOLD_TO_COMMIT_SECS: f64 = 0.8;
+
+/// What the shell should do with the recorder row this frame.
 #[derive(Debug, Clone, PartialEq)]
-pub enum CaptureOutcome {
-    /// A supported combo was pressed — write `format(hk)` into the form and
-    /// leave recording mode.
-    Captured(Hotkey),
-    /// A non-modifier key was pressed, but our supported set rejects it —
-    /// stay in recording mode and show a hint.
-    Unsupported,
-    /// User pressed Escape with no modifiers — cancel recording (restore
-    /// the prior hotkey, leave recording mode). With modifiers held, Esc
-    /// is treated as a real combo (Ctrl+Shift+Esc et al. are legal).
-    CancelRequested,
-    /// No actionable input this frame; keep waiting.
-    KeepWaiting,
+pub enum RecorderStep {
+    /// Nothing bindable is down. `modifiers` is what is held so far, so the
+    /// row can show `⌥⌘…` while the user is still assembling.
+    Waiting { modifiers: u8 },
+    /// A registrable combination is held but not yet long enough. `progress`
+    /// runs 0.0 → 1.0 and drives the bar the user is waiting on.
+    Holding { hotkey: Hotkey, progress: f32 },
+    /// Held for [`HOLD_TO_COMMIT_SECS`] — write it into the field and leave
+    /// recording mode.
+    Commit(Hotkey),
+    /// Bare Escape — restore the previous label and leave recording mode.
+    /// With any modifier held Escape is an ordinary key, so `⌃⎋` records.
+    Cancel,
+    /// Something is down that cannot become a hotkey. The string is shown to
+    /// the user as-is and recording continues.
+    Rejected(&'static str),
 }
 
-/// Per-frame recorder decision. `keys` is the snapshot of non-modifier keys
-/// reported by egui as currently down (we ignore modifier-only keys because
-/// egui doesn't surface raw Ctrl/Alt/Shift as `Key` variants in the first
-/// place — see `hotkey_from_egui` notes).
-///
-/// Policy:
-/// 1. Bare Escape (no modifiers held) → `CancelRequested`. With modifiers,
-///    Escape passes through to the normal capture path (so Ctrl+Esc records).
-/// 2. First non-modifier key in `keys` that maps via `hotkey_from_egui` →
-///    `Captured`.
-/// 3. First non-modifier key in `keys` that DOESN'T map → `Unsupported`.
-/// 4. No keys → `KeepWaiting`.
-pub fn decide_capture(
-    modifiers: eframe::egui::Modifiers,
-    keys: &[eframe::egui::Key],
-) -> CaptureOutcome {
-    use eframe::egui::Key;
+/// Tracks how long the current combination has been held. One lives in the
+/// shell across frames; [`Self::step`] is the whole policy and takes the
+/// clock as an argument so it can be tested without a `Context` — and so it
+/// works on wasm, where `std::time::Instant` is not available.
+#[derive(Debug, Clone, Default)]
+pub struct HoldTracker {
+    /// The combination being held and the timestamp it was first seen at.
+    /// Cleared whenever the held combination changes or is released.
+    held: Option<(Hotkey, f64)>,
+}
 
-    let Some(first_key) = keys.first().copied() else {
-        return CaptureOutcome::KeepWaiting;
-    };
+impl HoldTracker {
+    /// Advance one frame. `keys` is egui's set of non-modifier keys currently
+    /// down; `now` is any monotonic clock in seconds (the shell passes
+    /// `ctx.input(|i| i.time)`).
+    ///
+    /// Two keys at once is refused rather than resolved. egui reports
+    /// `keys_down` as a `HashSet`, so "the first one" is whichever the hash
+    /// order happened to put first — picking one would make the recorder
+    /// non-deterministic for exactly the input where the user cannot tell
+    /// which they got.
+    pub fn step(
+        &mut self,
+        modifiers: eframe::egui::Modifiers,
+        keys: &[eframe::egui::Key],
+        now: f64,
+    ) -> RecorderStep {
+        use eframe::egui::Key;
 
-    // Bare Escape cancels. With any modifier held, Esc is just another key.
-    let no_modifiers = !(modifiers.ctrl
-        || modifiers.alt
-        || modifiers.shift
-        || modifiers.mac_cmd
-        || modifiers.command);
-    if first_key == Key::Escape && no_modifiers {
-        return CaptureOutcome::CancelRequested;
+        let held_modifiers = modifier_bits(modifiers);
+
+        if keys.len() > 1 {
+            self.held = None;
+            return RecorderStep::Rejected("One key at a time, plus modifiers");
+        }
+
+        let Some(key) = keys.first().copied() else {
+            self.held = None;
+            return RecorderStep::Waiting {
+                modifiers: held_modifiers,
+            };
+        };
+
+        if key == Key::Escape && held_modifiers == 0 {
+            self.held = None;
+            return RecorderStep::Cancel;
+        }
+
+        let Some(hotkey) = hotkey::hotkey_from_egui(modifiers, key) else {
+            self.held = None;
+            return RecorderStep::Rejected("That key cannot be bound — try another");
+        };
+
+        // Any change to the combination restarts the clock, which is what
+        // lets the user add a modifier mid-hold without recording the
+        // partial chord.
+        let since = match &self.held {
+            Some((held, since)) if *held == hotkey => *since,
+            _ => {
+                self.held = Some((hotkey.clone(), now));
+                now
+            }
+        };
+
+        let elapsed = now - since;
+        if elapsed >= HOLD_TO_COMMIT_SECS {
+            self.held = None;
+            RecorderStep::Commit(hotkey)
+        } else {
+            RecorderStep::Holding {
+                hotkey,
+                progress: (elapsed / HOLD_TO_COMMIT_SECS).clamp(0.0, 1.0) as f32,
+            }
+        }
     }
+}
 
-    match hotkey::hotkey_from_egui(modifiers, first_key) {
-        Some(hk) => CaptureOutcome::Captured(hk),
-        None => CaptureOutcome::Unsupported,
+/// egui's modifier flags as our bit mask. Mirrors the modifier half of
+/// [`hotkey::hotkey_from_egui`], which cannot be reused here because that one
+/// needs a key to return anything at all — and the whole point of
+/// [`RecorderStep::Waiting`] is showing the modifiers *before* there is one.
+fn modifier_bits(m: eframe::egui::Modifiers) -> u8 {
+    let mut bits = 0;
+    if m.ctrl {
+        bits |= hotkey::MOD_CTRL;
     }
+    if m.alt {
+        bits |= hotkey::MOD_ALT;
+    }
+    if m.shift {
+        bits |= hotkey::MOD_SHIFT;
+    }
+    if m.mac_cmd {
+        bits |= hotkey::MOD_WIN;
+    }
+    bits
 }
 
 // =============================================================================
@@ -300,16 +400,19 @@ pub struct SettingsApp {
     /// the dedicated settings process; on WASM it's a no-op (no process).
     quit_requested: bool,
     /// True while the hotkey row is in capture mode. The TextEdit is hidden,
-    /// the row shows a "Press a combo…" prompt, and per-frame input polling
-    /// drives `decide_capture` to fill in the field.
+    /// the row shows what is currently held plus a hold-progress bar, and
+    /// per-frame input polling drives [`HoldTracker::step`].
     recording_hotkey: bool,
     /// Snapshot of the hotkey label taken when recording started — used by
     /// the cancel branch to restore the pre-recording value. `None` when
     /// we aren't recording.
     hotkey_pre_record: Option<String>,
-    /// Hint shown below the row when the last captured key was unsupported.
+    /// Hint shown below the row when the last thing held was not bindable.
     /// Cleared on entering / leaving recording mode.
     recording_hint: Option<&'static str>,
+    /// How long the current combination has been held. Only meaningful while
+    /// `recording_hotkey`; reset on entering and leaving capture mode.
+    hold: HoldTracker,
 }
 
 impl SettingsApp {
@@ -328,6 +431,11 @@ impl SettingsApp {
         // same pin in NudgeApp::new).
         cc.egui_ctx.set_theme(eframe::egui::ThemePreference::Dark);
         cc.egui_ctx.set_visuals(eframe::egui::Visuals::dark());
+        // The hotkey row is the only place in the app that renders symbols
+        // outside egui's bundled faces, and on macOS every one of them
+        // (`⌃⌥⇧⌘⎋⇥⌫↩`) is missing from them.
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::platform::install_native_fonts(&cc.egui_ctx);
         Self {
             form: SettingsForm::from_config(config),
             provider,
@@ -337,6 +445,7 @@ impl SettingsApp {
             recording_hotkey: false,
             hotkey_pre_record: None,
             recording_hint: None,
+            hold: HoldTracker::default(),
         }
     }
 
@@ -346,6 +455,7 @@ impl SettingsApp {
         self.hotkey_pre_record = Some(self.form.hotkey.clone());
         self.recording_hotkey = true;
         self.recording_hint = None;
+        self.hold = HoldTracker::default();
     }
 
     /// Leave capture mode and restore the pre-recording label. Used for both
@@ -354,8 +464,17 @@ impl SettingsApp {
         if let Some(prev) = self.hotkey_pre_record.take() {
             self.form.hotkey = prev;
         }
+        self.stop_recording();
+    }
+
+    /// Leave capture mode keeping whatever is in the field. The pre-record
+    /// snapshot is dropped, so a later Cancel on the *window* cannot resurrect
+    /// it.
+    fn stop_recording(&mut self) {
         self.recording_hotkey = false;
+        self.hotkey_pre_record = None;
         self.recording_hint = None;
+        self.hold = HoldTracker::default();
     }
 
     /// Save path: validate, persist, update baseline. On error → banner.
@@ -363,7 +482,7 @@ impl SettingsApp {
         match self.form.to_config() {
             Ok(cfg) => match (self.persist)(&cfg) {
                 Ok(()) => {
-                    self.form.mark_clean();
+                    self.form.mark_clean(cfg);
                     self.banner = Some("Saved".to_string());
                 }
                 Err(e) => self.banner = Some(format!("Save failed: {e}")),
@@ -417,61 +536,98 @@ impl eframe::App for SettingsApp {
         ui.heading("Settings");
         ui.add_space(8.0);
 
-        // Row 1: hotkey. Two modes — the plain TextEdit + "Record" button when
-        // idle, and a "Press a combo…" prompt + Cancel button while
-        // recording. Recording captures the first supported combo through
-        // `decide_capture` and stuffs `format(hk)` back into the form's
-        // hotkey string; Save still does the persistence.
-        ui.horizontal(|ui| {
-            ui.label("Global hotkey:");
-            if self.recording_hotkey {
-                ui.label(egui::RichText::new("Press a combo…").italics());
-                if ui.button("Cancel").clicked() {
-                    self.cancel_recording();
-                }
-            } else {
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.form.hotkey)
-                        .id(egui::Id::new("settings_hotkey"))
-                        .desired_width(220.0)
-                        .hint_text("Ctrl+Shift+Space"),
-                );
-                if ui.button("Record").clicked() {
-                    self.start_recording();
-                }
-            }
-        });
-        if self.recording_hotkey
-            && let Some(hint) = self.recording_hint
-        {
-            ui.colored_label(egui::Color32::LIGHT_RED, hint);
-        }
-        ui.add_space(6.0);
-
-        // Per-frame recorder polling: while in recording mode, snapshot the
-        // egui input and ask `decide_capture` what to do.
-        if self.recording_hotkey {
-            let (mods, keys) = ctx.input(|i| {
+        // Row 1: hotkey. Two modes — the editable TextEdit + "Record" button
+        // when idle, and a live read-out of what is held + a hold-progress
+        // bar while recording. Either way the row's product is the *text* in
+        // `form.hotkey`; Save is what writes it to disk.
+        //
+        // The recorder polls before it draws, so the bar the user sees is
+        // this frame's state rather than the previous one's — at 60 Hz over a
+        // 0.8 s hold a frame of lag is visible as the bar arriving late and
+        // finishing early.
+        let step = if self.recording_hotkey {
+            let (mods, keys, now) = ctx.input(|i| {
                 let keys: Vec<egui::Key> = i.keys_down.iter().copied().collect();
-                (i.modifiers, keys)
+                (i.modifiers, keys, i.time)
             });
-            match decide_capture(mods, &keys) {
-                CaptureOutcome::KeepWaiting => {}
-                CaptureOutcome::CancelRequested => self.cancel_recording(),
-                CaptureOutcome::Captured(hk) => {
-                    self.form.hotkey = hotkey::format(&hk);
-                    self.recording_hotkey = false;
-                    self.hotkey_pre_record = None;
-                    self.recording_hint = None;
+            let step = self.hold.step(mods, &keys, now);
+            match &step {
+                RecorderStep::Cancel => self.cancel_recording(),
+                RecorderStep::Commit(hk) => {
+                    self.form.hotkey = hotkey::format_native(hk);
+                    self.stop_recording();
                 }
-                CaptureOutcome::Unsupported => {
-                    self.recording_hint = Some("Unsupported key, try another");
+                RecorderStep::Rejected(hint) => self.recording_hint = Some(hint),
+                RecorderStep::Waiting { .. } | RecorderStep::Holding { .. } => {
+                    self.recording_hint = None
                 }
             }
             // Keep repainting while recording so the next input frame arrives
-            // promptly (eframe is otherwise lazy when no widget asks for it).
+            // promptly (eframe is otherwise lazy when no widget asks for it),
+            // and so the progress bar animates rather than jumping on the
+            // next unrelated event.
             ctx.request_repaint();
+            Some(step)
+        } else {
+            None
+        };
+
+        ui.horizontal(|ui| {
+            ui.label("Global hotkey:");
+            match &step {
+                // `step` is None exactly when we are not recording; the
+                // matched arms below cover the recording row.
+                None => {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.form.hotkey)
+                            .id(egui::Id::new("settings_hotkey"))
+                            .desired_width(220.0)
+                            .hint_text(hotkey::format_native(&hotkey::default_hotkey())),
+                    );
+                    if ui.button("Record").clicked() {
+                        self.start_recording();
+                    }
+                }
+                Some(step) => {
+                    let (label, progress) = match step {
+                        RecorderStep::Holding { hotkey, progress } => {
+                            (hotkey::format_native(hotkey), *progress)
+                        }
+                        RecorderStep::Waiting { modifiers } if *modifiers != 0 => (
+                            format!("{}…", hotkey::format_modifiers_native(*modifiers)),
+                            0.0,
+                        ),
+                        _ => ("…".to_string(), 0.0),
+                    };
+                    // `desired_width`, not `add_sized`: a ProgressBar sizes
+                    // itself to its text and ignores the outer allocation,
+                    // which collapses it to a blob around the label. The
+                    // width matches the TextEdit it replaces so the Record /
+                    // Cancel button does not move when recording starts.
+                    ui.add(
+                        egui::ProgressBar::new(progress)
+                            .desired_width(220.0)
+                            .text(egui::RichText::new(label).strong()),
+                    );
+                    if ui.button("Cancel").clicked() {
+                        self.cancel_recording();
+                    }
+                }
+            }
+        });
+        // The instruction only exists while recording: outside it there is
+        // nothing to hold and nothing Esc would cancel.
+        if self.recording_hotkey {
+            ui.label(
+                egui::RichText::new("Hold the combination until the bar fills. Esc cancels.")
+                    .small()
+                    .weak(),
+            );
         }
+        if let Some(hint) = self.recording_hint {
+            ui.colored_label(egui::Color32::LIGHT_RED, hint);
+        }
+        ui.add_space(6.0);
 
         // Row 2: default interval
         ui.horizontal(|ui| {
@@ -488,7 +644,15 @@ impl eframe::App for SettingsApp {
         // Row 3: autostart — immediate-on-toggle through the transactional rule.
         ui.horizontal(|ui| {
             let mut autostart = self.form.autostart;
-            let cb = ui.checkbox(&mut autostart, "Launch with Windows");
+            // Each OS has its own name for this and its own mechanism behind
+            // it — a Run key on Windows, a LaunchAgent on macOS. Naming the
+            // wrong one is not cosmetic: it is the label on the control that
+            // decides whether the user believes the setting applies to them.
+            #[cfg(target_os = "macos")]
+            let label = "Open at login";
+            #[cfg(not(target_os = "macos"))]
+            let label = "Launch with Windows";
+            let cb = ui.checkbox(&mut autostart, label);
             if cb.changed() {
                 self.apply_autostart_toggle(autostart);
             }
@@ -530,13 +694,39 @@ mod tests {
         }
     }
 
+    /// `Alt+J` in this platform's spelling — `⌥J` on macOS.
+    fn native(label: &str) -> String {
+        crate::hotkey::format_native(&crate::hotkey::parse(label).unwrap())
+    }
+
     #[test]
     fn from_config_populates_fields() {
         let f = SettingsForm::from_config(cfg_with("Alt+J", 7.0, true));
-        assert_eq!(f.hotkey, "Alt+J");
+        assert_eq!(f.hotkey, native("Alt+J"));
         assert_eq!(f.interval_text, "7");
         assert!(f.autostart);
         assert!(!f.is_dirty(), "freshly-loaded form is clean");
+    }
+
+    #[test]
+    fn a_config_written_elsewhere_is_shown_in_this_platforms_spelling() {
+        // Hand-edited files and configs seeded by the other platform's build
+        // both arrive spelled the other way. Showing them verbatim would make
+        // the field the one place in the window that is not native.
+        let f = SettingsForm::from_config(cfg_with("  alt + j  ", 10.0, false));
+        assert_eq!(f.hotkey, native("Alt+J"));
+        assert!(
+            !f.is_dirty(),
+            "re-spelling on load is not an edit the user made"
+        );
+    }
+
+    #[test]
+    fn an_unparseable_stored_hotkey_is_shown_exactly_as_stored() {
+        // It is the only copy of what the user typed, and the field is where
+        // they have to fix it.
+        let f = SettingsForm::from_config(cfg_with("Ctrl+Hoem", 10.0, false));
+        assert_eq!(f.hotkey, "Ctrl+Hoem");
     }
 
     #[test]
@@ -552,10 +742,10 @@ mod tests {
         let mut f = SettingsForm::from_config(original);
         assert!(!f.is_dirty());
 
-        f.hotkey = "Ctrl+F1".to_string();
+        f.hotkey = native("Ctrl+F1");
         assert!(f.is_dirty(), "hotkey edit -> dirty");
 
-        f.hotkey = "Alt+J".to_string();
+        f.hotkey = native("Alt+J");
         assert!(!f.is_dirty(), "reverted -> clean");
 
         f.interval_text = "5".to_string();
@@ -596,13 +786,49 @@ mod tests {
     }
 
     #[test]
-    fn to_config_trims_hotkey() {
-        // Leading/trailing whitespace in the hotkey label is user noise —
-        // strip it before persisting so the parser sees a clean label.
+    fn to_config_canonicalises_however_the_hotkey_was_typed() {
+        // Whitespace, case and the choice of spelling are user noise. One
+        // combination gets one representation on disk, whichever of the
+        // accepted forms was typed or recorded.
+        let canonical = crate::hotkey::format_native(&crate::hotkey::parse("Alt+J").unwrap());
+        for typed in ["  Alt+J  ", "alt+j", "Option+J", "⌥J"] {
+            let mut f = SettingsForm::from_config(Config::default());
+            f.hotkey = typed.to_string();
+            assert_eq!(
+                f.to_config().unwrap().hotkey,
+                canonical,
+                "typed {typed:?} must persist as {canonical:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_hotkey_that_cannot_be_registered_blocks_the_save() {
+        // The field is free text, so it is the only place an unregistrable
+        // combination can enter the config. Letting it through means the
+        // banner says "Saved" and the next launch has no hotkey.
+        for typed in ["Ctrl+Hoem", "Ctrl+Shift", "", "   ", "Ctrl+A+B"] {
+            let mut f = SettingsForm::from_config(Config::default());
+            f.hotkey = typed.to_string();
+            let err = f
+                .to_config()
+                .expect_err("{typed:?} must not reach the config");
+            assert!(
+                matches!(err, SettingsValidationError::Hotkey(_)),
+                "{typed:?} produced {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_hotkey_error_names_both_the_fault_and_the_vocabulary() {
+        // The banner is where a user learns what they may type; the parse
+        // error alone says only what went wrong.
         let mut f = SettingsForm::from_config(Config::default());
-        f.hotkey = "  Alt+J  ".to_string();
-        let cfg = f.to_config().unwrap();
-        assert_eq!(cfg.hotkey, "Alt+J");
+        f.hotkey = "Ctrl+Shift".to_string();
+        let shown = f.to_config().unwrap_err().to_string();
+        assert!(shown.contains("no key"), "{shown}");
+        assert!(shown.contains(crate::hotkey::VOCABULARY), "{shown}");
     }
 
     #[test]
@@ -610,11 +836,26 @@ mod tests {
         let mut f = SettingsForm::from_config(Config::default());
         f.interval_text = "5".to_string();
         assert!(f.is_dirty());
-        f.mark_clean();
+        let saved = f.to_config().unwrap();
+        f.mark_clean(saved);
         assert!(
             !f.is_dirty(),
             "mark_clean makes the current state the new baseline"
         );
+    }
+
+    #[test]
+    fn after_a_save_the_field_shows_what_was_stored() {
+        // The user types one of the accepted spellings; the file gets the
+        // canonical one. If the field kept the typed text, the form would
+        // read as dirty the moment it was saved, and Cancel would look like
+        // it was discarding a change that had already happened.
+        let mut f = SettingsForm::from_config(Config::default());
+        f.hotkey = "option+cmd+j".to_string();
+        let saved = f.to_config().unwrap();
+        f.mark_clean(saved.clone());
+        assert_eq!(f.hotkey, saved.hotkey);
+        assert!(!f.is_dirty(), "a just-saved form is not dirty");
     }
 
     #[test]
@@ -677,75 +918,195 @@ mod tests {
         );
     }
 
-    // ---- decide_capture (recorder policy) ----------------------------------
+    // ---- HoldTracker (recorder policy) --------------------------------------
+    //
+    // The clock is an argument, so these drive it directly: a frame is a call
+    // with a timestamp, and holding for a second is two calls 1.0 apart.
 
     use eframe::egui::{Key, Modifiers};
 
-    #[test]
-    fn decide_capture_no_keys_keeps_waiting() {
-        assert_eq!(
-            decide_capture(Modifiers::NONE, &[]),
-            CaptureOutcome::KeepWaiting
-        );
-    }
-
-    #[test]
-    fn decide_capture_bare_escape_cancels() {
-        // Bare Esc is the universal cancel — recording a literal Esc-only
-        // hotkey would collide with the cancel gesture, so we forbid it. A
-        // user who really wants Esc can use Ctrl+Esc / Shift+Esc.
-        assert_eq!(
-            decide_capture(Modifiers::NONE, &[Key::Escape]),
-            CaptureOutcome::CancelRequested
-        );
-    }
-
-    #[test]
-    fn decide_capture_escape_with_modifier_captures() {
-        // Ctrl+Esc passes through as a real combo. Same for Shift+Esc, etc.
-        let out = decide_capture(Modifiers::CTRL, &[Key::Escape]);
-        match out {
-            CaptureOutcome::Captured(hk) => {
-                assert_eq!(hk.modifiers, crate::hotkey::MOD_CTRL);
-                assert_eq!(hk.key.as_str(), "ESCAPE");
-            }
-            other => panic!("expected Captured, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn decide_capture_supported_key_captures() {
-        let mods = Modifiers {
+    /// Ctrl+Shift, the chord most of these tests hold.
+    fn ctrl_shift() -> Modifiers {
+        Modifiers {
             ctrl: true,
             shift: true,
             ..Modifiers::NONE
-        };
-        let out = decide_capture(mods, &[Key::A]);
-        match out {
-            CaptureOutcome::Captured(hk) => {
-                assert_eq!(crate::hotkey::format(&hk), "Ctrl+Shift+A");
-            }
-            other => panic!("expected Captured, got {other:?}"),
         }
     }
 
     #[test]
-    fn decide_capture_unsupported_key_signals_hint() {
-        // Home isn't in our allowlist (vk_for_key wouldn't recognise it).
+    fn nothing_held_reports_the_modifiers_so_far() {
+        let mut hold = HoldTracker::default();
         assert_eq!(
-            decide_capture(Modifiers::CTRL, &[Key::Home]),
-            CaptureOutcome::Unsupported
+            hold.step(Modifiers::NONE, &[], 0.0),
+            RecorderStep::Waiting { modifiers: 0 }
+        );
+        // Modifiers alone are not a hotkey, but the row shows them — that
+        // read-out is the only feedback during the half-second it takes to
+        // assemble a chord.
+        assert_eq!(
+            hold.step(ctrl_shift(), &[], 0.1),
+            RecorderStep::Waiting {
+                modifiers: crate::hotkey::MOD_CTRL | crate::hotkey::MOD_SHIFT
+            }
         );
     }
 
     #[test]
-    fn decide_capture_uses_first_key() {
-        // If two keys are down in the same frame (rare but possible during
-        // chord release), we honour the first — keeps the policy deterministic.
-        let out = decide_capture(Modifiers::CTRL, &[Key::A, Key::B]);
-        match out {
-            CaptureOutcome::Captured(hk) => assert_eq!(hk.key.as_str(), "A"),
-            other => panic!("expected Captured(A), got {other:?}"),
+    fn a_combination_commits_only_after_the_hold_elapses() {
+        let mut hold = HoldTracker::default();
+        assert!(matches!(
+            hold.step(ctrl_shift(), &[Key::A], 10.0),
+            RecorderStep::Holding { progress, .. } if progress == 0.0
+        ));
+        assert!(matches!(
+            hold.step(ctrl_shift(), &[Key::A], 10.0 + HOLD_TO_COMMIT_SECS / 2.0),
+            RecorderStep::Holding { progress, .. } if (progress - 0.5).abs() < 1e-6
+        ));
+        match hold.step(ctrl_shift(), &[Key::A], 10.0 + HOLD_TO_COMMIT_SECS) {
+            RecorderStep::Commit(hk) => assert_eq!(crate::hotkey::format(&hk), "Ctrl+Shift+A"),
+            other => panic!("expected Commit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn adding_a_modifier_mid_hold_restarts_the_clock() {
+        // The whole reason for hold-to-commit: reaching ⌃⇧A one key at a time
+        // passes through ⌃A, and that intermediate must not be recorded.
+        let mut hold = HoldTracker::default();
+        hold.step(Modifiers::CTRL, &[Key::A], 0.0);
+        let almost = HOLD_TO_COMMIT_SECS - 0.05;
+        assert!(matches!(
+            hold.step(Modifiers::CTRL, &[Key::A], almost),
+            RecorderStep::Holding { .. }
+        ));
+        // Shift arrives just before Ctrl+A would have committed.
+        assert!(
+            matches!(
+                hold.step(ctrl_shift(), &[Key::A], almost),
+                RecorderStep::Holding { progress, .. } if progress == 0.0
+            ),
+            "a changed combination must start from zero, not inherit the old timer"
+        );
+        // And the old combination's elapsed time must not carry over.
+        assert!(matches!(
+            hold.step(ctrl_shift(), &[Key::A], almost + 0.05),
+            RecorderStep::Holding { .. }
+        ));
+    }
+
+    #[test]
+    fn releasing_before_the_hold_elapses_records_nothing() {
+        let mut hold = HoldTracker::default();
+        hold.step(ctrl_shift(), &[Key::A], 0.0);
+        assert_eq!(
+            hold.step(Modifiers::NONE, &[], 0.3),
+            RecorderStep::Waiting { modifiers: 0 }
+        );
+        // Pressing the same combination again starts over rather than
+        // resuming — otherwise two taps would add up to a commit the user
+        // never held.
+        assert!(matches!(
+            hold.step(ctrl_shift(), &[Key::A], 0.4),
+            RecorderStep::Holding { progress, .. } if progress == 0.0
+        ));
+    }
+
+    #[test]
+    fn bare_escape_cancels_but_escape_with_a_modifier_is_bindable() {
+        let mut hold = HoldTracker::default();
+        assert_eq!(
+            hold.step(Modifiers::NONE, &[Key::Escape], 0.0),
+            RecorderStep::Cancel
+        );
+        // Cancel is immediate: a hold would make backing out of a recorder
+        // that is already ignoring your keys take even longer.
+        let mut hold = HoldTracker::default();
+        hold.step(Modifiers::CTRL, &[Key::Escape], 0.0);
+        match hold.step(Modifiers::CTRL, &[Key::Escape], HOLD_TO_COMMIT_SECS) {
+            RecorderStep::Commit(hk) => assert_eq!(crate::hotkey::format(&hk), "Ctrl+Escape"),
+            other => panic!("expected Commit(Ctrl+Escape), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_key_that_cannot_be_bound_is_refused_and_never_commits() {
+        // Home is outside the allowlist the backends can register.
+        let mut hold = HoldTracker::default();
+        assert!(matches!(
+            hold.step(Modifiers::CTRL, &[Key::Home], 0.0),
+            RecorderStep::Rejected(_)
+        ));
+        assert!(
+            matches!(
+                hold.step(Modifiers::CTRL, &[Key::Home], HOLD_TO_COMMIT_SECS * 3.0),
+                RecorderStep::Rejected(_)
+            ),
+            "holding an unbindable key longer must not eventually accept it"
+        );
+    }
+
+    #[test]
+    fn two_keys_at_once_are_refused_rather_than_arbitrated() {
+        // egui hands us `keys_down` as a HashSet, so "the first key" is hash
+        // order. Choosing one would record a combination the user did not
+        // see and cannot predict.
+        let mut hold = HoldTracker::default();
+        assert!(matches!(
+            hold.step(Modifiers::CTRL, &[Key::A, Key::B], 0.0),
+            RecorderStep::Rejected(_)
+        ));
+    }
+
+    #[test]
+    fn a_second_key_landing_mid_hold_cancels_the_commit() {
+        let mut hold = HoldTracker::default();
+        hold.step(Modifiers::CTRL, &[Key::A], 0.0);
+        assert!(matches!(
+            hold.step(
+                Modifiers::CTRL,
+                &[Key::A, Key::B],
+                HOLD_TO_COMMIT_SECS - 0.05
+            ),
+            RecorderStep::Rejected(_)
+        ));
+        // Back to one key: the clock must have been dropped, not paused.
+        assert!(matches!(
+            hold.step(Modifiers::CTRL, &[Key::A], HOLD_TO_COMMIT_SECS),
+            RecorderStep::Holding { progress, .. } if progress == 0.0
+        ));
+    }
+
+    #[test]
+    fn what_the_recorder_commits_is_what_the_field_can_parse_back() {
+        // The shell writes `format_native(committed)` into the field and Save
+        // hands that string to the config. If the two disagree, the recorder
+        // produces a hotkey the next launch cannot read.
+        for (mods, key) in [
+            (ctrl_shift(), Key::Space),
+            (Modifiers::ALT, Key::J),
+            (Modifiers::NONE, Key::F12),
+            (
+                Modifiers {
+                    alt: true,
+                    mac_cmd: true,
+                    command: true,
+                    ..Modifiers::NONE
+                },
+                Key::Backspace,
+            ),
+        ] {
+            let mut hold = HoldTracker::default();
+            hold.step(mods, &[key], 0.0);
+            let RecorderStep::Commit(hk) = hold.step(mods, &[key], HOLD_TO_COMMIT_SECS) else {
+                panic!("{key:?} must commit after the hold");
+            };
+            let shown = crate::hotkey::format_native(&hk);
+            assert_eq!(
+                crate::hotkey::parse(&shown).expect("the recorder's own output must parse"),
+                hk,
+                "round trip failed for {shown:?}"
+            );
         }
     }
 

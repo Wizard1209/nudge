@@ -221,6 +221,9 @@ fn run_settings_ui() -> eframe::Result {
     let config_path = cli_config_path
         .clone()
         .unwrap_or_else(config::resolve_default_config_path);
+    if cli_config_path.is_none() {
+        config::migrate_legacy_config(&config_path);
+    }
     let (cfg, err) = config::load_or_default(&config_path);
     if let Some(e) = err {
         eprintln!("[nudge-settings] {e}");
@@ -334,6 +337,9 @@ fn main() -> eframe::Result {
     let config_path = cli_config_path
         .clone()
         .unwrap_or_else(config::resolve_default_config_path);
+    if cli_config_path.is_none() {
+        config::migrate_legacy_config(&config_path);
+    }
     let (config, config_err) = config::load_or_default(&config_path);
     if let Some(err) = config_err {
         eprintln!("[nudge] {err}");
@@ -343,13 +349,26 @@ fn main() -> eframe::Result {
             eprintln!("[nudge] failed to write default config: {e}");
         }
     }
-    let (configured_hotkey, hotkey_was_invalid) = config.resolved_hotkey();
-    if hotkey_was_invalid {
-        eprintln!(
-            "[nudge] config hotkey \"{}\" is unparseable, falling back to default",
-            config.hotkey
-        );
-    }
+    // An unreadable hotkey leaves the app unbound rather than silently
+    // binding something else (design-spec §5). Substituting the default here
+    // would take over a combination the user never asked for, and — because
+    // the tray and the timer work regardless — they would have no way to tell
+    // that their own combination is the one that failed.
+    //
+    // This is also what the live-reload path does when a hand-edit turns the
+    // hotkey into garbage, and the two must agree: the same file content
+    // cannot mean "default" at launch and "unbound" a second later.
+    let configured_hotkey = match hotkey::parse(&config.hotkey) {
+        Ok(hk) => Some(hk),
+        Err(e) => {
+            eprintln!(
+                "[nudge] config hotkey \"{}\" is unusable ({e}), starting without one. {}",
+                config.hotkey,
+                hotkey::VOCABULARY
+            );
+            None
+        }
+    };
     let (default_minutes, interval_was_invalid) = config.resolved_interval_minutes();
     if interval_was_invalid {
         eprintln!(
@@ -372,7 +391,7 @@ fn main() -> eframe::Result {
     // `NSStatusItem` and the hotkey goes through Carbon, and both need the
     // main thread to already be an event loop. `platform::start_on_event_loop`
     // (below, in the creator closure) does the building.
-    platform::start(Some(configured_hotkey), config_path.clone(), config.clone());
+    platform::start(configured_hotkey, config_path.clone(), config.clone());
 
     // Live-reload: watch `config.json` for changes (settings UI saves,
     // or hand-edits) and ask the platform to re-read + diff — the tray

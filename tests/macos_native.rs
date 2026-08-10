@@ -85,14 +85,20 @@ const STARTUP_GRACE: Duration = Duration::from_secs(5);
 /// temp dir, and which is killed when the test ends.
 ///
 /// The redirection matters more on macOS than it did on Windows: `dirs`
-/// resolves `<Documents>/Nudge/` from `$HOME`, so an un-sandboxed run would
-/// append to the developer's real journal. Overriding `HOME` moves the config,
-/// the journal, and any future app-state file in one shot — verified: a 12s run
-/// creates `$HOME/Documents/Nudge/config.json` and touches nothing outside it.
+/// resolves both roots from `$HOME` — `~/Documents/Nudge/` for the journal
+/// and `~/Library/Application Support/Nudge/` for the config — so an
+/// un-sandboxed run would append to the developer's real journal. Overriding
+/// `HOME` moves both, and any future app-state file, in one shot.
 struct SandboxedApp {
     child: Child,
     home: tempfile::TempDir,
 }
+
+/// Where the app keeps `config.json` on macOS, relative to `$HOME`. Spelled
+/// out rather than imported from `nudge::config`: this file is a black-box
+/// harness, and a path it derives the same way the app does would agree with
+/// the app even when both are wrong.
+const CONFIG_SUBDIR: &str = "Library/Application Support/Nudge";
 
 impl Drop for SandboxedApp {
     fn drop(&mut self) {
@@ -126,8 +132,8 @@ impl SandboxedApp {
     /// of waiting out a real-world default.
     fn launch_with_interval(minutes: f64) -> Self {
         let home = tempfile::tempdir().expect("temp HOME");
-        let config_dir = home.path().join("Documents/Nudge");
-        std::fs::create_dir_all(&config_dir).expect("Documents/Nudge");
+        let config_dir = home.path().join(CONFIG_SUBDIR);
+        std::fs::create_dir_all(&config_dir).expect("config dir");
         std::fs::write(
             config_dir.join("config.json"),
             format!(
@@ -150,7 +156,7 @@ impl SandboxedApp {
     }
 
     fn config_path(&self) -> PathBuf {
-        self.home.path().join("Documents/Nudge/config.json")
+        self.home.path().join(CONFIG_SUBDIR).join("config.json")
     }
 
     fn journal_path(&self) -> PathBuf {
@@ -495,6 +501,13 @@ fn harness_can_sandbox_and_capture() {
         "app did not write {} — it never got far enough to be worth testing",
         app.config_path().display()
     );
+    // Named separately so a config that lands in the old place fails as
+    // "wrote to Documents" rather than as "never started".
+    assert!(
+        !app.home.path().join("Documents/Nudge/config.json").exists(),
+        "config must not be created under Documents — that folder is TCC-gated \
+         and iCloud-synced (design-spec §9)"
+    );
 
     let shot = app.home.path().join("display.png");
     capture_region(main_display_frame(), &shot);
@@ -504,6 +517,47 @@ fn harness_can_sandbox_and_capture() {
         img.width() > 0 && img.height() > 0,
         "captured an empty image"
     );
+}
+
+/// A config left in the old place by an earlier version is carried over.
+///
+/// The unit test for this drives the move directly with two temp dirs. What
+/// it cannot show is that the real binary resolves both roots from the same
+/// `$HOME` and runs the migration before it reads — a version that resolved
+/// the destination but never called the migration would pass it and fail
+/// here.
+#[test]
+#[ignore = "needs a GUI session; run via --ignored"]
+fn a_config_left_in_documents_is_carried_over_to_application_support() {
+    let home = tempfile::tempdir().expect("temp HOME");
+    let legacy = home.path().join("Documents/Nudge/config.json");
+    std::fs::create_dir_all(legacy.parent().unwrap()).expect("Documents/Nudge");
+    // An interval no default would produce, so the assertion cannot be
+    // satisfied by a freshly-seeded file at the destination.
+    std::fs::write(
+        &legacy,
+        r#"{"hotkey": "Ctrl+Shift+Space", "default_interval_minutes": 37.5, "autostart": false}"#,
+    )
+    .expect("seed the legacy config");
+
+    let child = Command::new(binary_path())
+        .env("HOME", home.path())
+        .spawn()
+        .expect("spawn nudge — run `cargo build --bin nudge` first");
+    let mut app = SandboxedApp { child, home };
+    std::thread::sleep(STARTUP_GRACE);
+
+    let moved = std::fs::read_to_string(app.config_path())
+        .unwrap_or_else(|e| panic!("no config at {}: {e}", app.config_path().display()));
+    assert!(
+        moved.contains("37.5"),
+        "the destination holds a fresh default, not the user's file: {moved}"
+    );
+    assert!(
+        !legacy.exists(),
+        "the old file survived — two configs now diverge silently"
+    );
+    let _ = app.child.kill();
 }
 
 // ---------------------------------------------------------------------------
