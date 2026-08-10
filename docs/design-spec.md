@@ -76,53 +76,107 @@ explicitly. Otherwise the spec applies to both.
   borders, outlines, or color accents.
 - The minutes field accepts integers and decimals (e.g. `0.1` = 6 seconds, for
   testing).
-- Field state on close is specified by the table in §4. In short: only Enter
-  clears `doing` / `bullshit`. Esc and Switch preserve them — on the next
-  open the popup continues from where it left off.
-- The minutes field always persists the last entered text after any close
-  (Enter, Esc, Switch) — on the next open the popup shows that value. It does
-  not change without explicit editing.
+- What happens to the fields on close is decided by the §4 transition table
+  and stated nowhere else.
 
 ## 4. Behavior
 
-The popup is closed by three actions. Esc and Switch behave the same — only
-the trigger differs (key press vs. focus loss). The distinction would
-otherwise be a hidden rule, so they are merged into one row.
+The popup's whole behaviour is one state machine with **three states** and
+**four events**. Everything below is the transition table and the definitions
+its cells rely on; there are no rules outside it.
 
-| Action | What it does |
+The states are named for **what the app owes the user**, not for what is on
+screen, because that is what decides how a close behaves:
+
+| State | Popup | Timer | Meaning |
+|---|---|---|---|
+| **Waiting** | hidden | running | Nothing is being asked. |
+| **Asking·Timer** | visible | overdue | The popup was opened *because the interval elapsed*. The deadline is already in the past. |
+| **Asking·Manual** | visible | running | The user opened the popup themselves. The deadline is still ahead. |
+
+`Asking·Timer` is the initial state: the first launch shows the popup as if
+the interval had elapsed. It is not a special case, it is where the machine
+starts.
+
+### Events
+
+| Event | Raised by |
 |---|---|
-| **Enter** | If at least one of `doing` / `bullshit` is non-empty — writes a journal entry. Restarts the timer using the minutes field. Clears `doing` / `bullshit`. |
-| **Esc** / **Switch** (click outside the card / window focus loss) | Preserves `doing` / `bullshit` — on the next open the popup continues from where it was. Does not write to the journal. Does not touch the timer (exception below). |
+| **Deadline** | The interval elapses. |
+| **Summon** | Tray/menu-bar left click, the `Show Nudge` menu item, or the global hotkey (§5). Three triggers, one event — they are indistinguishable downstream. |
+| **Submit** | `Enter`. |
+| **Leave** | `Esc`, a click outside the card, or the window losing focus **after having held it**. Three triggers, one event: the transition table treats them identically. |
 
-All three hide the popup.
+The focus trigger carries its condition in its own definition rather than as
+a guard: if this open of the popup never received the keyboard — a
+full-screen app refused to yield foreground — then losing focus is not
+something that can happen to it, and `Esc`, `Enter` and a click outside the
+card remain the ways out.
 
-**When Esc or Switch do restart the timer.** If the popup was opened *by the
-timer* (not manually), the timer is already at zero. Closing the popup in
-that state without setting a new deadline would make it appear again
-immediately — so in this case Esc and Switch must restart the timer. This is
-a structural constraint, not a semantic choice. Whenever the timer is
-updated, it always uses the current value of the minutes field.
+### Transitions
 
-**The minutes field** always preserves the last entered text on any close
-(see §3) — even Esc and Switch do not revert it to a previous value.
+Cells marked — are events that cannot arrive in that state, for the reason
+given under the table.
 
-**Switch by window focus loss** only fires if the popup actually received
-focus when it was opened. If it didn't (e.g. a fullscreen app held
-foreground), focus loss does not close it; Enter, Esc, and clicks outside
-the card still do.
+| | **Deadline** | **Summon** | **Submit** | **Leave** |
+|---|---|---|---|---|
+| **Waiting** | → Asking·Timer | → Asking·Manual | — | — |
+| **Asking·Timer** | — | — | → Waiting · *close effects* | → Waiting · **timer := field** · text kept |
+| **Asking·Manual** | — | — | → Waiting · *close effects* | → Waiting · **timer untouched** · text kept |
 
-**Open the popup manually** — click on the tray icon or pill, even if the
-timer has not expired yet. Opening this way does not affect the timer.
+- **Submit's close effects**, identical from both Asking states: write a
+  journal line **iff** `doing` or `bullshit` is non-empty after trimming;
+  set the timer to the minutes field; clear `doing` and `bullshit`.
+- **The one difference between the two Asking states** is the `Leave` column:
+  a timer-opened popup has a deadline in the past, so leaving it must set a
+  new one or the popup reappears on the next frame. A manually-opened popup
+  has a live deadline, and leaving must not disturb it.
+- **`Deadline` cannot arrive while the popup is visible.** The timer is
+  parked for as long as the popup is up, so an interval that elapses behind
+  an open popup is not lost and not delivered early: it is still overdue when
+  the popup closes and fires immediately after. This is why `Leave` from
+  `Asking·Manual` can be followed at once by `Deadline`.
+- **`Summon` while visible is dropped**, not queued. The popup is already
+  there, which is what the event asks for.
 
-**"Change the interval without writing to the journal" scenario:** open the
-popup manually → adjust the minutes field → Enter with empty `doing` and
-`bullshit`. Nothing is written; the timer is rearmed.
+### Failed submits stay put
 
-**First launch** shows the popup right away (as if the timer had expired):
-the initial `trigger_source` is `timer`, and the first close (by any means)
-starts the timer. After that the cycle is hide → timer → popup → ...
+`Submit` has two failure paths, and both are **self-transitions**: the state
+does not change, the popup stays open, and an error is shown.
 
-Popup show and hide are instant, no animations.
+| Failure | Condition |
+|---|---|
+| Invalid interval | The minutes field parses as a number that is ≤ 0 or not finite. Nothing is written, the timer is untouched, the text is kept. |
+| Journal write failed | The OS (or browser storage) refused the append. The timer is **not** reset — a nudge whose answer was lost must not count as answered. |
+
+Empty, whitespace or unparseable minutes text is **not** a failure on this
+path: it is not an explicit number, so it falls back to 10 minutes. Only a
+number the user clearly typed and clearly cannot mean is refused.
+
+`Leave` has no failure path at all. It never writes and never validates: a
+garbage minutes field falls back to 10 minutes so the popup always closes.
+
+### What is not state
+
+- **The minutes field** keeps its text through every transition, including
+  `Submit`. It changes only when the user edits it.
+- **`doing` and `bullshit`** are cleared by `Submit` and by nothing else, so
+  a popup left by `Esc` or by switching away reopens exactly where it was.
+- Showing and hiding are instant; no animation is part of any transition.
+
+### Two scenarios this machine already answers
+
+They are worked here because they are the two that get asked, not because
+they are separate rules — both are read straight off the table.
+
+**Change the interval without writing anything.** `Summon` → edit the
+minutes field → `Submit` with `doing` and `bullshit` empty. The journal
+condition fails, so nothing is written; the timer is set from the field
+anyway.
+
+**A nudge you are not ready for.** `Deadline` → `Leave`. Nothing is written,
+your half-typed answer is still there next time, and the timer restarts from
+the field — so the popup returns after a full interval, not immediately.
 
 ## 5. Tray (native Windows build only)
 
