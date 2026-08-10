@@ -239,53 +239,16 @@ pub fn format(hk: &Hotkey) -> String {
 /// code, and this set is the intersection that maps on both. Arrows,
 /// Home/End and punctuation are absent because nobody has asked, not because
 /// they are impossible.
+// The modifier symbols stay — they are what the keycaps say, and the line
+// exists to teach the form the field uses. The key symbols do not: at the
+// size this renders, `⌫` and `↩` are a smudge, and unlike the modifiers they
+// have unambiguous names.
 #[cfg(target_os = "macos")]
 pub const VOCABULARY: &str = "Modifiers ⌃ ⌥ ⇧ ⌘ (or Ctrl, Option, Shift, Cmd) \
-    plus one key: A–Z, 0–9, F1–F20, Space, ↩, ⇥, ⎋, ⌫.";
+    plus one key: A–Z, 0–9, F1–F20, Space, Enter, Tab, Esc, Backspace.";
 #[cfg(not(target_os = "macos"))]
 pub const VOCABULARY: &str = "Modifiers Ctrl, Alt, Shift, Win \
     plus one key: A–Z, 0–9, F1–F24, Space, Enter, Tab, Esc, Backspace.";
-
-/// The modifiers alone, rendered for this platform: `⌥⌘` on macOS,
-/// `Alt+Cmd+` elsewhere (with the trailing `+`, because the only caller
-/// showing a bare mask is the recorder mid-chord, where the point is that a
-/// key is still missing). An empty mask renders empty.
-pub fn format_modifiers_native(modifiers: u8) -> String {
-    #[cfg(target_os = "macos")]
-    {
-        let mut out = String::with_capacity(4);
-        for (bit, glyph) in [
-            (MOD_CTRL, MOD_GLYPH_CTRL),
-            (MOD_ALT, MOD_GLYPH_ALT),
-            (MOD_SHIFT, MOD_GLYPH_SHIFT),
-            (MOD_WIN, MOD_GLYPH_WIN),
-        ] {
-            if modifiers & bit != 0 {
-                out.push(glyph);
-            }
-        }
-        out
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let mut parts: Vec<&str> = Vec::with_capacity(4);
-        for (bit, label) in [
-            (MOD_CTRL, "Ctrl"),
-            (MOD_ALT, "Alt"),
-            (MOD_SHIFT, "Shift"),
-            (MOD_WIN, MOD_WIN_LABEL),
-        ] {
-            if modifiers & bit != 0 {
-                parts.push(label);
-            }
-        }
-        let mut out = parts.join("+");
-        if !out.is_empty() {
-            out.push('+');
-        }
-        out
-    }
-}
 
 /// The label to *show* a user of this platform — on macOS the symbol form,
 /// `⌥⌘J`, which is what every other Mac app prints and what the keycaps say.
@@ -306,7 +269,17 @@ pub fn format_native(hk: &Hotkey) -> String {
     }
     #[cfg(target_os = "macos")]
     {
-        let mut out = format_modifiers_native(hk.modifiers);
+        let mut out = String::with_capacity(8);
+        for (bit, glyph) in [
+            (MOD_CTRL, MOD_GLYPH_CTRL),
+            (MOD_ALT, MOD_GLYPH_ALT),
+            (MOD_SHIFT, MOD_GLYPH_SHIFT),
+            (MOD_WIN, MOD_GLYPH_WIN),
+        ] {
+            if hk.modifiers & bit != 0 {
+                out.push(glyph);
+            }
+        }
         let key_label = match hk.key.as_str() {
             "ENTER" => "↩".to_string(),
             "TAB" => "⇥".to_string(),

@@ -190,43 +190,79 @@ app is running and "ripens" instead of a numeric countdown.
 - A system-wide hotkey opens the popup from any focused window. The effect
   is identical to a left click on the tray icon: the popup opens with
   `trigger_source = manual`, and opening does not affect the timer.
-- The combination is configured in `config.json` (§9), field `hotkey`.
-  Default: `Ctrl+Shift+Space`. A hotkey is **any number of modifiers plus
-  exactly one key**; a chord of modifiers alone is not one, and neither is
-  two keys.
+- The combination is configured in `config.json` (§9), field `hotkey`. It is
+  a **string**, and this section defines that string exactly. Default:
+  `Ctrl+Shift+Space`.
 
-| | Accepted spellings | Registers as |
-|---|---|---|
-| Control | `Ctrl`, `Control`, `⌃` | Control |
-| Option / Alt | `Alt`, `Option`, `Opt`, `⌥` | Option on macOS, Alt on Windows |
-| Shift | `Shift`, `⇧` | Shift |
-| Command / Win | `Cmd`, `Command`, `Win`, `Super`, `Meta`, `⌘` | Command on macOS, the Windows key on Windows |
-| Key | `A`–`Z`, `0`–`9`, `F1`–`F24`, `Space` `␣`, `Enter` `Return` `↩`, `Tab` `⇥`, `Esc` `Escape` `⎋`, `Backspace` `⌫` | as named |
+#### Grammar
 
-- Case, whitespace and the choice of spelling are all ignored: `⌥⌘J`,
-  `Alt+Cmd+J` and `alt + cmd + j` are one hotkey. `+` between modifier
-  **symbols** is optional, because `⌥⌘J` is how macOS writes a shortcut and
-  that is the string the settings window puts in the field.
-- Written out, a hotkey takes the form the platform reading it uses:
-  `⌃⇧Space` on macOS, `Ctrl+Shift+Space` on Windows. This is a rendering,
-  not a second format — every spelling above parses on both platforms, so a
-  config file carried between machines keeps its meaning.
-- **`fn` cannot be part of a hotkey.** Not a gap to close later: neither
-  backend can express it. Carbon's `RegisterEventHotKey` takes four modifier
-  bits (Shift, Command, Option, Control) and macOS sets the `fn` flag by
-  itself for arrows and the F-row, so it is not a modifier a user can choose
-  in the first place. It never reaches the recorder either — the window
-  toolkit's modifier set is the same four.
-- Two keys that carry a macOS caveat: **`F1`–`F12`** need `fn` held on a Mac
-  unless *Use F1, F2, etc. as standard function keys* is on, and
-  **`F21`–`F24`** parse but fail to register there.
-- If the config file is absent — a default is written on first launch. A
-  combination that cannot be registered — unreadable, or already taken by
-  another app — is not fatal, and it does not fall back to the default
-  either: the app starts **without a hotkey**, says so on stderr, and stays
-  reachable through the tray icon. Silently binding a different combination
-  would take over a shortcut the user never asked for while hiding which one
-  failed. Live reload (§9) follows the same rule.
+```
+hotkey     = { modifier , [ "+" ] } , key ;
+
+modifier   = control | option | shift | command ;
+control    = "Ctrl"    | "Control"                              | "⌃" ;
+option     = "Alt"     | "Option"  | "Opt"                      | "⌥" ;
+shift      = "Shift"                                            | "⇧" ;
+command    = "Cmd"     | "Command" | "Win" | "Super" | "Meta"    | "⌘" ;
+
+key        = letter | digit | function | named ;
+letter     = "A" … "Z" ;
+digit      = "0" … "9" ;
+function   = "F1" … "F24" ;
+named      = "Space"                    | "␣"
+           | "Enter"  | "Return"        | "↩" | "⏎" | "⌤"
+           | "Tab"                      | "⇥"
+           | "Esc"    | "Escape"        | "⎋"
+           | "Backspace"                | "⌫" ;
+```
+
+Reading rules, all of them:
+
+1. **Case is ignored.** `ctrl+a` and `CTRL+A` are the same string.
+2. **Whitespace is ignored**, around the whole string and around every `+`.
+3. **`+` is required between words, optional after a symbol.** `⌥⌘J`,
+   `⌥+⌘+J` and `Alt+Cmd+J` are one hotkey. The symbol form needs no
+   separator because that is how macOS writes a shortcut, and it is what the
+   settings field holds there.
+4. **Exactly one `key` is required.** Zero (`Ctrl+Shift`) and two
+   (`Ctrl+A+B`) are both errors, with distinct messages.
+5. **Repeated modifiers collapse.** `Ctrl+Ctrl+A` is `Ctrl+A`.
+6. **Anything else is an error** naming the offending token.
+
+#### Writing it back
+
+One combination has one canonical spelling **per platform**, and that is
+what the app writes and displays: `⌃⇧Space` on macOS, `Ctrl+Shift+Space` on
+Windows. Modifiers are always emitted in the order **Control, Option/Alt,
+Shift, Command/Win** — the order Apple prints them in a menu.
+
+This is a rendering, not a second format. Every spelling in the grammar
+parses on both platforms, so a `config.json` carried between a Mac and a PC
+keeps its meaning; only the way it is written back changes.
+
+#### What the OS can and cannot bind
+
+- The fourth modifier is one modifier: `Cmd`, `Win` and `⌘` all name it. It
+  registers as **Command** on macOS and as the **Windows key** on Windows.
+- **`fn` is not in the grammar and cannot be.** Carbon's
+  `RegisterEventHotKey` — the macOS registration call — takes four modifier
+  bits (Shift, Command, Option, Control), and the window toolkit reports the
+  same four, so `fn` reaches neither the binding nor the app. macOS also
+  sets the `fn` flag by itself for arrows and the F-row, so it is not a
+  modifier a user chooses in the first place.
+- **`F1`–`F12` need `fn` held on a Mac** unless *Use F1, F2, etc. as
+  standard function keys* is on. **`F21`–`F24`** satisfy the grammar but
+  fail to register there.
+
+#### When it cannot be applied
+
+If the config file is absent, a default is written on first launch. A
+combination that cannot be registered — one that breaks the grammar, or one
+another app already holds — is not fatal, and **does not fall back to the
+default**: the app runs **without a hotkey**, says so on stderr, and stays
+reachable through the tray icon. Silently binding something else would take
+over a shortcut the user never asked for while hiding which one failed.
+Startup and live reload (§9) follow the same rule.
 
 ## 6. Pill (browser build only — tray emulation)
 
@@ -300,38 +336,37 @@ file while a hand-editing user reads the other.
 
 | Field | Type | What it does |
 |---|---|---|
-| Global hotkey | editable text + recorder | See below. |
+| Global hotkey | text | A string in the §5 grammar. See below. |
 | Default interval (min) | text | A number, must be finite and positive; same rules as the minutes field of the popup in §3. |
 | Open at login / Launch with Windows | checkbox | Registers the app to launch at session start. The label names the platform's own mechanism, because that is what tells the user whether the setting applies to them. |
 
 #### The hotkey row
 
-The field always holds a **string in the §5 format**, shown in this
-platform's spelling, and it is always editable. Typing one is a first-class
-way to set a hotkey, not a fallback: every accepted spelling parses, so
-`⌥⌘J`, `Alt+Cmd+J` and `alt+cmd+j` all work. A stored value that parses is
-re-spelled for this platform on load; one that does not is shown exactly as
-stored, since it is the only copy of what the user typed.
+**One editable text field, and nothing else.** It holds a string in the §5
+grammar, shown in this platform's spelling, with the accepted vocabulary
+printed under it — the field is the only way to set a hotkey, so what may go
+in it is standing information, not an error message.
 
-Next to it, `Record` captures a combination from the keyboard instead:
+A stored value that parses is re-spelled for this platform on load, so a
+config written by the other build, seeded by first-run or edited by hand
+reads as `⌃⇧Space` on a Mac. One that does *not* parse is shown exactly as
+stored: it is the only copy of what the user typed, and the field is where
+they fix it.
 
-- The row turns into a live read-out of what is held — the modifiers alone
-  while the chord is still being assembled (`⌥⌘…`), the full combination once
-  a key joins them — and a progress bar, under the line *"Hold the
-  combination until the bar fills. Esc cancels."*
-- A combination is taken when it has been held **unchanged for 0.8 s**. The
-  clock restarts on every change, so adding a modifier mid-hold does not
-  record the partial chord — this is what makes assembling a four-key
-  combination possible at all.
-- Releasing early records nothing, and a second press starts from zero
-  rather than resuming.
-- **Bare Escape cancels immediately** and restores the previous value; with
-  any modifier held, Escape is an ordinary key, so `⌃⎋` records.
-- Two keys at once are refused rather than arbitrated — nothing about the
-  input says which the user meant. A key outside the §5 set is refused with
-  a hint and recording continues.
-- Recording only edits the staged value; `Save` is still what writes to
-  `config.json`.
+**There is no capture button.** One was built and removed. Capture needs to
+know which keys are held *right now*, and the only thing the GUI toolkit
+offers for that — its set of currently-down keys — is not reliable on macOS
+while a modifier is held: measured over 965 frames of real typing, the key
+dropped out of that set 25 times mid-press, for 0.08–0.63 s at a time, and
+the longest unbroken stretch of one combination was 0.67 s. Any rule of the
+form "held for N seconds" is unimplementable on that signal, and every
+softer rule tried in its place ("first key wins", "commit on release") is
+either non-deterministic or fires on a combination the user was still
+assembling. The failure is not visible as an error — the row simply never
+accepts anything — which is the worst shape a rule can have.
+
+So the contract is the grammar, and the grammar alone: what the user types
+is what gets bound, and §5 says exactly what may be typed.
 
 ### Saving
 
