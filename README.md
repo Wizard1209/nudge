@@ -28,7 +28,14 @@ Opens focused on the first field.
 | 3 | Следующий nudge через | number (min) | Pre-filled with the current interval (default 10 min) |
 
 - **Enter** — save and close
-- **Esc** — close without saving (the timer still restarts)
+- **Esc** — close without saving (whether the timer restarts depends on how
+  the popup was opened — see below)
+
+Everything the popup does is one state machine: three states, four events,
+no rules outside the transition table. It is specified in
+[docs/design-spec.md](docs/design-spec.md) §4 and there is a clickable model
+of it in [docs/state-machine.html](docs/state-machine.html) — open the file
+and press the events yourself.
 
 ## Journal
 
