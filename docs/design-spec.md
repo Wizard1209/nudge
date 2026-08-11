@@ -368,10 +368,10 @@ file while a hand-editing user reads the other.
 
 #### The hotkey row
 
-**One editable text field, and nothing else.** It holds a string in the §5
-grammar, shown in this platform's spelling, with the accepted vocabulary
-printed under it — the field is the only way to set a hotkey, so what may go
-in it is standing information, not an error message.
+The field always holds a string in the §5 grammar, shown in this platform's
+spelling, with the accepted vocabulary printed under it — the field is one of
+the two ways to set a hotkey, so what may go in it is standing information,
+not an error message.
 
 A stored value that parses is re-spelled for this platform on load, so a
 config written by the other build, seeded by first-run or edited by hand
@@ -379,57 +379,83 @@ reads as `⌃⇧Space` on a Mac. One that does *not* parse is shown exactly as
 stored: it is the only copy of what the user typed, and the field is where
 they fix it.
 
-**`Записать` captures a combination from the keyboard.** It is a machine with
-**two states** and **three events**, and no clock anywhere in it.
+#### The recorder
 
-| State | The row shows |
+> **Status: specified, not built.** The shipping build has the text field
+> only. This section is the contract to implement against; nothing in the
+> code implements it today. Two earlier attempts are described at the end,
+> because both failure modes are reachable again from a fresh start.
+
+`Record` captures a combination from the keyboard. **Two states, four events,
+eight cells, no clock.**
+
+| State | On screen |
 |---|---|
-| **Idle** | the editable field, the vocabulary, and a `Записать` button |
-| **Armed** | `нажми комбинацию…`, the line *"Модификаторы + одна клавиша. Esc — отмена."*, and an `Отмена` button |
+| **Idle** | the editable field, the vocabulary line, a `Record` button |
+| **Armed** | a prompt in place of the field, the line *"Modifiers plus one key. Esc cancels."*, a `Cancel` button |
 
-The only input an armed recorder takes is a **key press edge**: one press of
-a non-modifier key, carrying the modifiers held at that instant. Autorepeat
-presses are ignored, so a key already down when the recorder arms cannot
-capture itself.
+**The only keyboard input an Armed recorder accepts is a key press edge**:
+one press of a non-modifier key, carrying the modifiers held at that instant.
+It is defined negatively as well, because that is where the failures were:
+not the set of currently-held keys, not a release, not a duration, not a
+repeat.
 
 | | Idle | Armed |
 |---|---|---|
-| **`Записать`** | → Armed, snapshotting the current label | — |
-| **press** — bindable per §5 | — | → Idle, field := the combination, canonically spelled |
-| **press** — bare `Esc` | — | → Idle, field := the snapshot |
-| **press** — key §5 cannot bind | — | → Armed, with a hint. Staying armed is the point: disarming would make a mistyped chord look like a recorded one. |
-| **`Отмена`** | — | → Idle, field := the snapshot |
+| **Record** | → Armed, snapshot the field | — |
+| **Press** — §5 can bind it | — | → Idle, field := the combination, canonically spelled |
+| **Press** — bare `Esc` | — | → Idle, field := the snapshot |
+| **Press** — §5 cannot bind it | — | → **Armed**, with a hint naming the key |
+| **Cancel** | — | → Idle, field := the snapshot |
 
-Bare `Esc` cancels because a hotkey is modifiers **plus** a key, so a lone
-`Esc` can never be one and the keystroke is free to mean "back out". With any
-modifier held it is an ordinary key, and `⌃⎋` records.
+Every cell is stated; there are no guards and no conditions outside this
+table.
 
-A chord of modifiers alone produces no press edge at all, so the recorder
-simply keeps waiting — there is nothing to accept and nothing to refuse.
+Three consequences, all read off the table rather than added to it:
 
-Capturing only ever edits the staged value; `Save` is still what writes to
-`config.json`.
+- **A chord of modifiers alone is not an event.** Modifiers are not keys, so
+  holding `⌥⌘` produces no press edge and the recorder waits. Nothing is
+  accepted and nothing is refused.
+- **An unbindable key does not disarm.** Disarming there would leave a
+  mistyped chord looking like a recorded one.
+- **Bare `Esc` cancels** because a hotkey is modifiers **plus** a key, so a
+  lone `Esc` can never be one; the keystroke is therefore free to mean "back
+  out". With any modifier held it is an ordinary key and `⌃⎋` records.
 
-#### Why press edges, and why nothing is timed
+Capturing only edits the staged value. `Save` is still what writes to
+`config.json`, and it validates per §5 like any typed value.
 
-The recorder must not read the toolkit's set of currently-held keys. On macOS
-that set is unreliable in exactly the situation a hotkey recorder lives in.
+**Acceptance.** The recorder is done when, from a real keyboard on macOS:
+`⌥⌘J` held and released puts `⌥⌘J` in the field; `⌃⇧Space` does the same;
+`⌥⌘` alone changes nothing and shows no error; a key outside §5 shows a hint
+and leaves the recorder armed; bare `Esc` restores the previous label; and
+the captured label survives `Save` and a relaunch — the app registers it and
+logs no error.
 
-Measured over one real typing session — 965 frames with a modifier held: the
+#### What broke twice, and the measurement that settles it
+
+The toolkit exposes both a set of currently-held keys and a stream of press
+events. **On macOS the held set is unreliable in exactly the situation a
+hotkey recorder lives in**, and both earlier attempts read it.
+
+Measured over one real typing session, 965 frames with a modifier held: the
 key dropped out of the held set **25 times mid-press**, for 0.08–0.63 s at a
-time, and the longest unbroken stretch of one combination was **0.67 s**. The
-modifiers were unchanged across every one of those gaps; the key was
-re-arriving as fresh press events.
+time; the longest unbroken stretch of one combination was **0.67 s**. Across
+all 18 gaps where the key came back, the **modifiers were unchanged** — the
+key was re-arriving as fresh press events. The hole is in the held set, not
+in the input.
 
-Two things follow, and they are the whole design:
+- **Attempt 1 — first key in the held set wins.** The set is unordered, so
+  which key that is is not defined. It also fired on chords the user was
+  still assembling.
+- **Attempt 2 — held unchanged for 0.8 s.** Unsatisfiable on the signal
+  above: nothing was ever held that long without a gap, so the row accepted
+  nothing at all — and silently, because a row that never accepts anything
+  raises no error to point at.
 
-- **A rule phrased over presses sees a clean signal** where a rule phrased
-  over the held set sees a hole.
-- **No rule may be phrased over duration.** "Held unchanged for N seconds"
-  needs a stable "still held", which is the one thing this platform does not
-  give. An earlier recorder was built that way and could accept nothing at
-  all — and it failed silently, since a row that never accepts anything
-  shows no error to point at.
+Both had passing unit tests, because both were tested against an input
+sequence the platform never produces. **A test for this feature is only
+evidence if its input is a recorded real session or a real keypress.**
 
 ### Saving
 

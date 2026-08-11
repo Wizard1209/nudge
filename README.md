@@ -34,8 +34,7 @@ Opens focused on the first field.
 Everything the popup does is one state machine: three states, four events,
 no rules outside the transition table. It is specified in
 [docs/design-spec.md](docs/design-spec.md) §4 and there is a clickable model
-of it in [docs/state-machine.html](docs/state-machine.html) — open the file
-and press the events yourself.
+of it in [docs/state-machine.html](docs/state-machine.html).
 
 ## Journal
 
@@ -110,11 +109,10 @@ The settings window opens from the tray menu (`Settings`) and edits the same
 `config.json` (hotkey, interval, autostart). Edits are picked up by the
 running app immediately via a file watcher.
 
-The hotkey can be set two ways: type it into the field in any of the
-spellings above, or press `Записать` and then press the combination itself.
-Either way `Save` refuses one the OS cannot bind rather than writing it.
-Full grammar: `docs/design-spec.md` §5; the recorder's two states and three
-events: §9.
+The hotkey is a text field — type any of the spellings above; there is no
+capture button, and `docs/design-spec.md` §9 says why. `Save` refuses a
+combination the OS cannot bind rather than writing it. Full grammar:
+`docs/design-spec.md` §5.
 
 ## Development: the Electron prototype
 
