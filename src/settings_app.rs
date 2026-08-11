@@ -246,6 +246,53 @@ fn format_interval(n: f64) -> String {
 }
 
 // =============================================================================
+// The recorder — spec §9. A two-state machine over key *press edges*.
+// =============================================================================
+
+/// What a single key press means to a recorder that is armed.
+///
+/// There is no third input and no clock. Everything the recorder can be told
+/// arrives as one press edge carrying its own modifiers, so this function is
+/// the whole transition relation and it is total.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Capture {
+    /// A registrable combination — write it into the field and disarm.
+    Took(Hotkey),
+    /// Bare Escape. A chord is modifiers plus a key, so a lone Escape can
+    /// never be one, which is what leaves the keystroke free to mean "back
+    /// out". With any modifier held it is an ordinary key and `⌃⎋` records.
+    Cancel,
+    /// A key no backend can register. Stay armed and say so — disarming here
+    /// would make a mistyped chord look like a recorded one.
+    Refuse(&'static str),
+}
+
+/// Decide what one key press does to an armed recorder.
+///
+/// **Press edges, not the set of held keys.** egui exposes both; only this
+/// one is trustworthy. Measured on a real macOS typing session (965 frames):
+/// while a modifier was held, the key vanished from `keys_down` 25 times
+/// mid-press, for 0.08–0.63 s at a time — but the modifiers were unchanged
+/// across every one of those gaps. The key was re-arriving as fresh press
+/// events. So a rule phrased over presses sees a clean, plentiful signal
+/// exactly where a rule phrased over the held set sees a hole.
+///
+/// That is also why nothing here is timed. A duration rule needs a stable
+/// "still held", which is the one thing this platform does not provide.
+pub fn decide_capture(modifiers: eframe::egui::Modifiers, key: eframe::egui::Key) -> Capture {
+    use eframe::egui::Key;
+
+    let bare = !(modifiers.ctrl || modifiers.alt || modifiers.shift || modifiers.mac_cmd);
+    if key == Key::Escape && bare {
+        return Capture::Cancel;
+    }
+    match hotkey::hotkey_from_egui(modifiers, key) {
+        Some(hk) => Capture::Took(hk),
+        None => Capture::Refuse("Эту клавишу связать нельзя — попробуй другую"),
+    }
+}
+
+// =============================================================================
 // eframe shell — render & event-loop layer. Cross-platform so it compiles on
 // native AND wasm32; the *callers* differ (native main spawns it as a
 // dedicated process, wasm boots it via the URL query branch in lib.rs).
@@ -265,6 +312,11 @@ pub struct SettingsApp {
     persist: PersistFn,
     /// Surfaced to the user above the buttons. Cleared on the next interaction.
     banner: Option<String>,
+    /// `Some(previous label)` while the recorder is armed — the two states of
+    /// the §9 machine, and the snapshot a cancel restores in one field.
+    recording: Option<String>,
+    /// Shown under the row after a key that cannot be bound.
+    recording_hint: Option<&'static str>,
     /// When set, the next frame ends the eframe loop. On native this exits
     /// the dedicated settings process; on WASM it's a no-op (no process).
     quit_requested: bool,
@@ -296,8 +348,32 @@ impl SettingsApp {
             provider,
             persist,
             banner: None,
+            recording: None,
+            recording_hint: None,
             quit_requested: false,
         }
+    }
+
+    /// Arm the recorder, snapshotting the label a cancel restores.
+    ///
+    /// Keyboard focus is surrendered first: while armed the recorder reads
+    /// every press, and a TextEdit still holding focus would swallow them
+    /// into the interval field instead.
+    fn arm(&mut self, ctx: &eframe::egui::Context) {
+        self.recording = Some(self.form.hotkey.clone());
+        self.recording_hint = None;
+        ctx.memory_mut(|m| m.surrender_focus(eframe::egui::Id::new("settings_interval")));
+        ctx.memory_mut(|m| m.surrender_focus(eframe::egui::Id::new("settings_hotkey")));
+    }
+
+    /// Disarm. `keep` is the label to leave in the field: the captured one,
+    /// or the snapshot when the user backed out.
+    fn disarm(&mut self, keep: Option<String>) {
+        if let Some(label) = keep {
+            self.form.hotkey = label;
+        }
+        self.recording = None;
+        self.recording_hint = None;
     }
 
     /// Save path: validate, persist, update baseline. On error → banner.
@@ -344,8 +420,10 @@ impl eframe::App for SettingsApp {
         let ctx_owned = root_ui.ctx().clone();
         let ctx = &ctx_owned;
 
-        // Esc closes the window.
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        // Esc closes the window — except while the recorder is armed, where
+        // it is that machine's cancel. Without this guard, backing out of a
+        // recording would take the whole window with it.
+        if self.recording.is_none() && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.quit_requested = true;
         }
         if ctx.input(|i| i.viewport().close_requested()) {
@@ -356,23 +434,81 @@ impl eframe::App for SettingsApp {
         ui.heading("Settings");
         ui.add_space(8.0);
 
-        // Row 1: hotkey — one editable text field, holding a string in the
-        // §5 format shown in this platform's spelling. There is no capture
-        // button: see the note on `hotkey::VOCABULARY` and design-spec §9 for
-        // why the recorder was removed rather than fixed.
+        // Row 1: hotkey. Two states, exactly as spec §9 lays them out —
+        // a text field plus `Запись`, or an armed prompt plus `Отмена`.
+        //
+        // The recorder reads *press edges* off this frame's event list. It
+        // never looks at `keys_down`: that set drops a held key repeatedly on
+        // macOS while a modifier is down, which is what made the previous
+        // hold-to-commit recorder unable to accept anything at all.
+        if self.recording.is_some() {
+            let pressed: Option<(egui::Key, egui::Modifiers)> = ctx.input(|i| {
+                i.events.iter().find_map(|e| match e {
+                    // `repeat` is skipped so a key already down when the
+                    // recorder armed cannot be captured by its autorepeat.
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        repeat: false,
+                        modifiers,
+                        ..
+                    } => Some((*key, *modifiers)),
+                    _ => None,
+                })
+            });
+            if let Some((key, modifiers)) = pressed {
+                if std::env::var_os("NUDGE_RECORDER_LOG").is_some() {
+                    eprintln!("[rec] press key={key:?} mods={modifiers:?}");
+                }
+                match decide_capture(modifiers, key) {
+                    Capture::Took(hk) => self.disarm(Some(hotkey::format_native(&hk))),
+                    Capture::Cancel => {
+                        let previous = self.recording.clone();
+                        self.disarm(previous);
+                    }
+                    Capture::Refuse(hint) => self.recording_hint = Some(hint),
+                }
+            }
+            ctx.request_repaint();
+        }
+
         ui.horizontal(|ui| {
             ui.label("Global hotkey:");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.form.hotkey)
-                    .id(egui::Id::new("settings_hotkey"))
-                    .desired_width(220.0)
-                    .hint_text(hotkey::format_native(&hotkey::default_hotkey())),
-            );
+            match self.recording.clone() {
+                None => {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.form.hotkey)
+                            .id(egui::Id::new("settings_hotkey"))
+                            .desired_width(220.0)
+                            .hint_text(hotkey::format_native(&hotkey::default_hotkey())),
+                    );
+                    if ui.button("Записать").clicked() {
+                        self.arm(ctx);
+                    }
+                }
+                Some(previous) => {
+                    ui.add_sized(
+                        [220.0, ui.spacing().interact_size.y],
+                        egui::Label::new(egui::RichText::new("нажми комбинацию…").strong()),
+                    );
+                    if ui.button("Отмена").clicked() {
+                        self.disarm(Some(previous));
+                    }
+                }
+            }
         });
-        // The accepted vocabulary, always visible rather than only after a
-        // rejected save: the field is the only way to set a hotkey, so what
-        // may go in it is not an error message.
-        ui.label(egui::RichText::new(hotkey::VOCABULARY).small().weak());
+        if self.recording.is_some() {
+            ui.label(
+                egui::RichText::new("Модификаторы + одна клавиша. Esc — отмена.")
+                    .small()
+                    .weak(),
+            );
+        } else {
+            ui.label(egui::RichText::new(hotkey::VOCABULARY).small().weak());
+        }
+        if let Some(hint) = self.recording_hint {
+            ui.colored_label(egui::Color32::LIGHT_RED, hint);
+        }
         ui.add_space(6.0);
 
         // Row 2: default interval
@@ -662,6 +798,99 @@ mod tests {
             !parse_settings_arg(["--settingsxxx"]),
             "must be an exact match — no prefix gimmicks"
         );
+    }
+
+    // ---- the recorder (spec §9) --------------------------------------------
+
+    use eframe::egui::{Key, Modifiers};
+
+    fn ctrl_shift() -> Modifiers {
+        Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Modifiers::NONE
+        }
+    }
+
+    #[test]
+    fn a_press_with_modifiers_is_taken_whole() {
+        match decide_capture(ctrl_shift(), Key::A) {
+            Capture::Took(hk) => assert_eq!(crate::hotkey::format(&hk), "Ctrl+Shift+A"),
+            other => panic!("expected Took, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bare_escape_cancels_but_escape_with_a_modifier_records() {
+        assert_eq!(
+            decide_capture(Modifiers::NONE, Key::Escape),
+            Capture::Cancel
+        );
+        match decide_capture(Modifiers::CTRL, Key::Escape) {
+            Capture::Took(hk) => assert_eq!(crate::hotkey::format(&hk), "Ctrl+Escape"),
+            other => panic!("expected Took(Ctrl+Escape), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_lone_command_press_cannot_reach_the_recorder_at_all() {
+        // Modifiers are not `Key` variants, so a chord of them produces no
+        // press edge and the recorder simply keeps waiting. This is the case
+        // that used to look like the recorder ignoring the user.
+        assert!(
+            crate::hotkey::hotkey_from_egui(
+                Modifiers {
+                    mac_cmd: true,
+                    command: true,
+                    alt: true,
+                    ..Modifiers::NONE
+                },
+                Key::J,
+            )
+            .is_some(),
+            "⌥⌘ plus a key is bindable — it is the chord alone that is not an event"
+        );
+    }
+
+    #[test]
+    fn a_key_no_backend_can_register_is_refused_without_disarming() {
+        assert!(matches!(
+            decide_capture(Modifiers::CTRL, Key::Home),
+            Capture::Refuse(_)
+        ));
+    }
+
+    #[test]
+    fn every_capture_round_trips_through_the_field() {
+        // The shell writes `format_native(taken)` into the text field and Save
+        // hands that string to the config, so anything the recorder can
+        // produce must parse back — otherwise a recorded hotkey is unreadable
+        // at next launch.
+        let cases = [
+            (ctrl_shift(), Key::Space),
+            (Modifiers::ALT, Key::J),
+            (Modifiers::NONE, Key::F12),
+            (
+                Modifiers {
+                    alt: true,
+                    mac_cmd: true,
+                    command: true,
+                    ..Modifiers::NONE
+                },
+                Key::Backspace,
+            ),
+        ];
+        for (mods, key) in cases {
+            let Capture::Took(hk) = decide_capture(mods, key) else {
+                panic!("{key:?} must be taken");
+            };
+            let shown = crate::hotkey::format_native(&hk);
+            assert_eq!(
+                crate::hotkey::parse(&shown).expect("the recorder's own output must parse"),
+                hk,
+                "round trip failed for {shown:?}"
+            );
+        }
     }
 
     #[test]

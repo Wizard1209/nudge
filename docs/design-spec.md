@@ -407,20 +407,57 @@ reads as `⌃⇧Space` on a Mac. One that does *not* parse is shown exactly as
 stored: it is the only copy of what the user typed, and the field is where
 they fix it.
 
-**There is no capture button.** One was built and removed. Capture needs to
-know which keys are held *right now*, and the only thing the GUI toolkit
-offers for that — its set of currently-down keys — is not reliable on macOS
-while a modifier is held: measured over 965 frames of real typing, the key
-dropped out of that set 25 times mid-press, for 0.08–0.63 s at a time, and
-the longest unbroken stretch of one combination was 0.67 s. Any rule of the
-form "held for N seconds" is unimplementable on that signal, and every
-softer rule tried in its place ("first key wins", "commit on release") is
-either non-deterministic or fires on a combination the user was still
-assembling. The failure is not visible as an error — the row simply never
-accepts anything — which is the worst shape a rule can have.
+**`Записать` captures a combination from the keyboard.** It is a machine with
+**two states** and **three events**, and no clock anywhere in it.
 
-So the contract is the grammar, and the grammar alone: what the user types
-is what gets bound, and §5 says exactly what may be typed.
+| State | The row shows |
+|---|---|
+| **Idle** | the editable field, the vocabulary, and a `Записать` button |
+| **Armed** | `нажми комбинацию…`, the line *"Модификаторы + одна клавиша. Esc — отмена."*, and an `Отмена` button |
+
+The only input an armed recorder takes is a **key press edge**: one press of
+a non-modifier key, carrying the modifiers held at that instant. Autorepeat
+presses are ignored, so a key already down when the recorder arms cannot
+capture itself.
+
+| | Idle | Armed |
+|---|---|---|
+| **`Записать`** | → Armed, snapshotting the current label | — |
+| **press** — bindable per §5 | — | → Idle, field := the combination, canonically spelled |
+| **press** — bare `Esc` | — | → Idle, field := the snapshot |
+| **press** — key §5 cannot bind | — | → Armed, with a hint. Staying armed is the point: disarming would make a mistyped chord look like a recorded one. |
+| **`Отмена`** | — | → Idle, field := the snapshot |
+
+Bare `Esc` cancels because a hotkey is modifiers **plus** a key, so a lone
+`Esc` can never be one and the keystroke is free to mean "back out". With any
+modifier held it is an ordinary key, and `⌃⎋` records.
+
+A chord of modifiers alone produces no press edge at all, so the recorder
+simply keeps waiting — there is nothing to accept and nothing to refuse.
+
+Capturing only ever edits the staged value; `Save` is still what writes to
+`config.json`.
+
+#### Why press edges, and why nothing is timed
+
+The recorder must not read the toolkit's set of currently-held keys. On macOS
+that set is unreliable in exactly the situation a hotkey recorder lives in.
+
+Measured over one real typing session — 965 frames with a modifier held: the
+key dropped out of the held set **25 times mid-press**, for 0.08–0.63 s at a
+time, and the longest unbroken stretch of one combination was **0.67 s**. The
+modifiers were unchanged across every one of those gaps; the key was
+re-arriving as fresh press events.
+
+Two things follow, and they are the whole design:
+
+- **A rule phrased over presses sees a clean signal** where a rule phrased
+  over the held set sees a hole.
+- **No rule may be phrased over duration.** "Held unchanged for N seconds"
+  needs a stable "still held", which is the one thing this platform does not
+  give. An earlier recorder was built that way and could accept nothing at
+  all — and it failed silently, since a row that never accepts anything
+  shows no error to point at.
 
 ### Saving
 

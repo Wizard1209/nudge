@@ -110,10 +110,11 @@ The settings window opens from the tray menu (`Settings`) and edits the same
 `config.json` (hotkey, interval, autostart). Edits are picked up by the
 running app immediately via a file watcher.
 
-The hotkey is a text field — type any of the spellings above; there is no
-capture button, and `docs/design-spec.md` §9 says why. `Save` refuses a
-combination the OS cannot bind rather than writing it. Full grammar:
-`docs/design-spec.md` §5.
+The hotkey can be set two ways: type it into the field in any of the
+spellings above, or press `Записать` and then press the combination itself.
+Either way `Save` refuses one the OS cannot bind rather than writing it.
+Full grammar: `docs/design-spec.md` §5; the recorder's two states and three
+events: §9.
 
 ## Development: the Electron prototype
 
