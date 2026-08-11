@@ -226,6 +226,7 @@ td:first-child{color:var(--ink)}tr:last-child td{border-bottom:none}
 .v{font-family:var(--mono);font-size:14px;letter-spacing:.04em;text-transform:uppercase;display:inline-block;padding:3px 12px}
 .v.yes{color:var(--ink);border:1px solid var(--line)}
 .v.no{color:var(--faint)}.v.no::before{content:"— "}
+.note{font-family:var(--mono);font-size:14px;color:var(--faint);display:inline-block;margin-top:5px}
 footer{padding:var(--s4) 0 var(--s5);color:var(--faint);font-family:var(--mono);font-size:14px;line-height:1.8}
 footer .s{color:var(--dim)}
 footer code{background:none;color:var(--dim);padding:0}
@@ -369,29 +370,18 @@ footer code{background:none;color:var(--dim);padding:0}
 </div></section>
 
 <section><div class="row">
- <div class="sl">почему три</div>
- <div>
-  <h2>Два состояния «спрашиваю» — потому что закрытие в них означает разное</h2>
-  <p class="h2sub">Единственное различие живёт в колонке LEAVE.</p>
-  <p>Попап, открытый таймером, имеет дедлайн <b>в прошлом</b>. Уйти из него, не поставив новый, значит увидеть его снова на следующем кадре — поэтому LEAVE обязан переставить таймер. Попап, открытый вручную, имеет живой дедлайн, и трогать его нельзя: пользователь заглянул сам, до срока, и не просил срок сдвигать.</p>
-  <p><b>DEADLINE не может прийти, пока попап на экране.</b> Таймер припаркован на всё время показа, поэтому интервал, истёкший за открытым попапом, не теряется и не срабатывает раньше времени: он всё ещё просрочен, когда попап закрывается, и срабатывает сразу после. Поэтому за LEAVE из <b>ASKING · MANUAL</b> может немедленно последовать DEADLINE — единственный переход, который выглядит как «попап вернулся сам собой».</p>
- </div>
-</div></section>
-
-<section><div class="row">
  <div class="sl">отказы</div>
  <div>
   <h2>Неудачный SUBMIT никуда не переходит</h2>
-  <p class="h2sub">Две петли в то же состояние: попап остаётся открытым, показывается ошибка, таймер не трогается.</p>
+  <p class="h2sub">Петля в то же состояние: попап открыт, ошибка на экране, таймер не тронут — нудж, чей ответ потерялся, не считается отвеченным.</p>
   <table>
    <thead><tr><th>Отказ</th><th>Журнал</th><th>Таймер</th><th>Поля</th></tr></thead>
    <tbody>
-    <tr><td>Минуты — число ≤ 0 или не конечное</td><td><span class="v no">нет</span></td><td><span class="v no">нет</span></td><td><span class="v yes">сохранены</span></td></tr>
-    <tr><td>Запись в журнал не удалась</td><td><span class="v no">нет</span></td><td><span class="v no">нет</span></td><td><span class="v yes">сохранены</span></td></tr>
+    <tr><td>Минуты — число ≤ 0 или не конечное<br><span class="note">пустое или нечисловое — не отказ, а откат к 10</span></td><td><span class="v no">нет</span></td><td><span class="v no">нет</span></td><td><span class="v yes">сохранены</span></td></tr>
+    <tr><td>Запись в журнал не удалась<br><span class="note">ОС отказала в дописывании</span></td><td><span class="v no">нет</span></td><td><span class="v no">нет</span></td><td><span class="v yes">сохранены</span></td></tr>
+    <tr><td>У LEAVE пути отказа нет<br><span class="note">не пишет и не валидирует — закрывается всегда</span></td><td><span class="v no">нет</span></td><td colspan="2"><span class="v yes">по таблице переходов</span></td></tr>
    </tbody>
   </table>
-  <p>Таймер не переставляется намеренно: нудж, чей ответ потерялся, не считается отвеченным. Пустые или нечисловые минуты — не отказ, а откат к десяти: отвергается только явно набранное число, которое явно нельзя иметь в виду. У LEAVE пути отказа нет вовсе — он ничего не пишет и не валидирует, попап закрывается всегда.</p>
-  <p><b>Поле минут в машине не участвует.</b> Текст в нём переживает любой переход, включая SUBMIT, и меняется только правкой. <code>doing</code> и <code>bullshit</code> очищает только SUBMIT — поэтому попап, покинутый через Esc, открывается ровно там, где его оставили.</p>
  </div>
 </div></section>
 

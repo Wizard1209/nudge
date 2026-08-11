@@ -127,31 +127,28 @@ given under the table.
 - **Submit's close effects**, the same from both Asking states: write a
   journal line **iff** `doing` or `bullshit` is non-empty after trimming; set
   the timer to the minutes field; clear `doing` and `bullshit`.
-- **Leave differs between the two Asking states** because a timer-opened
-  popup's deadline is already in the past: not setting a new one there means
-  the popup reappears on the next frame.
+- **Leave differs by state** because a timer-opened popup's deadline is
+  already past: not setting a new one means it reappears on the next frame.
 - **Deadline cannot arrive while the popup is visible** — the timer parks for
-  the duration of the show. An interval that elapses behind an open popup is
-  neither lost nor delivered early: it is still overdue when the popup
-  closes, so a `Leave` from `Asking·Manual` can be followed at once by
-  `Deadline`.
+  the duration of the show, so an interval that elapses behind an open popup
+  is still overdue when it closes and fires then. That is why a `Leave` from
+  `Asking·Manual` can be followed at once by `Deadline`.
 - **Summon while visible is dropped**, not queued.
-- **The minutes field is not part of the state.** It keeps its text through
-  every transition, including `Submit`, and changes only when edited.
+- **The minutes field is not state.** It survives every transition, including
+  `Submit`, and changes only when edited.
 
 ### Failed submits stay put
 
-Both failure paths are **self-transitions**: the state does not change, the
-popup stays open, an error is shown, and the timer is untouched — a nudge
-whose answer was lost must not count as answered.
+Both are **self-transitions**: the popup stays open, an error is shown, and
+the timer is untouched — a nudge whose answer was lost must not count as
+answered.
 
 | Failure | Condition |
 |---|---|
 | Invalid interval | The minutes field is a number that is ≤ 0 or not finite. Empty, whitespace or non-numeric text is not a failure: it is not an explicit number, so it falls back to 10 minutes. |
 | Journal write failed | The OS (or browser storage) refused the append. |
 
-`Leave` has no failure path. It never writes and never validates, so the
-popup always closes.
+`Leave` has no failure path: it never writes and never validates.
 
 ## 5. Tray (native Windows build only)
 
