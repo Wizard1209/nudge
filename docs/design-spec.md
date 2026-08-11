@@ -124,59 +124,34 @@ given under the table.
 | **Asking·Timer** | — | — | → Waiting · *close effects* | → Waiting · **timer := field** · text kept |
 | **Asking·Manual** | — | — | → Waiting · *close effects* | → Waiting · **timer untouched** · text kept |
 
-- **Submit's close effects**, identical from both Asking states: write a
-  journal line **iff** `doing` or `bullshit` is non-empty after trimming;
-  set the timer to the minutes field; clear `doing` and `bullshit`.
-- **The one difference between the two Asking states** is the `Leave` column:
-  a timer-opened popup has a deadline in the past, so leaving it must set a
-  new one or the popup reappears on the next frame. A manually-opened popup
-  has a live deadline, and leaving must not disturb it.
-- **`Deadline` cannot arrive while the popup is visible.** The timer is
-  parked for as long as the popup is up, so an interval that elapses behind
-  an open popup is not lost and not delivered early: it is still overdue when
-  the popup closes and fires immediately after. This is why `Leave` from
-  `Asking·Manual` can be followed at once by `Deadline`.
-- **`Summon` while visible is dropped**, not queued. The popup is already
-  there, which is what the event asks for.
+- **Submit's close effects**, the same from both Asking states: write a
+  journal line **iff** `doing` or `bullshit` is non-empty after trimming; set
+  the timer to the minutes field; clear `doing` and `bullshit`.
+- **Leave differs between the two Asking states** because a timer-opened
+  popup's deadline is already in the past: not setting a new one there means
+  the popup reappears on the next frame.
+- **Deadline cannot arrive while the popup is visible** — the timer parks for
+  the duration of the show. An interval that elapses behind an open popup is
+  neither lost nor delivered early: it is still overdue when the popup
+  closes, so a `Leave` from `Asking·Manual` can be followed at once by
+  `Deadline`.
+- **Summon while visible is dropped**, not queued.
+- **The minutes field is not part of the state.** It keeps its text through
+  every transition, including `Submit`, and changes only when edited.
 
 ### Failed submits stay put
 
-`Submit` has two failure paths, and both are **self-transitions**: the state
-does not change, the popup stays open, and an error is shown.
+Both failure paths are **self-transitions**: the state does not change, the
+popup stays open, an error is shown, and the timer is untouched — a nudge
+whose answer was lost must not count as answered.
 
 | Failure | Condition |
 |---|---|
-| Invalid interval | The minutes field parses as a number that is ≤ 0 or not finite. Nothing is written, the timer is untouched, the text is kept. |
-| Journal write failed | The OS (or browser storage) refused the append. The timer is **not** reset — a nudge whose answer was lost must not count as answered. |
+| Invalid interval | The minutes field is a number that is ≤ 0 or not finite. Empty, whitespace or non-numeric text is not a failure: it is not an explicit number, so it falls back to 10 minutes. |
+| Journal write failed | The OS (or browser storage) refused the append. |
 
-Empty, whitespace or unparseable minutes text is **not** a failure on this
-path: it is not an explicit number, so it falls back to 10 minutes. Only a
-number the user clearly typed and clearly cannot mean is refused.
-
-`Leave` has no failure path at all. It never writes and never validates: a
-garbage minutes field falls back to 10 minutes so the popup always closes.
-
-### What is not state
-
-- **The minutes field** keeps its text through every transition, including
-  `Submit`. It changes only when the user edits it.
-- **`doing` and `bullshit`** are cleared by `Submit` and by nothing else, so
-  a popup left by `Esc` or by switching away reopens exactly where it was.
-- Showing and hiding are instant; no animation is part of any transition.
-
-### Two scenarios this machine already answers
-
-They are worked here because they are the two that get asked, not because
-they are separate rules — both are read straight off the table.
-
-**Change the interval without writing anything.** `Summon` → edit the
-minutes field → `Submit` with `doing` and `bullshit` empty. The journal
-condition fails, so nothing is written; the timer is set from the field
-anyway.
-
-**A nudge you are not ready for.** `Deadline` → `Leave`. Nothing is written,
-your half-typed answer is still there next time, and the timer restarts from
-the field — so the popup returns after a full interval, not immediately.
+`Leave` has no failure path. It never writes and never validates, so the
+popup always closes.
 
 ## 5. Tray (native Windows build only)
 
