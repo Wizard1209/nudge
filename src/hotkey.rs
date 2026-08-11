@@ -153,12 +153,45 @@ pub fn parse(input: &str) -> Result<Hotkey, ParseError> {
 /// recognise it. None means "not a key we know how to register". Kept
 /// separate from `parse` so the platform layer can also use it for
 /// VK-mapping without re-parsing the whole string.
+/// The symbol caps, named by their unshifted legend (§5). One character each,
+/// so they are their own canonical token and their own label on both
+/// platforms. The shifted twin of a cap (`?` for `/`, `+` for `=`) is not a
+/// spelling: it would be a second name for one binding, and `+` is the
+/// separator besides.
+const SYMBOL_KEYS: &str = "-=[]\\;',./`";
+
+/// Every key that is not a letter, a digit or `F1`–`F24`, as
+/// `(canonical token, accepted spellings, label, macOS glyph)`.
+///
+/// One row per physical key. The spellings are what §5 lists — including the
+/// Mac symbols, so a shortcut written the way a Mac writes it round-trips.
+/// The label is what [`format`] emits; the glyph is what [`format_native`]
+/// shows on macOS, empty where the cap carries a word (`Space`) or has no cap
+/// there at all (`Insert`).
+#[rustfmt::skip]
+const NAMED_KEYS: &[(&str, &[&str], &str, &str)] = &[
+    ("SPACE",     &["SPACE", "␣"],                    "Space",     ""),
+    ("ENTER",     &["ENTER", "RETURN", "↩", "⏎", "⌤"], "Enter",     "↩"),
+    ("TAB",       &["TAB", "⇥"],                      "Tab",       "⇥"),
+    ("ESCAPE",    &["ESCAPE", "ESC", "⎋"],            "Escape",    "⎋"),
+    ("BACKSPACE", &["BACKSPACE", "⌫"],                "Backspace", "⌫"),
+    ("LEFT",      &["LEFT", "←"],                     "Left",      "←"),
+    ("RIGHT",     &["RIGHT", "→"],                    "Right",     "→"),
+    ("UP",        &["UP", "↑"],                       "Up",        "↑"),
+    ("DOWN",      &["DOWN", "↓"],                     "Down",      "↓"),
+    ("HOME",      &["HOME", "↖"],                     "Home",      "↖"),
+    ("END",       &["END", "↘"],                      "End",       "↘"),
+    ("PAGEUP",    &["PAGEUP", "PGUP", "⇞"],           "PageUp",    "⇞"),
+    ("PAGEDOWN",  &["PAGEDOWN", "PGDN", "⇟"],         "PageDown",  "⇟"),
+    ("INSERT",    &["INSERT", "INS"],                 "Insert",    ""),
+    ("DELETE",    &["DELETE", "DEL", "⌦"],            "Delete",    "⌦"),
+];
+
 fn canonicalize_key(upper: &str) -> Option<String> {
-    if upper.len() == 1 {
-        let ch = upper.chars().next().unwrap();
-        if ch.is_ascii_alphanumeric() {
-            return Some(upper.to_string());
-        }
+    if let Some(ch) = one_char(upper)
+        && (ch.is_ascii_alphanumeric() || SYMBOL_KEYS.contains(ch))
+    {
+        return Some(upper.to_string());
     }
     // Function keys F1..F24
     if let Some(rest) = upper.strip_prefix('F')
@@ -167,29 +200,18 @@ fn canonicalize_key(upper: &str) -> Option<String> {
     {
         return Some(format!("F{}", n));
     }
-    // Named keys we're willing to register globally. Deliberately conservative:
-    // home/end/arrows/etc. can stay un-supported until someone asks. Most users
-    // pick Letter+modifiers or Space for spotlight-style shortcuts.
-    match upper {
-        "SPACE" | "ENTER" | "RETURN" | "TAB" | "ESC" | "ESCAPE" | "BACKSPACE" => {
-            // Normalize aliases.
-            Some(match upper {
-                "RETURN" => "ENTER".to_string(),
-                "ESC" => "ESCAPE".to_string(),
-                other => other.to_string(),
-            })
-        }
-        // The macOS symbols for the same five keys, so a shortcut written the
-        // way the Mac writes it round-trips. `⌦` (forward delete) is absent
-        // on purpose: it is a different key from `⌫`, and no backend here can
-        // register it.
-        "␣" => Some("SPACE".to_string()),
-        "↩" | "⏎" | "⌤" => Some("ENTER".to_string()),
-        "⇥" => Some("TAB".to_string()),
-        "⎋" => Some("ESCAPE".to_string()),
-        "⌫" => Some("BACKSPACE".to_string()),
-        _ => None,
-    }
+    NAMED_KEYS
+        .iter()
+        .find(|(_, spellings, _, _)| spellings.contains(&upper))
+        .map(|(token, ..)| token.to_string())
+}
+
+/// The single character of `s`, or `None` if it is not exactly one — by
+/// character, not by byte, so a multi-byte glyph is one character and falls
+/// through to [`NAMED_KEYS`] rather than being read as a symbol cap.
+fn one_char(s: &str) -> Option<char> {
+    let mut chars = s.chars();
+    chars.next().filter(|_| chars.next().is_none())
 }
 
 /// How this platform spells the fourth modifier when writing a hotkey out.
@@ -236,19 +258,23 @@ pub fn format(hk: &Hotkey) -> String {
 ///
 /// The named keys are short because the backends are: Carbon's
 /// `RegisterEventHotKey` and Win32's `RegisterHotKey` both take a single key
-/// code, and this set is the intersection that maps on both. Arrows,
-/// Home/End and punctuation are absent because nobody has asked, not because
-/// they are impossible.
+/// code, and this set is the intersection that maps on both. The keypad is
+/// outside it on purpose — §5 says why.
 // The modifier symbols stay — they are what the keycaps say, and the line
-// exists to teach the form the field uses. The key symbols do not: at the
-// size this renders, `⌫` and `↩` are a smudge, and unlike the modifiers they
-// have unambiguous names.
+// exists to teach the form the field uses. The key symbols do not, with the
+// arrows as the one exception: at the size this renders, `⌫` and `↩` are a
+// smudge and have unambiguous names anyway, while `Left` reads as a word
+// where `←` reads as the cap.
 #[cfg(target_os = "macos")]
 pub const VOCABULARY: &str = "Modifiers ⌃ ⌥ ⇧ ⌘ (or Ctrl, Option, Shift, Cmd) \
-    plus one key: A–Z, 0–9, F1–F20, Space, Enter, Tab, Esc, Backspace.";
+    plus one key: A–Z, 0–9, F1–F20, Space, Enter, Tab, Esc, Backspace, \
+    ← ↑ → ↓, Home, End, PageUp, PageDown, Insert, Delete, \
+    or a symbol cap: - = [ ] \\ ; ' , . / `";
 #[cfg(not(target_os = "macos"))]
 pub const VOCABULARY: &str = "Modifiers Ctrl, Alt, Shift, Win \
-    plus one key: A–Z, 0–9, F1–F24, Space, Enter, Tab, Esc, Backspace.";
+    plus one key: A–Z, 0–9, F1–F24, Space, Enter, Tab, Esc, Backspace, \
+    ← ↑ → ↓, Home, End, PageUp, PageDown, Insert, Delete, \
+    or a symbol cap: - = [ ] \\ ; ' , . / `";
 
 /// The label to *show* a user of this platform — on macOS the symbol form,
 /// `⌥⌘J`, which is what every other Mac app prints and what the keycaps say.
@@ -280,34 +306,28 @@ pub fn format_native(hk: &Hotkey) -> String {
                 out.push(glyph);
             }
         }
-        let key_label = match hk.key.as_str() {
-            "ENTER" => "↩".to_string(),
-            "TAB" => "⇥".to_string(),
-            "ESCAPE" => "⎋".to_string(),
-            "BACKSPACE" => "⌫".to_string(),
-            other => title_case_key(other),
-        };
+        let key_label = NAMED_KEYS
+            .iter()
+            .find(|(token, ..)| *token == hk.key.as_str())
+            .map(|(_, _, _, glyph)| *glyph)
+            .filter(|glyph| !glyph.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| title_case_key(hk.key.as_str()));
         out.push_str(&key_label);
         out
     }
 }
 
 fn title_case_key(upper: &str) -> String {
-    // F-keys stay uppercase. Single letters stay uppercase. Multi-char names
-    // (Space, Enter, Escape, …) get title-cased so the rendered label reads
-    // naturally instead of shouting.
-    let is_f_key = upper.starts_with('F') && upper[1..].chars().all(|c| c.is_ascii_digit());
-    if upper.len() == 1 || is_f_key {
-        return upper.to_string();
-    }
-    let mut chars = upper.chars();
-    match chars.next() {
-        None => String::new(),
-        Some(first) => {
-            let rest: String = chars.as_str().to_ascii_lowercase();
-            format!("{}{}", first, rest)
-        }
-    }
+    // Letters, digits and symbol caps are one character and already read the
+    // way they are written; F-keys stay uppercase. Everything else is a named
+    // key, and [`NAMED_KEYS`] carries the spelling to show — `PageUp`, not the
+    // `Pageup` a mechanical title-casing would produce.
+    NAMED_KEYS
+        .iter()
+        .find(|(token, ..)| *token == upper)
+        .map(|(_, _, label, _)| (*label).to_string())
+        .unwrap_or_else(|| upper.to_string())
 }
 
 /// Default hotkey used when no config file exists yet. Ctrl+Shift+Space is
@@ -324,7 +344,7 @@ pub fn default_hotkey() -> Hotkey {
 /// recorder cannot produce a label that would silently fail to register at
 /// next launch.
 ///
-/// Returns `None` for any key outside that set (arrows, Home/End, punctuation,
+/// Returns `None` for any key outside that set (`fn`, the keypad, media keys,
 /// dead keys, …) — the caller surfaces a hint and keeps recording.
 ///
 /// On the modifier side, egui's `mac_cmd` / `command` both fold into our
@@ -409,6 +429,37 @@ pub fn hotkey_from_egui(
         Key::Tab => "TAB",
         Key::Escape => "ESCAPE",
         Key::Backspace => "BACKSPACE",
+        Key::ArrowLeft => "LEFT",
+        Key::ArrowRight => "RIGHT",
+        Key::ArrowUp => "UP",
+        Key::ArrowDown => "DOWN",
+        Key::Home => "HOME",
+        Key::End => "END",
+        Key::PageUp => "PAGEUP",
+        Key::PageDown => "PAGEDOWN",
+        Key::Insert => "INSERT",
+        Key::Delete => "DELETE",
+        // Symbol caps, named by their unshifted legend (§5). egui reports the
+        // shifted twin as a variant of its own, so both fold onto the one
+        // token. That is belt and braces behind `physical_key`, which already
+        // reports the cap rather than what the layout printed — but this
+        // function is also reached with a logical key, and then `⇧/` must not
+        // become a second name for `/`.
+        //
+        // The digit row keeps only its digits: `!` is the sole shifted digit
+        // egui names, so folding it onto `1` would be one exception where the
+        // symbol caps are a rule.
+        Key::Minus => "-",
+        Key::Equals | Key::Plus => "=",
+        Key::OpenBracket | Key::OpenCurlyBracket => "[",
+        Key::CloseBracket | Key::CloseCurlyBracket => "]",
+        Key::Backslash | Key::Pipe => "\\",
+        Key::Semicolon | Key::Colon => ";",
+        Key::Quote => "'",
+        Key::Comma => ",",
+        Key::Period => ".",
+        Key::Slash | Key::Questionmark => "/",
+        Key::Backtick => "`",
         _ => return None,
     };
 
@@ -635,8 +686,8 @@ mod tests {
         // The error has to name the offending token, not the whole string —
         // the settings banner shows it verbatim.
         assert!(matches!(
-            parse("⌘Home"),
-            Err(ParseError::UnknownToken(t)) if t == "Home"
+            parse("⌘Numpad5"),
+            Err(ParseError::UnknownToken(t)) if t == "Numpad5"
         ));
     }
 
@@ -853,32 +904,113 @@ mod tests {
         // otherwise the recorder writes a label that fails to register at
         // next launch, silently.
         for k in [
-            Key::Home,
-            Key::End,
-            Key::Insert,
-            Key::Delete,
-            Key::PageUp,
-            Key::PageDown,
-            Key::ArrowUp,
-            Key::ArrowDown,
-            Key::ArrowLeft,
-            Key::ArrowRight,
-            Key::Comma,
-            Key::Period,
-            Key::Semicolon,
-            Key::Quote,
-            Key::Minus,
-            Key::Plus,
-            Key::Equals,
-            Key::Slash,
-            Key::Backslash,
             Key::F25, // F25..F35 exist in egui but Win32 only goes F1..F24
+            Key::Copy,
+            Key::Cut,
+            Key::Paste,
+            Key::BrowserBack,
+            // The one shifted digit egui names. The digit row is bound by its
+            // digits, so folding this onto "1" would be an exception where the
+            // symbol caps are a rule.
+            Key::Exclamationmark,
         ] {
             assert!(
                 hotkey_from_egui(Modifiers::CTRL, k).is_none(),
                 "{k:?} must be rejected"
             );
         }
+    }
+
+    #[test]
+    fn arrows_and_navigation_map() {
+        let keys = [
+            (Key::ArrowLeft, "LEFT"),
+            (Key::ArrowRight, "RIGHT"),
+            (Key::ArrowUp, "UP"),
+            (Key::ArrowDown, "DOWN"),
+            (Key::Home, "HOME"),
+            (Key::End, "END"),
+            (Key::PageUp, "PAGEUP"),
+            (Key::PageDown, "PAGEDOWN"),
+            (Key::Insert, "INSERT"),
+            (Key::Delete, "DELETE"),
+        ];
+        for (k, expected) in keys {
+            let hk = hotkey_from_egui(Modifiers::NONE, k).unwrap();
+            assert_eq!(hk.key.as_str(), expected);
+        }
+    }
+
+    #[test]
+    fn a_symbol_cap_and_its_shifted_twin_are_one_key() {
+        // egui reports `?` and `/` as different variants of one cap. Two
+        // tokens would be two names for one binding — and one of them would
+        // be unspellable, since `+` is the separator.
+        let pairs = [
+            (Key::Slash, Key::Questionmark, "/"),
+            (Key::Backslash, Key::Pipe, "\\"),
+            (Key::Equals, Key::Plus, "="),
+            (Key::Semicolon, Key::Colon, ";"),
+            (Key::OpenBracket, Key::OpenCurlyBracket, "["),
+            (Key::CloseBracket, Key::CloseCurlyBracket, "]"),
+        ];
+        for (unshifted, shifted, expected) in pairs {
+            for k in [unshifted, shifted] {
+                let hk = hotkey_from_egui(Modifiers::NONE, k).unwrap();
+                assert_eq!(hk.key.as_str(), expected, "{k:?}");
+            }
+        }
+        for (k, expected) in [
+            (Key::Minus, "-"),
+            (Key::Quote, "'"),
+            (Key::Comma, ","),
+            (Key::Period, "."),
+            (Key::Backtick, "`"),
+        ] {
+            let hk = hotkey_from_egui(Modifiers::NONE, k).unwrap();
+            assert_eq!(hk.key.as_str(), expected);
+        }
+    }
+
+    #[test]
+    fn the_new_keys_round_trip_through_format_and_parse() {
+        // Same contract as `roundtrip_via_format_and_parse`, extended over the
+        // keys §5 grew: whatever the recorder produces, Save can write and the
+        // next launch can read back.
+        for k in [
+            Key::ArrowLeft,
+            Key::PageDown,
+            Key::Delete,
+            Key::Slash,
+            Key::Minus,
+            Key::Backtick,
+            Key::Backslash,
+        ] {
+            let hk = hotkey_from_egui(Modifiers::ALT, k).expect("supported");
+            let text = format(&hk);
+            let parsed = parse(&text).expect("format() output must parse");
+            assert_eq!(parsed, hk, "roundtrip failed for {text}");
+        }
+    }
+
+    #[test]
+    fn multi_word_named_keys_are_spelled_the_way_they_are_read() {
+        // A mechanical title-casing would write "Pagedown" here, and that is
+        // what goes into config.json and back out of it.
+        assert_eq!(format(&parse("ctrl+pagedown").unwrap()), "Ctrl+PageDown");
+        assert_eq!(format(&parse("ctrl+pgup").unwrap()), "Ctrl+PageUp");
+        assert_eq!(format(&parse("ctrl+ins").unwrap()), "Ctrl+Insert");
+    }
+
+    #[test]
+    fn symbol_caps_parse_in_both_spellings() {
+        // The symbol form needs no separator after a modifier glyph, and the
+        // word form needs one — the same rule as `⌥⌘J` versus `Alt+Cmd+J`.
+        assert_eq!(parse("⌘,").unwrap(), parse("Cmd+,").unwrap());
+        assert_eq!(parse("⌃⇧[").unwrap(), parse("Ctrl+Shift+[").unwrap());
+        // `+` is the separator, never the key: the cap is `=`.
+        assert_eq!(parse("Ctrl+=").unwrap().key.as_str(), "=");
+        assert!(parse("Ctrl++").is_err());
     }
 
     #[test]

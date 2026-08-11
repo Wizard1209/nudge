@@ -674,7 +674,23 @@ fn code_for_key(key: &str) -> Option<Code> {
         } else if ch.is_ascii_digit() {
             format!("Digit{key}")
         } else {
-            return None;
+            // A symbol cap. `Code`'s names for these are words, not the
+            // legend, so this is the one place the rename is a table.
+            match ch {
+                b'-' => "Minus",
+                b'=' => "Equal",
+                b'[' => "BracketLeft",
+                b']' => "BracketRight",
+                b'\\' => "Backslash",
+                b';' => "Semicolon",
+                b'\'' => "Quote",
+                b',' => "Comma",
+                b'.' => "Period",
+                b'/' => "Slash",
+                b'`' => "Backquote",
+                _ => return None,
+            }
+            .to_string()
         }
     } else if key
         .strip_prefix('F')
@@ -688,6 +704,16 @@ fn code_for_key(key: &str) -> Option<Code> {
             "TAB" => "Tab".to_string(),
             "ESCAPE" => "Escape".to_string(),
             "BACKSPACE" => "Backspace".to_string(),
+            "LEFT" => "ArrowLeft".to_string(),
+            "RIGHT" => "ArrowRight".to_string(),
+            "UP" => "ArrowUp".to_string(),
+            "DOWN" => "ArrowDown".to_string(),
+            "HOME" => "Home".to_string(),
+            "END" => "End".to_string(),
+            "PAGEUP" => "PageUp".to_string(),
+            "PAGEDOWN" => "PageDown".to_string(),
+            "INSERT" => "Insert".to_string(),
+            "DELETE" => "Delete".to_string(),
             _ => return None,
         }
     };
@@ -1118,6 +1144,41 @@ mod tests {
     }
 
     #[test]
+    fn arrows_and_navigation_map_to_key_codes() {
+        assert_eq!(binding("Ctrl+Left").key, Code::ArrowLeft);
+        assert_eq!(binding("Ctrl+←").key, Code::ArrowLeft);
+        assert_eq!(binding("Ctrl+Right").key, Code::ArrowRight);
+        assert_eq!(binding("Ctrl+Up").key, Code::ArrowUp);
+        assert_eq!(binding("Ctrl+Down").key, Code::ArrowDown);
+        assert_eq!(binding("Ctrl+Home").key, Code::Home);
+        assert_eq!(binding("Ctrl+End").key, Code::End);
+        assert_eq!(binding("Ctrl+PageUp").key, Code::PageUp);
+        assert_eq!(binding("Ctrl+PgDn").key, Code::PageDown);
+        assert_eq!(binding("Ctrl+Insert").key, Code::Insert);
+        // Forward delete, a different key from Backspace whatever the Mac
+        // keycap says.
+        assert_eq!(binding("Ctrl+Delete").key, Code::Delete);
+        assert_eq!(binding("Ctrl+Backspace").key, Code::Backspace);
+    }
+
+    #[test]
+    fn symbol_caps_map_to_position_codes() {
+        // `Code` names the cap by position, which is the promise §5 makes: the
+        // binding follows the key, not the character a layout prints on it.
+        assert_eq!(binding("Ctrl+-").key, Code::Minus);
+        assert_eq!(binding("Ctrl+=").key, Code::Equal);
+        assert_eq!(binding("Ctrl+[").key, Code::BracketLeft);
+        assert_eq!(binding("Ctrl+]").key, Code::BracketRight);
+        assert_eq!(binding("Ctrl+\\").key, Code::Backslash);
+        assert_eq!(binding("Ctrl+;").key, Code::Semicolon);
+        assert_eq!(binding("Ctrl+'").key, Code::Quote);
+        assert_eq!(binding("Ctrl+,").key, Code::Comma);
+        assert_eq!(binding("Ctrl+.").key, Code::Period);
+        assert_eq!(binding("Ctrl+/").key, Code::Slash);
+        assert_eq!(binding("Ctrl+`").key, Code::Backquote);
+    }
+
+    #[test]
     fn every_key_the_parser_accepts_has_a_binding() {
         // The invariant that matters: `hotkey::parse` and `code_for_key` share
         // one key set. Anything the config file can legally name has to reach
@@ -1137,8 +1198,25 @@ mod tests {
             "Esc",
             "Escape",
             "Backspace",
+            "Left",
+            "Right",
+            "Up",
+            "Down",
+            "Home",
+            "End",
+            "PageUp",
+            "PgUp",
+            "PageDown",
+            "PgDn",
+            "Insert",
+            "Ins",
+            "Delete",
+            "Del",
         ] {
             labels.push(format!("Ctrl+{named}"));
+        }
+        for symbol in ["-", "=", "[", "]", "\\", ";", "'", ",", ".", "/", "`"] {
+            labels.push(format!("Ctrl+{symbol}"));
         }
         for label in labels {
             let hk = hotkey::parse(&label).expect("label must parse");
@@ -1180,7 +1258,9 @@ mod tests {
         // quietly produce an unregistrable binding.
         // "F" is absent on purpose: it is the letter F, a key the parser does
         // accept, and it must map — see `letters_map_to_key_codes`.
-        for token in ["", "+", "HOME", "ARROWUP", "F0", "F99", "AA", "мама"] {
+        // "HOME" is absent for the same reason as "F": the parser accepts it
+        // and it must map — see `named_keys_map_to_key_codes`.
+        for token in ["", "+", "ARROWUP", "NUMPAD5", "F0", "F99", "AA", "мама"] {
             assert!(code_for_key(token).is_none(), "{token:?} must not map");
         }
     }

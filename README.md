@@ -78,9 +78,12 @@ Full contract: [docs/journal-spec.md](docs/journal-spec.md)
   any focused window. Field `hotkey` in `config.json`: any modifiers plus
   one key. `Ctrl`/`⌃`, `Alt`/`Option`/`⌥`, `Shift`/`⇧`,
   `Cmd`/`Win`/`⌘`, plus a letter, digit, `F1`–`F24`, `Space`, `Enter`,
-  `Tab`, `Esc` or `Backspace` — e.g. `⌥⌘J`, `Alt+J`, `Ctrl+F12`. Case,
-  spacing and the choice of spelling do not matter. `fn` cannot be part of
-  a hotkey on macOS; see `docs/design-spec.md` §5 for why.
+  `Tab`, `Esc`, `Backspace`, an arrow, `Home`/`End`/`PageUp`/`PageDown`/
+  `Insert`/`Delete`, or a symbol cap (`- = [ ] \ ; ' , . / ``) — e.g.
+  `⌥⌘J`, `Alt+J`, `Ctrl+F12`, `⌃⇧←`. Case, spacing and the choice of
+  spelling do not matter. A symbol cap is named by its unshifted legend, so
+  `⇧/` and `?` are one combination. `fn` cannot be part of a hotkey on
+  macOS; see `docs/design-spec.md` §5 for why.
 - Launch at login: field `autostart` (bool) — kept in sync with
   `HKCU\…\Run\Nudge` on Windows and with a LaunchAgent plist at
   `~/Library/LaunchAgents/com.wizard1209.nudge.plist` on macOS; see
@@ -109,10 +112,23 @@ The settings window opens from the tray menu (`Settings`) and edits the same
 `config.json` (hotkey, interval, autostart). Edits are picked up by the
 running app immediately via a file watcher.
 
-The hotkey is a text field — type any of the spellings above; there is no
-capture button, and `docs/design-spec.md` §9 says why. `Save` refuses a
-combination the OS cannot bind rather than writing it. Full grammar:
-`docs/design-spec.md` §5.
+There are two ways to set the hotkey, and they edit the same field:
+
+- **Type it** — any of the spellings above; `⌥⌘J`, `Alt+Cmd+J` and
+  `alt+cmd+j` are one combination.
+- **Press `Record`** and then press the combination. The key you press ends
+  it, so there is nothing to hold and nothing to time. `Esc` backs out and
+  the field goes back to what is saved; so does leaving the window. A key
+  that cannot be part of a hotkey is named rather than swallowed, and the
+  recorder keeps listening.
+
+`Record` cannot capture a combination something else already holds
+system-wide — including Nudge's own current hotkey, which opens the popup
+instead. Type those. Full grammar and the rest of the recorder:
+`docs/design-spec.md` §5 and §9.
+
+Either way, `Save` refuses a combination the OS cannot bind rather than
+writing it.
 
 ## Development: the Electron prototype
 

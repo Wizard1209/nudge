@@ -231,6 +231,30 @@ fn vk_for_key(key: &str) -> Option<u32> {
         "TAB" => Some(0x09),       // VK_TAB
         "ESCAPE" => Some(0x1B),    // VK_ESCAPE
         "BACKSPACE" => Some(0x08), // VK_BACK
+        "LEFT" => Some(0x25),      // VK_LEFT
+        "UP" => Some(0x26),        // VK_UP
+        "RIGHT" => Some(0x27),     // VK_RIGHT
+        "DOWN" => Some(0x28),      // VK_DOWN
+        "PAGEUP" => Some(0x21),    // VK_PRIOR
+        "PAGEDOWN" => Some(0x22),  // VK_NEXT
+        "END" => Some(0x23),       // VK_END
+        "HOME" => Some(0x24),      // VK_HOME
+        "INSERT" => Some(0x2D),    // VK_INSERT
+        "DELETE" => Some(0x2E),    // VK_DELETE
+        // The symbol caps. Win32 names these by position on a US layout
+        // (`VK_OEM_*`), which is the same promise §5 makes: the binding
+        // follows the cap, not the character the active layout prints.
+        "-" => Some(0xBD),  // VK_OEM_MINUS
+        "=" => Some(0xBB),  // VK_OEM_PLUS
+        "[" => Some(0xDB),  // VK_OEM_4
+        "]" => Some(0xDD),  // VK_OEM_6
+        "\\" => Some(0xDC), // VK_OEM_5
+        ";" => Some(0xBA),  // VK_OEM_1
+        "'" => Some(0xDE),  // VK_OEM_7
+        "," => Some(0xBC),  // VK_OEM_COMMA
+        "." => Some(0xBE),  // VK_OEM_PERIOD
+        "/" => Some(0xBF),  // VK_OEM_2
+        "`" => Some(0xC0),  // VK_OEM_3
         _ => None,
     }
 }
@@ -575,5 +599,60 @@ fn drain_messages() {
 fn wait_for_message(timeout_ms: u32) {
     unsafe {
         let _ = MsgWaitForMultipleObjectsEx(None, timeout_ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_key_the_parser_accepts_has_a_vk() {
+        // The invariant that matters: `hotkey::parse` and `vk_for_key` share
+        // one key set. Anything the config file can legally name has to reach
+        // `RegisterHotKey`, or a hotkey saved on the Mac side of the same
+        // `config.json` silently stops working here.
+        let mut labels: Vec<String> = Vec::new();
+        for ch in ('A'..='Z').chain('0'..='9') {
+            labels.push(format!("Ctrl+{ch}"));
+        }
+        for n in 1..=24u8 {
+            labels.push(format!("Ctrl+F{n}"));
+        }
+        for named in [
+            "Space", "Enter", "Return", "Tab", "Esc", "Escape", "Backspace", "Left", "Right", "Up",
+            "Down", "Home", "End", "PageUp", "PgUp", "PageDown", "PgDn", "Insert", "Ins", "Delete",
+            "Del",
+        ] {
+            labels.push(format!("Ctrl+{named}"));
+        }
+        for symbol in ["-", "=", "[", "]", "\\", ";", "'", ",", ".", "/", "`"] {
+            labels.push(format!("Ctrl+{symbol}"));
+        }
+        for label in labels {
+            let hk = hotkey::parse(&label).expect("label must parse");
+            assert!(
+                vk_for_key(hk.key.as_str()).is_some(),
+                "{label} parses but has no VK"
+            );
+        }
+    }
+
+    #[test]
+    fn the_symbol_caps_are_the_oem_position_codes() {
+        // Win32 names these by their place on a US layout, which is the same
+        // promise §5 makes — the binding follows the cap, not the character
+        // the active layout prints on it.
+        assert_eq!(vk_for_key("-"), Some(0xBD));
+        assert_eq!(vk_for_key("="), Some(0xBB));
+        assert_eq!(vk_for_key("/"), Some(0xBF));
+        assert_eq!(vk_for_key("`"), Some(0xC0));
+    }
+
+    #[test]
+    fn unknown_tokens_have_no_vk() {
+        for token in ["", "+", "ARROWUP", "NUMPAD5", "F0", "F99", "AA", "мама"] {
+            assert!(vk_for_key(token).is_none(), "{token:?} must not map");
+        }
     }
 }

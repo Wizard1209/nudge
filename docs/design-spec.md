@@ -231,7 +231,7 @@ option     = "Alt"     | "Option"  | "Opt"                      | "⌥" ;
 shift      = "Shift"                                            | "⇧" ;
 command    = "Cmd"     | "Command" | "Win" | "Super" | "Meta"    | "⌘" ;
 
-key        = letter | digit | function | named ;
+key        = letter | digit | function | named | arrow | navigation | symbol ;
 letter     = "A" … "Z" ;
 digit      = "0" … "9" ;
 function   = "F1" … "F24" ;
@@ -240,6 +240,17 @@ named      = "Space"                    | "␣"
            | "Tab"                      | "⇥"
            | "Esc"    | "Escape"        | "⎋"
            | "Backspace"                | "⌫" ;
+arrow      = "Left"                     | "←"
+           | "Right"                    | "→"
+           | "Up"                       | "↑"
+           | "Down"                     | "↓" ;
+navigation = "Home"                     | "↖"
+           | "End"                      | "↘"
+           | "PageUp"  | "PgUp"         | "⇞"
+           | "PageDown"| "PgDn"         | "⇟"
+           | "Insert"  | "Ins"
+           | "Delete"  | "Del"          | "⌦" ;
+symbol     = "-" | "=" | "[" | "]" | "\" | ";" | "'" | "," | "." | "/" | "`" ;
 ```
 
 Reading rules, all of them:
@@ -253,7 +264,15 @@ Reading rules, all of them:
 4. **Exactly one `key` is required.** Zero (`Ctrl+Shift`) and two
    (`Ctrl+A+B`) are both errors, with distinct messages.
 5. **Repeated modifiers collapse.** `Ctrl+Ctrl+A` is `Ctrl+A`.
-6. **Anything else is an error** naming the offending token.
+6. **A symbol is named by its unshifted legend.** The cap carrying `/` and
+   `?` is `/`, so `⇧/` and `?` are one combination with one spelling, `⇧/`.
+   `+` is only the separator, which is why the cap next to Backspace is `=`:
+   `Ctrl+=`, never `Ctrl++`.
+7. **A key is a position, not the character it produces.** `⌥⌘J` names the
+   cap where `J` sits on a US layout; with a Russian layout active that cap
+   types `о` and the same hotkey still fires. This is what the OS registers,
+   and it is why switching layouts does not silently unbind a shortcut.
+8. **Anything else is an error** naming the offending token.
 
 #### Writing it back
 
@@ -279,6 +298,13 @@ keeps its meaning; only the way it is written back changes.
 - **`F1`–`F12` need `fn` held on a Mac** unless *Use F1, F2, etc. as
   standard function keys* is on. **`F21`–`F24`** satisfy the grammar but
   fail to register there.
+- **The numeric keypad is not in the grammar.** Its keys carry their own
+  codes, distinct from the digit row, so `Num5` would be a second name for
+  neither the same key nor the same binding. §9 has the consequence for the
+  recorder.
+- **`Insert` has no cap on an Apple keyboard**, and `Delete` (`⌦`, forward
+  delete) is a different key from `Backspace` (`⌫`), whatever the Mac
+  keycap says. Both register; only one of them is reachable on a laptop.
 
 #### When it cannot be applied
 
@@ -381,13 +407,8 @@ they fix it.
 
 #### The recorder
 
-> **Status: specified, not built.** The shipping build has the text field
-> only. This section is the contract to implement against; nothing in the
-> code implements it today. Two earlier attempts are described at the end,
-> because both failure modes are reachable again from a fresh start.
-
-`Record` captures a combination from the keyboard. **Two states, four events,
-eight cells, no clock.**
+`Record` captures a combination from the keyboard. **Two states, six events,
+twelve cells, no clock.**
 
 | State | On screen |
 |---|---|
@@ -400,18 +421,25 @@ It is defined negatively as well, because that is where the failures were:
 not the set of currently-held keys, not a release, not a duration, not a
 repeat.
 
+The key it reads off that edge is the **physical** one — the cap that went
+down, not the character the active layout prints for it. §5 stores and
+registers positions, so this is the only reading that survives a layout
+switch, and it is what folds `⇧/` and `?` onto one combination without a
+rule of its own.
+
 | | Idle | Armed |
 |---|---|---|
-| **Record** | → Armed, snapshot the field | — |
+| **Record** | → Armed | — |
 | **Press** — §5 can bind it | — | → Idle, field := the combination, canonically spelled |
-| **Press** — bare `Esc` | — | → Idle, field := the snapshot |
+| **Press** — bare `Esc` | — | → Idle, field := the saved hotkey |
 | **Press** — §5 cannot bind it | — | → **Armed**, with a hint naming the key |
-| **Cancel** | — | → Idle, field := the snapshot |
+| **Cancel** | — | → Idle, field := the saved hotkey |
+| **Focus lost** | — | → Idle, field := the saved hotkey |
 
 Every cell is stated; there are no guards and no conditions outside this
 table.
 
-Three consequences, all read off the table rather than added to it:
+Five consequences, all read off the table rather than added to it:
 
 - **A chord of modifiers alone is not an event.** Modifiers are not keys, so
   holding `⌥⌘` produces no press edge and the recorder waits. Nothing is
@@ -421,16 +449,53 @@ Three consequences, all read off the table rather than added to it:
 - **Bare `Esc` cancels** because a hotkey is modifiers **plus** a key, so a
   lone `Esc` can never be one; the keystroke is therefore free to mean "back
   out". With any modifier held it is an ordinary key and `⌃⎋` records.
+- **Every cancelling path lands on the saved hotkey**, so the recorder has
+  nothing to remember when it starts and cancelling has one meaning: the row
+  reads what `config.json` holds. A typed, unsaved edit is discarded along
+  with it.
+- **Losing the focus cancels**, because *which* shortcut took it is not
+  observable — macOS consumes `⌘Tab`, `⌘Space` and Spaces switching before
+  any application sees them. Focus loss is the entire signal, and a recorder
+  still listening behind another window is worse than a cancelled one.
+
+On the way back to Idle the recorder does not hand keyboard focus to the
+text field: a hand still resting on the keys, or the auto-repeat of a key
+held a beat too long, would otherwise type over what was just recorded.
+
+**What the recorder cannot capture.** Three sets, and all three stay
+reachable by **typing** into the field — which is the second reason the field
+is not a fallback.
+
+- **Held elsewhere.** A combination the system or another application
+  already owns never reaches the window, and that includes this app's own
+  current hotkey: the running instance has it registered system-wide while
+  the settings window is a separate process. Pressing it opens the popup, and
+  the focus that takes cancels the recording.
+- **The clipboard trio.** The toolkit turns `⌘X`, `⌘C` and `⌘V` into cut,
+  copy and paste before any window sees a key — on Windows `⇧Del`, `⌃Ins` and
+  `⇧Ins` as well. The recorder answers these the way it answers any key it
+  cannot bind: it stays armed and says so. Silence here would read as a dead
+  recorder, which is the failure this feature keeps returning to.
+- **The keypad.** The toolkit reports keypad keys as their main-row twins —
+  keypad `5` arrives as `5`, keypad `/` as `/`. A keypad press therefore
+  records the main-row key and binds there, and the shortcut will not fire
+  from the keypad. §5 leaves the keypad out for this reason too.
 
 Capturing only edits the staged value. `Save` is still what writes to
 `config.json`, and it validates per §5 like any typed value.
 
 **Acceptance.** The recorder is done when, from a real keyboard on macOS:
-`⌥⌘J` held and released puts `⌥⌘J` in the field; `⌃⇧Space` does the same;
-`⌥⌘` alone changes nothing and shows no error; a key outside §5 shows a hint
-and leaves the recorder armed; bare `Esc` restores the previous label; and
-the captured label survives `Save` and a relaunch — the app registers it and
-logs no error.
+
+- `⌥⌘J`, `⌥⌘←` and `⇧/` each land in the field spelled the way §5 writes them;
+- `⌥⌘` alone changes nothing and shows no error, and neither does `fn`, which
+  reaches the window as no key at all;
+- `⌘C` shows a hint and leaves the recorder armed;
+- with a Russian layout active, `⌥⌘J` still records as `⌥⌘J`;
+- bare `Esc` puts the saved hotkey back, and so does `⌘Tab`;
+- pressing the app's own current hotkey opens the popup and ends the
+  recording cancelled;
+- the captured label survives `Save` and a relaunch — the app registers it
+  and logs no error.
 
 #### What broke twice, and the measurement that settles it
 
