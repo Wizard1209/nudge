@@ -33,6 +33,15 @@ describe('timer lifecycle — survives the first launch', () => {
 
   it('Switch (focus loss) on the first popup arms the timer', async () => {
     const popup = await firstPopup();
+    // §4 gates Switch on the popup having actually taken focus when it opened,
+    // and a window under this harness never becomes the OS's focused one — so
+    // the main process reported `gotFocus: false` and the blur below was
+    // correctly ignored. Send the payload a focused open produces, then blur.
+    await app.evaluate(({ BrowserWindow }) => {
+      const win = BrowserWindow.getAllWindows().find((w) => w.getTitle() === 'Nudge');
+      win.webContents.send('nudge:show', { gotFocus: true });
+    });
+    await popup.waitForTimeout(100);
     await popup.evaluate(() => window.dispatchEvent(new Event('blur')));
     await popup.waitForTimeout(200);
     expect(await timerArmed()).toBe(true);

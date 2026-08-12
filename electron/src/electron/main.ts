@@ -72,9 +72,18 @@ function configuredMinutes(): number {
   return parseMinutes(currentConfig.default_interval_minutes);
 }
 
-// Register the global hotkey from a config. Non-fatal per spec §5: a bad or
-// already-taken combo logs to stderr and leaves the app running with no
-// hotkey (the tray still works).
+// Register the global hotkey from a config. Non-fatal per spec §5: a
+// combination the toolkit refuses logs to stderr and leaves the app running
+// with no hotkey (the tray still works), and never falls back to the default.
+//
+// What this cannot do is report a combination another application holds. §5
+// measured that on macOS registration succeeds anyway and the keystroke simply
+// goes to the other holder; Electron adds nothing here — `globalShortcut`
+// wraps the same call, so a `false` return means "the toolkit would not take
+// this string", not "someone else has it". Detecting a conflict needs the
+// system's own shortcut table (`CopySymbolicHotKeys`), which Electron does not
+// expose. The Rust app does that work; the prototype states the gap instead of
+// faking a check.
 function registerHotkey(config: Config): void {
   unregisterHotkey();
   const parsed = parseHotkey(config.hotkey);
@@ -88,7 +97,7 @@ function registerHotkey(config: Config): void {
   try {
     const ok = globalShortcut.register(accel, () => showNudge("manual"));
     if (!ok) {
-      console.error(`Nudge: hotkey "${accel}" is unavailable (already taken)`);
+      console.error(`Nudge: hotkey "${accel}" was refused by the toolkit`);
       return;
     }
     registeredAccelerator = accel;
@@ -229,7 +238,9 @@ function openSettings() {
     // doesn't eat into it and clip the form (the bug was the title bar
     // shrinking a frame-inclusive height on Windows).
     width: 460,
-    height: 440,
+    // Tall enough for the vocabulary line under the hotkey field (§9): it is
+    // standing information, so it must fit without scrolling.
+    height: 540,
     useContentSize: true,
     title: "Nudge — Settings",
     resizable: false,
@@ -255,6 +266,15 @@ function openSettings() {
   } else {
     settingsWin.loadFile(path.join(__dirname, "../renderer/settings.html"));
   }
+
+  // The window's own focus loss, from the OS. The renderer also listens for a
+  // `blur` on its `window` (the browser sub-app has nothing else), but that
+  // event is suppressed whenever a test harness pins the page as focused —
+  // and the recorder's focus-lost cell has to hold in the real app, where the
+  // shortcut that stole the focus is exactly what cannot be observed.
+  settingsWin.on("blur", () => {
+    settingsWin?.webContents.send("settings:blur");
+  });
 
   settingsWin.on("closed", () => {
     settingsWin = null;

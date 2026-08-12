@@ -64,10 +64,13 @@
   let banner = $state("");
 
   // Electron loads its config over IPC (async), so seed the fields after mount.
-  onMount(async () => {
+  onMount(() => {
     if (!settingsApi) return;
-    const cfg = await settingsApi.getConfig();
-    reseed(cfg);
+    void settingsApi.getConfig().then(reseed);
+    // In Electron the focus loss comes from the native window, not from the
+    // page: `window`'s own blur is the browser sub-app's only signal, and it
+    // is the one a test harness suppresses.
+    return settingsApi.onWindowBlur?.(() => onWindowBlur());
   });
 
   function reseed(cfg: Config) {
