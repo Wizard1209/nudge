@@ -213,6 +213,9 @@ describe('settings sub-app', () => {
             for (const cancelIt of [
                 async () => page.keyboard.press('Escape'),
                 async () => page.click('[data-testid="settings-hotkey-record"]'),
+                // The form's own Cancel is a cancelling path too: it must put
+                // back what is saved *now*, not the value the page loaded.
+                async () => page.click('[data-testid="settings-cancel"]'),
             ]) {
                 await arm(page);
                 await writeStored(page, {

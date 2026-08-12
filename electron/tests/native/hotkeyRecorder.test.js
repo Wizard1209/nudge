@@ -65,23 +65,8 @@ describe('settings window — recording a hotkey from the keyboard', () => {
     expect(await field(settings)).toBe(before);
   });
 
-  it("cancels on the window's own blur, over IPC", async () => {
-    const settings = await openSettings();
-    await arm(settings);
-    // The window under this harness never becomes the OS's focused window
-    // (`isFocused()` stays false, so `blur()` has nothing to give up and the
-    // renderer's own `window` blur is suppressed besides). What is exercised
-    // here is everything downstream of the OS: the main process's blur
-    // handler, the IPC message, and the recorder's focus-lost cell in the real
-    // window. The event source itself is covered by the browser tier, where a
-    // real focus change out of the page can be produced.
-    await app.evaluate(({ BrowserWindow }) => {
-      const win = BrowserWindow.getAllWindows().find((w) =>
-        w.getTitle().includes('Settings'),
-      );
-      win.emit('blur');
-    });
-    await settings.waitForFunction(
+  const waitIdle = (page) =>
+    page.waitForFunction(
       () =>
         document
           .querySelector('[data-testid="settings-hotkey-record"]')
@@ -89,6 +74,56 @@ describe('settings window — recording a hotkey from the keyboard', () => {
       undefined,
       { timeout: 5000 },
     );
+
+  it("cancels on the window's own blur, over IPC", async () => {
+    const settings = await openSettings();
+    await arm(settings);
+    // Everything downstream of the OS, with the event source stubbed: the main
+    // process's blur handler, the IPC message, and the recorder's focus-lost
+    // cell in the real window. It runs on any session, including one where no
+    // window can be focused at all. The OS half — a focus change the system
+    // itself delivers — is the test below.
+    await app.evaluate(({ BrowserWindow }) => {
+      const win = BrowserWindow.getAllWindows().find((w) =>
+        w.getTitle().includes('Settings'),
+      );
+      win.emit('blur');
+    });
+    await waitIdle(settings);
+    expect(await field(settings)).toBe(spell('⌃⇧Space', 'Ctrl+Shift+Space'));
+  });
+
+  it('cancels when the OS hands the focus to another window', async (ctx) => {
+    const settings = await openSettings();
+    // Ask the system for the focus and check we actually got it. On a session
+    // that will not activate the app — a locked screen, most CI — no window is
+    // focused, so there is no focus to lose and this event cannot be produced
+    // at all. Skipping says that; faking the blur here would only re-run the
+    // test above under a name that claims more than it did.
+    const focused = await app.evaluate(async ({ app: electronApp, BrowserWindow }) => {
+      const win = BrowserWindow.getAllWindows().find((w) =>
+        w.getTitle().includes('Settings'),
+      );
+      electronApp.focus({ steal: true });
+      win.show();
+      win.focus();
+      await new Promise((r) => setTimeout(r, 500));
+      return win.isFocused();
+    });
+    if (!focused) {
+      ctx.skip(
+        'no window can hold the focus in this session (locked screen / non-activating harness)',
+      );
+    }
+    await arm(settings);
+    // A second real window takes the focus, and the OS delivers the blur.
+    await app.evaluate(({ BrowserWindow }) => {
+      const other = new BrowserWindow({ width: 320, height: 200, title: 'Focus thief' });
+      other.loadURL('data:text/html,<title>Focus thief</title><h1>thief</h1>');
+      other.show();
+      other.focus();
+    });
+    await waitIdle(settings);
     expect(await field(settings)).toBe(spell('⌃⇧Space', 'Ctrl+Shift+Space'));
   });
 });

@@ -117,13 +117,26 @@ const NAMED_KEYS: NamedKey[] = [
   { token: "DELETE", spellings: ["DELETE", "DEL", "⌦"], label: "Delete", glyph: "⌦" },
 ];
 
+/**
+ * The canonical token of an F-row spelling, or null if it is not one. The
+ * digits are read as a number, not as text, so `F07` is the same key as `F7`
+ * and canonicalizes to it — the same as the Rust side, where the digits go
+ * through `parse::<u8>()`.
+ */
+function functionKeyToken(upper: string): string | null {
+  const m = /^F([0-9]+)$/.exec(upper);
+  if (!m) return null;
+  const n = Number(m[1]);
+  // The upper bound is the byte the Rust parse reads into: past it there is no
+  // number, so `F999` is an unknown token rather than an out-of-range F-key.
+  if (n > 255) return null;
+  return n >= 1 && n <= 24 ? `F${n}` : null;
+}
+
 /** Whether a canonical key token is one of F1-F24 — the keys that type
  * nothing, and so the only ones allowed to stand alone (§5). */
 export function isFunctionKey(key: string): boolean {
-  const m = /^F([0-9]{1,2})$/.exec(key);
-  if (!m) return false;
-  const n = Number(m[1]);
-  return n >= 1 && n <= 24;
+  return functionKeyToken(key) !== null;
 }
 
 /**
@@ -135,7 +148,8 @@ function canonicalizeKey(upper: string): string | null {
   if ([...upper].length === 1 && (/^[A-Z0-9]$/.test(upper) || SYMBOL_KEYS.includes(upper))) {
     return upper;
   }
-  if (isFunctionKey(upper)) return upper;
+  const fKey = functionKeyToken(upper);
+  if (fKey !== null) return fKey;
   return NAMED_KEYS.find((k) => k.spellings.includes(upper))?.token ?? null;
 }
 
@@ -339,7 +353,8 @@ export function tokenForKeyCode(code: string): string | null {
   if (letter) return letter[1];
   const digit = /^Digit([0-9])$/.exec(code);
   if (digit) return digit[1];
-  if (isFunctionKey(code)) return code;
+  const fKey = functionKeyToken(code);
+  if (fKey !== null) return fKey;
   return KEY_CODE_TOKENS[code] ?? null;
 }
 

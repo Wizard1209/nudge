@@ -159,6 +159,21 @@ describe("parseHotkey", () => {
     });
   });
 
+  it("reads the F-row's digits as a number, so F07 is F7", () => {
+    // The Rust side parses them (`rest.parse::<u8>()`), so a config written
+    // with a padded number must not come back as a second spelling of one key.
+    expect(parseHotkey("Ctrl+F07").hotkey?.key).toBe("F7");
+    expect(parseHotkey("Ctrl+F007").hotkey?.key).toBe("F7");
+    const parsed = parseHotkey("Ctrl+F07");
+    expect(parsed.ok && formatHotkey(parsed.hotkey, "windows")).toBe("Ctrl+F7");
+    // Past a byte there is no number at all — an unknown token, not an
+    // out-of-range F-key.
+    expect(parseHotkey("Ctrl+F999")).toEqual({
+      ok: false,
+      error: { kind: "unknownToken", token: "F999" },
+    });
+  });
+
   it("collapses repeated modifiers", () => {
     expect(parseHotkey("Ctrl+Ctrl+A")).toEqual(parseHotkey("Ctrl+A"));
   });

@@ -211,14 +211,17 @@
   }
 
   async function cancel() {
-    // Revert to the persisted view. In Electron, Cancel closes the window
+    // Revert to the saved config. In Electron, Cancel closes the window
     // (spec §9); in the browser sub-app there's no window, so we just reset.
-    // An armed recorder is cancelled through the table, which is what puts
-    // the saved hotkey back in the field.
+    //
+    // The revert re-reads rather than restoring the `persisted` snapshot: this
+    // is a cancelling path like any other, and the recorder remembers nothing.
+    // Re-seeding `persisted` first is what keeps the field the table restores
+    // and the fields this function resets on the same value.
+    const cfg = settingsApi ? await settingsApi.getConfig() : loadStored();
+    persisted = cfg;
     await step({ kind: "cancel" });
-    hotkey = respell(persisted.hotkey, platform);
-    intervalText = SettingsForm.fromConfig(persisted, platform).intervalText;
-    autostart = persisted.autostart;
+    reseed(cfg);
     banner = "";
     settingsApi?.close();
   }

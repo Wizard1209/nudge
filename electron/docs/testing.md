@@ -37,13 +37,17 @@ Notes:
   from its side-effects cache afterwards and skips the postinstall, which is
   where the download lives. `pnpm test:e2e` checks for it and names the command
   that puts it back.
-- **Focus loss is not observable in either harness.** Puppeteer's
-  `bringToFront` does not blur the previous tab, and an Electron window driven
-  by Playwright never becomes the OS's focused window — `isFocused()` stays
-  false, so `blur()` has nothing to give up. A behavior gated on focus is
-  tested by moving focus into a subframe (browser tier), or by driving the
-  event the OS would have produced and asserting everything downstream of it
-  (native tier). Say which one a test does.
+- **Focus loss takes work to produce, and the harness may not be able to.**
+  Puppeteer's `bringToFront` does not blur the previous tab, so the browser
+  tier moves focus into a subframe instead — a real focus change, produced by
+  the browser. In the native tier an Electron window under Playwright takes the
+  OS focus only if the session will activate the app at all: behind a locked
+  screen (and on most CI) `isFocused()` stays false, and then no blur exists to
+  observe. So focus loss is covered there twice: one test drives the event the
+  OS would have produced and asserts everything downstream of it (always runs),
+  and one focuses a second real window and lets the OS deliver the blur,
+  skipping with a reason when the app never got the focus. A test that
+  synthesizes its own event must say so in its name or its comment.
 - Native loads the **built** renderer (`NUDGE_FORCE_PROD`), so run
   `pnpm build && pnpm build:electron` first — it validates the exact assets the
   portable `.exe` ships.
