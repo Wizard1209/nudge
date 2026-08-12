@@ -128,18 +128,31 @@ produces has already shipped a dead recorder here twice.
 ## The Electron prototype follows the same grammar
 
 §5 is the contract both implementations follow, and the prototype's parser
-(`electron/src/shared/hotkey.ts`) is behind it: it knows letters, digits,
-`F1`–`F24`, `Space`, `Enter`, `Tab`, `Escape` and `Backspace`, and nothing
-else. The arrows, the navigation cluster and the symbol caps that §5 gained
-are absent — `parseHotkey("Ctrl+Home")` returns an unknown-token error. Its
-canonical spelling and its display strings are behind by the same amount.
+(`electron/src/shared/hotkey.ts`) now carries all of it: the arrows, the
+navigation cluster and the symbol caps, the glyph spellings, and one canonical
+spelling per platform (`⌃⇧Space` on a Mac, `Ctrl+Shift+Space` on Windows).
+Its tables mirror `src/hotkey.rs` row for row.
 
-The "at least one modifier, except `F1`–`F24`" rule *is* implemented there,
-with tests, but **those tests have never been run in this checkout**: there
-is no `package-lock.json` under `electron/` and no installed dependencies, so
-the suite cannot start. Installing them writes a lock file into the
-repository. Until that happens the prototype's parser has been verified only
-by transpiling the module and exercising it directly.
+The recorder is built there too, against this document's decision table:
+`electron/src/shared/hotkeyRecorder.ts` holds the pure function, with the
+twelve cells covered by unit tests and the capture itself exercised by real
+key presses — Puppeteer's in the browser tier, Playwright's into the real
+Settings window in the native one.
+
+What the prototype cannot do with Electron's means, and does not pretend to:
+
+- **Conflict detection.** `globalShortcut.register` wraps the same call §5
+  measured, so a `false` return means the toolkit refused the string, never
+  that another application holds the combination. The system shortcut table
+  (`CopySymbolicHotKeys`) is not reachable from Electron.
+- **One identifier from the key down to the registration call.** Electron
+  registers from an accelerator *string*, so a second table (§5 token →
+  accelerator) sits between the event and the binding. That is exactly the
+  defect this task removes for the Rust app; here it is marked in the code.
+- **Seeing its own keys before the menus do.** There is no app-local key
+  monitor; a combination that matches a menu accelerator would be eaten
+  before the renderer. The prototype has no menu bar, so nothing hides the
+  gap — the Rust app must not rely on the same luck.
 
 ## What must not come back
 

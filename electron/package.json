@@ -12,8 +12,8 @@
     "dist": "pnpm build && pnpm build:electron && electron-builder --win",
     "typecheck": "tsc --noEmit",
     "test:unit": "vitest run --config vitest.unit.config.mjs",
-    "test:e2e": "PUPPETEER_CACHE_DIR=.puppeteer-cache vitest run --config vitest.e2e.config.mjs",
-    "test:e2e:debug": "PUPPETEER_CACHE_DIR=.puppeteer-cache E2E_DEBUG=1 vitest run --config vitest.e2e.config.mjs",
+    "test:e2e": "vitest run --config vitest.e2e.config.mjs",
+    "test:e2e:debug": "E2E_DEBUG=1 vitest run --config vitest.e2e.config.mjs",
     "test:native": "vitest run --config vitest.native.config.mjs"
   },
   "keywords": [],
@@ -32,12 +32,6 @@
     "typescript": "^6.0.2",
     "vite": "^8.0.8",
     "vitest": "^4.1.4"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "electron",
-      "puppeteer"
-    ]
   },
   "build": {
     "appId": "com.wizard.nudge",
