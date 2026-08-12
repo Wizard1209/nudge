@@ -21,7 +21,6 @@
 use crate::autostart::{AutostartError, AutostartProvider, apply_autostart};
 use crate::config::{Config, ConfigError};
 use crate::hotkey::{self, Hotkey};
-use crate::recorder::{self, Effect, Input, PROMPT, Recorder};
 
 /// CLI flag that boots `nudge.exe` into the settings UI instead of the
 /// popup. Single source of truth so the tray dispatch (spawn) and the main
@@ -100,17 +99,9 @@ impl SettingsForm {
             || self.autostart != self.original.autostart
     }
 
-    /// The hotkey as `config.json` currently holds it, in this platform's
-    /// spelling. Every cancelling path in the §9 recorder lands here rather
-    /// than on a remembered earlier field value, so cancelling has one
-    /// meaning: the row reads what is saved.
-    pub fn saved_hotkey(&self) -> &str {
-        &self.original.hotkey
-    }
-
     /// The typed hotkey, parsed. The field accepts every spelling
-    /// [`hotkey::parse`] does — `⌥⌘J`, `Alt+Cmd+J`, `alt+cmd+j` — so typing
-    /// one is a first-class alternative to the recorder, not a fallback.
+    /// [`hotkey::parse`] does — `⌥⌘J`, `Alt+Cmd+J`, `alt+cmd+j` — and every
+    /// one of them means the same combination.
     pub fn parsed_hotkey(&self) -> Result<Hotkey, hotkey::ParseError> {
         hotkey::parse(&self.hotkey)
     }
@@ -274,13 +265,6 @@ pub struct SettingsApp {
     persist: PersistFn,
     /// Surfaced to the user above the buttons. Cleared on the next interaction.
     banner: Option<String>,
-    /// The §9 recorder. Two states; everything that decides lives in
-    /// [`crate::recorder::step`], and this window only feeds it inputs and
-    /// carries out what it returns.
-    recorder: Recorder,
-    /// Shown in place of the recorder's prompt after a key it cannot bind.
-    /// Lives only as long as the recorder is armed.
-    hint: Option<String>,
     /// When set, the next frame ends the eframe loop. On native this exits
     /// the dedicated settings process; on WASM it's a no-op (no process).
     quit_requested: bool,
@@ -312,8 +296,6 @@ impl SettingsApp {
             provider,
             persist,
             banner: None,
-            recorder: Recorder::default(),
-            hint: None,
             quit_requested: false,
         }
     }
@@ -329,73 +311,6 @@ impl SettingsApp {
                 Err(e) => self.banner = Some(format!("Save failed: {e}")),
             },
             Err(e) => self.banner = Some(e.to_string()),
-        }
-    }
-
-    /// Feed one frame of raw input to the recorder and carry out what it
-    /// returns.
-    ///
-    /// Reads press *edges* out of the event stream and never the held-key
-    /// set: on macOS that set drops a key mid-press, which is how the two
-    /// earlier recorders died (§9).
-    fn drive_recorder(&mut self, ctx: &eframe::egui::Context) {
-        use eframe::egui::Event;
-
-        let inputs: Vec<Input> = ctx.input(|i| {
-            i.events
-                .iter()
-                .filter_map(|event| match event {
-                    Event::Key {
-                        key,
-                        physical_key,
-                        pressed: true,
-                        repeat,
-                        modifiers,
-                    } => Some(Input::Press {
-                        modifiers: *modifiers,
-                        // The cap that went down, not the character this
-                        // layout prints on it — what §5 stores and what the
-                        // OS binds. The logical key is the fallback for a
-                        // backend that reports no position.
-                        key: physical_key.unwrap_or(*key),
-                        repeat: *repeat,
-                    }),
-                    // The toolkit turned a press into a clipboard command, so
-                    // the key never arrives as one.
-                    Event::Copy | Event::Cut | Event::Paste(_) => Some(Input::ClipboardPress),
-                    Event::WindowFocused(false) => Some(Input::FocusLost),
-                    _ => None,
-                })
-                .collect()
-        });
-
-        for input in inputs {
-            // What the toolkit actually delivered, for the hand-run that is
-            // this feature's real acceptance (§9). Off unless asked for: the
-            // question it answers — did the key arrive at all, and as which
-            // one — is exactly what a green suite cannot answer.
-            if std::env::var_os("NUDGE_LOG_KEYS").is_some() {
-                eprintln!("[nudge-settings] {:?} -> {input:?}", self.recorder);
-            }
-            self.apply_recorder(&input);
-        }
-    }
-
-    /// One trip through the §9 table, plus the effect it returned.
-    fn apply_recorder(&mut self, input: &Input) {
-        let (next, effect) = recorder::step(self.recorder, input);
-        self.recorder = next;
-        match effect {
-            Effect::Nothing => {}
-            Effect::Capture(label) => {
-                self.form.hotkey = label;
-                self.hint = None;
-            }
-            Effect::Restore => {
-                self.form.hotkey = self.form.saved_hotkey().to_string();
-                self.hint = None;
-            }
-            Effect::Hint(text) => self.hint = Some(text),
         }
     }
 
@@ -429,15 +344,8 @@ impl eframe::App for SettingsApp {
         let ctx_owned = root_ui.ctx().clone();
         let ctx = &ctx_owned;
 
-        // The recorder reads the frame first, and while it is armed it owns
-        // `Esc` — hence the state from *before* it ran. Otherwise the same
-        // keystroke would cancel the recording and then close the window
-        // behind it.
-        let was_armed = self.recorder == Recorder::Armed;
-        self.drive_recorder(ctx);
-
         // Esc closes the window.
-        if !was_armed && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.quit_requested = true;
         }
         if ctx.input(|i| i.viewport().close_requested()) {
@@ -448,45 +356,20 @@ impl eframe::App for SettingsApp {
         ui.heading("Settings");
         ui.add_space(8.0);
 
-        // Row 1: hotkey — a text field and a `Record` button, the two ways in
-        // (§9). While the recorder is armed the field is not on screen: a
-        // text box would swallow the very keystrokes being recorded, and it
-        // is not there to take the focus back afterwards either.
+        // Row 1: hotkey — typed, in the §5 grammar. Capturing one from the
+        // keyboard is specified in docs/TASK-hotkey-native.md and not built.
         ui.horizontal(|ui| {
             ui.label("Global hotkey:");
-            match self.recorder {
-                Recorder::Idle => {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.form.hotkey)
-                            .id(egui::Id::new("settings_hotkey"))
-                            .desired_width(220.0)
-                            .hint_text(hotkey::format_native(&hotkey::default_hotkey())),
-                    );
-                    if ui.button("Record").clicked() {
-                        self.apply_recorder(&Input::Record);
-                    }
-                }
-                Recorder::Armed => {
-                    ui.add_sized(
-                        [220.0, ui.spacing().interact_size.y],
-                        egui::Label::new(egui::RichText::new("Press the combination…").strong()),
-                    );
-                    if ui.button("Cancel").clicked() {
-                        self.apply_recorder(&Input::Cancel);
-                    }
-                }
-            }
+            ui.add(
+                egui::TextEdit::singleline(&mut self.form.hotkey)
+                    .id(egui::Id::new("settings_hotkey"))
+                    .desired_width(220.0)
+                    .hint_text(hotkey::format_native(&hotkey::default_hotkey())),
+            );
         });
         // Under the row: what may go in it. Standing information, not an
-        // error message — the field is one of the two ways to set a hotkey.
-        // While recording, the prompt replaces it, and a refused key replaces
-        // the prompt.
-        let under_row = match (&self.hint, self.recorder) {
-            (Some(hint), Recorder::Armed) => hint.as_str(),
-            (_, Recorder::Armed) => PROMPT,
-            (_, Recorder::Idle) => hotkey::VOCABULARY,
-        };
-        ui.label(egui::RichText::new(under_row).small().weak());
+        // error message — this is how a hotkey is set.
+        ui.label(egui::RichText::new(hotkey::VOCABULARY).small().weak());
         ui.add_space(6.0);
 
         // Row 2: default interval
@@ -649,7 +532,7 @@ mod tests {
     fn to_config_canonicalises_however_the_hotkey_was_typed() {
         // Whitespace, case and the choice of spelling are user noise. One
         // combination gets one representation on disk, whichever of the
-        // accepted forms was typed or recorded.
+        // accepted forms was typed.
         let canonical = crate::hotkey::format_native(&crate::hotkey::parse("Alt+J").unwrap());
         for typed in ["  Alt+J  ", "alt+j", "Option+J", "⌥J"] {
             let mut f = SettingsForm::from_config(Config::default());

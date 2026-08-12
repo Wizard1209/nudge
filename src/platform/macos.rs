@@ -658,8 +658,7 @@ fn next_wake(frame: &daisy::DaisyFrame, remaining: Duration) -> Duration {
 /// skips) — the macOS counterpart of `tray_bridge::vk_for_key`.
 ///
 /// The token set is exactly what `hotkey::canonicalize_key` produces, so a
-/// combo the parser or the settings recorder accepts is a combo this can
-/// translate. Whether the *OS* will take it is a separate question:
+/// combo the parser accepts is a combo this can translate. Whether the *OS* will take it is a separate question:
 /// `global_hotkey`'s macOS scancode table stops at F20, so F21..F24 map here
 /// and then fail at `register`, loudly.
 fn code_for_key(key: &str) -> Option<Code> {
@@ -721,8 +720,7 @@ fn code_for_key(key: &str) -> Option<Code> {
 }
 
 /// Our modifier mask as `global_hotkey`'s. `MOD_WIN` is Cmd here, matching the
-/// parser's `Win|Super|Meta|Cmd` aliasing and `hotkey::hotkey_from_egui`'s
-/// folding of `mac_cmd` into the same bit.
+/// parser's `Win|Super|Meta|Cmd` aliasing.
 fn modifiers_to_global(m: u8) -> GlobalModifiers {
     let mut out = GlobalModifiers::empty();
     if m & MY_MOD_CTRL != 0 {

@@ -82,8 +82,9 @@ Full contract: [docs/journal-spec.md](docs/journal-spec.md)
   `Insert`/`Delete`, or a symbol cap (`- = [ ] \ ; ' , . / ``) — e.g.
   `⌥⌘J`, `Alt+J`, `Ctrl+F12`, `⌃⇧←`. Case, spacing and the choice of
   spelling do not matter. A symbol cap is named by its unshifted legend, so
-  `⇧/` and `?` are one combination. `fn` cannot be part of a hotkey on
-  macOS; see `docs/design-spec.md` §5 for why.
+  `⇧/` and `?` are one combination. At least one modifier is required,
+  except for `F1`–`F24`. `fn` cannot be part of a hotkey on macOS; see
+  `docs/design-spec.md` §5 for why.
 - Launch at login: field `autostart` (bool) — kept in sync with
   `HKCU\…\Run\Nudge` on Windows and with a LaunchAgent plist at
   `~/Library/LaunchAgents/com.wizard1209.nudge.plist` on macOS; see
@@ -112,23 +113,12 @@ The settings window opens from the tray menu (`Settings`) and edits the same
 `config.json` (hotkey, interval, autostart). Edits are picked up by the
 running app immediately via a file watcher.
 
-There are two ways to set the hotkey, and they edit the same field:
+The hotkey is typed in, in any of the spellings above — `⌥⌘J`, `Alt+Cmd+J`
+and `alt+cmd+j` are one combination. Full grammar: `docs/design-spec.md` §5.
+`Save` refuses a combination the OS cannot bind rather than writing it.
 
-- **Type it** — any of the spellings above; `⌥⌘J`, `Alt+Cmd+J` and
-  `alt+cmd+j` are one combination.
-- **Press `Record`** and then press the combination. The key you press ends
-  it, so there is nothing to hold and nothing to time. `Esc` backs out and
-  the field goes back to what is saved; so does leaving the window. A key
-  that cannot be part of a hotkey is named rather than swallowed, and the
-  recorder keeps listening.
-
-`Record` cannot capture a combination something else already holds
-system-wide — including Nudge's own current hotkey, which opens the popup
-instead. Type those. Full grammar and the rest of the recorder:
-`docs/design-spec.md` §5 and §9.
-
-Either way, `Save` refuses a combination the OS cannot bind rather than
-writing it.
+Capturing a combination from the keyboard instead of typing it is specified
+in `docs/TASK-hotkey-native.md` and not built.
 
 ## Development: the Electron prototype
 

@@ -92,7 +92,6 @@ pub mod journal;
 pub mod nudge_state;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod platform;
-pub mod recorder;
 pub mod settings_app;
 pub mod timer;
 #[cfg(target_os = "windows")]

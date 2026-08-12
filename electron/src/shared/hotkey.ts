@@ -15,7 +15,9 @@ export type ParseError =
   | { kind: "empty" }
   | { kind: "missingKey" }
   | { kind: "multipleKeys" }
-  | { kind: "unknownToken"; token: string };
+  | { kind: "unknownToken"; token: string }
+  /** "J" — a key that types something, with nothing held. §5. */
+  | { kind: "missingModifier"; key: string };
 
 const MODIFIER_ALIASES: Record<string, "ctrl" | "alt" | "shift" | "win"> = {
   CTRL: "ctrl",
@@ -79,6 +81,12 @@ export function parseHotkey(input: string): ParseResult {
 
   if (keyCount === 0) return { ok: false, error: { kind: "missingKey" } };
   if (keyCount > 1) return { ok: false, error: { kind: "multipleKeys" } };
+  // §5: at least one modifier, except for the F-row — the only keys that
+  // type nothing. Registration takes a bare key and then owns it everywhere.
+  const bare = !hotkey.ctrl && !hotkey.alt && !hotkey.shift && !hotkey.win;
+  if (bare && !/^F([1-9]|1[0-9]|2[0-4])$/.test(hotkey.key)) {
+    return { ok: false, error: { kind: "missingModifier", key: hotkey.key } };
+  }
 
   return { ok: true, hotkey };
 }

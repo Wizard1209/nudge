@@ -37,6 +37,9 @@ pub enum ParseError {
     MultipleKeys,
     /// "Foo+Ctrl" — segment is neither a modifier nor a known key.
     UnknownToken(String),
+    /// "J" — a key that types something, with nothing held. The OS registers
+    /// it and the key then belongs to us everywhere. §5.
+    MissingModifier(String),
 }
 
 impl fmt::Display for ParseError {
@@ -53,6 +56,11 @@ impl fmt::Display for ParseError {
                 write!(f, "hotkey has more than one non-modifier key")
             }
             ParseError::UnknownToken(t) => write!(f, "unknown hotkey token: \"{}\"", t),
+            ParseError::MissingModifier(k) => write!(
+                f,
+                "hotkey \"{}\" has no modifier — that would take the key away from every other application (only F1-F24 may stand alone)",
+                k
+            ),
         }
     }
 }
@@ -143,10 +151,24 @@ pub fn parse(input: &str) -> Result<Hotkey, ParseError> {
     }
 
     let key = key.ok_or(ParseError::MissingKey)?;
+    // §5: at least one modifier, except for the F-row. The registration call
+    // accepts a bare key on both platforms and then owns it machine-wide —
+    // this is the only place that says no.
+    if modifiers == 0 && !is_function_key(&key) {
+        return Err(ParseError::MissingModifier(key));
+    }
     Ok(Hotkey {
         modifiers,
         key: HotkeyKey(key),
     })
+}
+
+/// Whether a canonical key token is one of `F1`..`F24` — the keys that type
+/// nothing, and so are the only ones allowed to stand alone (§5).
+fn is_function_key(key: &str) -> bool {
+    key.strip_prefix('F')
+        .and_then(|rest| rest.parse::<u8>().ok())
+        .is_some_and(|n| (1..=24).contains(&n))
 }
 
 /// Return the canonical form of a key token (already uppercased) if we
@@ -335,157 +357,6 @@ fn title_case_key(upper: &str) -> String {
 /// memorable as "spotlight-ish".
 pub fn default_hotkey() -> Hotkey {
     parse("Ctrl+Shift+Space").expect("default hotkey must parse")
-}
-
-/// Translate an egui-side `(modifiers, key)` pair from the settings recorder
-/// into a `Hotkey` in our canonical form. The supported key set deliberately
-/// mirrors what [`canonicalize_key`] accepts and what
-/// [`crate::tray_bridge::vk_for_key`] can translate to a Win32 VK — so the
-/// recorder cannot produce a label that would silently fail to register at
-/// next launch.
-///
-/// Returns `None` for any key outside that set (`fn`, the keypad, media keys,
-/// dead keys, …) — the caller surfaces a hint and keeps recording.
-///
-/// On the modifier side, egui's `mac_cmd` / `command` both fold into our
-/// `MOD_WIN` bit, matching the parser's `Win|Super|Meta|Cmd` aliasing rule.
-/// Callers must pass a real non-modifier key as `key`; egui doesn't surface
-/// raw Ctrl/Alt/Shift as `Key` variants, so this contract is naturally upheld
-/// by the input-pump loop.
-//
-// Bin-on-wasm reports this as "never used" because main.rs's settings_app
-// import is gated to non-wasm — same noise the rest of this module already
-// emits in that build. The library and the native bin both use this fn.
-#[allow(dead_code)]
-pub fn hotkey_from_egui(
-    modifiers: eframe::egui::Modifiers,
-    key: eframe::egui::Key,
-) -> Option<Hotkey> {
-    use eframe::egui::Key;
-
-    let token: &'static str = match key {
-        Key::A => "A",
-        Key::B => "B",
-        Key::C => "C",
-        Key::D => "D",
-        Key::E => "E",
-        Key::F => "F",
-        Key::G => "G",
-        Key::H => "H",
-        Key::I => "I",
-        Key::J => "J",
-        Key::K => "K",
-        Key::L => "L",
-        Key::M => "M",
-        Key::N => "N",
-        Key::O => "O",
-        Key::P => "P",
-        Key::Q => "Q",
-        Key::R => "R",
-        Key::S => "S",
-        Key::T => "T",
-        Key::U => "U",
-        Key::V => "V",
-        Key::W => "W",
-        Key::X => "X",
-        Key::Y => "Y",
-        Key::Z => "Z",
-        Key::Num0 => "0",
-        Key::Num1 => "1",
-        Key::Num2 => "2",
-        Key::Num3 => "3",
-        Key::Num4 => "4",
-        Key::Num5 => "5",
-        Key::Num6 => "6",
-        Key::Num7 => "7",
-        Key::Num8 => "8",
-        Key::Num9 => "9",
-        Key::F1 => "F1",
-        Key::F2 => "F2",
-        Key::F3 => "F3",
-        Key::F4 => "F4",
-        Key::F5 => "F5",
-        Key::F6 => "F6",
-        Key::F7 => "F7",
-        Key::F8 => "F8",
-        Key::F9 => "F9",
-        Key::F10 => "F10",
-        Key::F11 => "F11",
-        Key::F12 => "F12",
-        Key::F13 => "F13",
-        Key::F14 => "F14",
-        Key::F15 => "F15",
-        Key::F16 => "F16",
-        Key::F17 => "F17",
-        Key::F18 => "F18",
-        Key::F19 => "F19",
-        Key::F20 => "F20",
-        Key::F21 => "F21",
-        Key::F22 => "F22",
-        Key::F23 => "F23",
-        Key::F24 => "F24",
-        Key::Space => "SPACE",
-        Key::Enter => "ENTER",
-        Key::Tab => "TAB",
-        Key::Escape => "ESCAPE",
-        Key::Backspace => "BACKSPACE",
-        Key::ArrowLeft => "LEFT",
-        Key::ArrowRight => "RIGHT",
-        Key::ArrowUp => "UP",
-        Key::ArrowDown => "DOWN",
-        Key::Home => "HOME",
-        Key::End => "END",
-        Key::PageUp => "PAGEUP",
-        Key::PageDown => "PAGEDOWN",
-        Key::Insert => "INSERT",
-        Key::Delete => "DELETE",
-        // Symbol caps, named by their unshifted legend (§5). egui reports the
-        // shifted twin as a variant of its own, so both fold onto the one
-        // token. That is belt and braces behind `physical_key`, which already
-        // reports the cap rather than what the layout printed — but this
-        // function is also reached with a logical key, and then `⇧/` must not
-        // become a second name for `/`.
-        //
-        // The digit row keeps only its digits: `!` is the sole shifted digit
-        // egui names, so folding it onto `1` would be one exception where the
-        // symbol caps are a rule.
-        Key::Minus => "-",
-        Key::Equals | Key::Plus => "=",
-        Key::OpenBracket | Key::OpenCurlyBracket => "[",
-        Key::CloseBracket | Key::CloseCurlyBracket => "]",
-        Key::Backslash | Key::Pipe => "\\",
-        Key::Semicolon | Key::Colon => ";",
-        Key::Quote => "'",
-        Key::Comma => ",",
-        Key::Period => ".",
-        Key::Slash | Key::Questionmark => "/",
-        Key::Backtick => "`",
-        _ => return None,
-    };
-
-    let mut mods: u8 = 0;
-    if modifiers.ctrl {
-        mods |= MOD_CTRL;
-    }
-    if modifiers.alt {
-        mods |= MOD_ALT;
-    }
-    if modifiers.shift {
-        mods |= MOD_SHIFT;
-    }
-    // egui's `command` is the "primary modifier": Cmd on mac, Ctrl on others.
-    // `mac_cmd` is the raw Cmd key (mac only). Both fold into our MOD_WIN bit
-    // for cross-platform consistency with the parser's Win|Super|Meta|Cmd
-    // aliasing — except on non-mac targets `command == ctrl`, which we already
-    // handled above, so we only add MOD_WIN when `mac_cmd` is set (true Cmd).
-    if modifiers.mac_cmd {
-        mods |= MOD_WIN;
-    }
-
-    Some(Hotkey {
-        modifiers: mods,
-        key: HotkeyKey(token.to_string()),
-    })
 }
 
 #[cfg(test)]
@@ -741,310 +612,38 @@ mod tests {
     }
 
     #[test]
-    fn default_hotkey_is_ctrl_shift_space() {
-        let hk = default_hotkey();
-        assert_eq!(format(&hk), "Ctrl+Shift+Space");
-    }
-
-    // ---- hotkey_from_egui ---------------------------------------------------
-    // The recorder's pure mapping function. Verifies the supported key set
-    // exactly matches what `canonicalize_key` (and therefore
-    // `tray_bridge::vk_for_key`) accepts, so a recorded combo CAN be
-    // registered on Windows at next launch.
-
-    use eframe::egui::{Key, Modifiers};
-
-    #[test]
-    fn letters_map_to_uppercase_token() {
-        // egui::Key::A..=Z → "A".."Z". Modifier-less recording produces a
-        // bare-letter hotkey; the parser allows it (Cmd+A etc. are common,
-        // but bare-A is also legal — just impractical).
-        let letters = [
-            (Key::A, "A"),
-            (Key::B, "B"),
-            (Key::C, "C"),
-            (Key::D, "D"),
-            (Key::E, "E"),
-            (Key::F, "F"),
-            (Key::G, "G"),
-            (Key::H, "H"),
-            (Key::I, "I"),
-            (Key::J, "J"),
-            (Key::K, "K"),
-            (Key::L, "L"),
-            (Key::M, "M"),
-            (Key::N, "N"),
-            (Key::O, "O"),
-            (Key::P, "P"),
-            (Key::Q, "Q"),
-            (Key::R, "R"),
-            (Key::S, "S"),
-            (Key::T, "T"),
-            (Key::U, "U"),
-            (Key::V, "V"),
-            (Key::W, "W"),
-            (Key::X, "X"),
-            (Key::Y, "Y"),
-            (Key::Z, "Z"),
-        ];
-        for (k, expected) in letters {
-            let hk = hotkey_from_egui(Modifiers::NONE, k)
-                .unwrap_or_else(|| panic!("letter {expected:?} must map"));
-            assert_eq!(hk.key.as_str(), expected, "letter {expected:?}");
-            assert_eq!(hk.modifiers, 0, "no modifiers passed");
-        }
-    }
-
-    #[test]
-    fn digits_map_to_token() {
-        let digits = [
-            (Key::Num0, "0"),
-            (Key::Num1, "1"),
-            (Key::Num2, "2"),
-            (Key::Num3, "3"),
-            (Key::Num4, "4"),
-            (Key::Num5, "5"),
-            (Key::Num6, "6"),
-            (Key::Num7, "7"),
-            (Key::Num8, "8"),
-            (Key::Num9, "9"),
-        ];
-        for (k, expected) in digits {
-            let hk = hotkey_from_egui(Modifiers::CTRL, k).unwrap();
-            assert_eq!(hk.key.as_str(), expected);
-            assert_eq!(hk.modifiers, MOD_CTRL);
-        }
-    }
-
-    #[test]
-    fn f_keys_map_to_token() {
-        // F1..F24 — the same range vk_for_key registers globally.
-        let f_keys = [
-            (Key::F1, "F1"),
-            (Key::F2, "F2"),
-            (Key::F3, "F3"),
-            (Key::F4, "F4"),
-            (Key::F5, "F5"),
-            (Key::F6, "F6"),
-            (Key::F7, "F7"),
-            (Key::F8, "F8"),
-            (Key::F9, "F9"),
-            (Key::F10, "F10"),
-            (Key::F11, "F11"),
-            (Key::F12, "F12"),
-            (Key::F13, "F13"),
-            (Key::F14, "F14"),
-            (Key::F15, "F15"),
-            (Key::F16, "F16"),
-            (Key::F17, "F17"),
-            (Key::F18, "F18"),
-            (Key::F19, "F19"),
-            (Key::F20, "F20"),
-            (Key::F21, "F21"),
-            (Key::F22, "F22"),
-            (Key::F23, "F23"),
-            (Key::F24, "F24"),
-        ];
-        for (k, expected) in f_keys {
-            let hk = hotkey_from_egui(Modifiers::NONE, k).unwrap();
-            assert_eq!(hk.key.as_str(), expected);
-        }
-    }
-
-    #[test]
-    fn named_keys_map() {
-        // Same allowlist canonicalize_key permits — Space, Enter, Tab, Escape,
-        // Backspace. Aliases (Return → ENTER, Esc → ESCAPE) don't appear in
-        // egui::Key, so no aliasing logic needed here.
-        let named = [
-            (Key::Space, "SPACE"),
-            (Key::Enter, "ENTER"),
-            (Key::Tab, "TAB"),
-            (Key::Escape, "ESCAPE"),
-            (Key::Backspace, "BACKSPACE"),
-        ];
-        for (k, expected) in named {
-            let hk = hotkey_from_egui(Modifiers::NONE, k).unwrap();
-            assert_eq!(hk.key.as_str(), expected);
-        }
-    }
-
-    #[test]
-    fn modifiers_compose() {
-        // Ctrl+Shift+A → both bits set.
-        let mods = Modifiers {
-            ctrl: true,
-            shift: true,
-            ..Modifiers::NONE
-        };
-        let hk = hotkey_from_egui(mods, Key::A).unwrap();
-        assert_eq!(hk.modifiers, MOD_CTRL | MOD_SHIFT);
-        assert_eq!(hk.key.as_str(), "A");
-    }
-
-    #[test]
-    fn all_four_modifiers_compose() {
-        // Ctrl+Alt+Shift+Cmd+J — all four bits set. Tests that mac_cmd folds
-        // into our MOD_WIN bit (the parser treats Cmd as an alias for Win).
-        let mods = Modifiers {
-            ctrl: true,
-            alt: true,
-            shift: true,
-            mac_cmd: true,
-            command: true,
-        };
-        let hk = hotkey_from_egui(mods, Key::J).unwrap();
-        assert_eq!(hk.modifiers, MOD_CTRL | MOD_ALT | MOD_SHIFT | MOD_WIN);
-        assert_eq!(hk.key.as_str(), "J");
-    }
-
-    #[test]
-    fn unsupported_key_returns_none() {
-        // Anything outside the canonicalize_key allowlist must be rejected —
-        // otherwise the recorder writes a label that fails to register at
-        // next launch, silently.
-        for k in [
-            Key::F25, // F25..F35 exist in egui but Win32 only goes F1..F24
-            Key::Copy,
-            Key::Cut,
-            Key::Paste,
-            Key::BrowserBack,
-            // The one shifted digit egui names. The digit row is bound by its
-            // digits, so folding this onto "1" would be an exception where the
-            // symbol caps are a rule.
-            Key::Exclamationmark,
-        ] {
+    fn a_key_that_types_something_needs_a_modifier() {
+        // Registration would accept every one of these and then own the key
+        // machine-wide (§5).
+        for s in ["J", "5", "Space", "Enter", "/", "Left", "Delete"] {
             assert!(
-                hotkey_from_egui(Modifiers::CTRL, k).is_none(),
-                "{k:?} must be rejected"
+                matches!(parse(s), Err(ParseError::MissingModifier(_))),
+                "{s} must be refused without a modifier, got {:?}",
+                parse(s)
             );
         }
     }
 
     #[test]
-    fn arrows_and_navigation_map() {
-        let keys = [
-            (Key::ArrowLeft, "LEFT"),
-            (Key::ArrowRight, "RIGHT"),
-            (Key::ArrowUp, "UP"),
-            (Key::ArrowDown, "DOWN"),
-            (Key::Home, "HOME"),
-            (Key::End, "END"),
-            (Key::PageUp, "PAGEUP"),
-            (Key::PageDown, "PAGEDOWN"),
-            (Key::Insert, "INSERT"),
-            (Key::Delete, "DELETE"),
-        ];
-        for (k, expected) in keys {
-            let hk = hotkey_from_egui(Modifiers::NONE, k).unwrap();
-            assert_eq!(hk.key.as_str(), expected);
+    fn the_f_row_may_stand_alone() {
+        for s in ["F1", "F13", "F24"] {
+            let hk = parse(s).unwrap_or_else(|e| panic!("{s} should parse: {e}"));
+            assert_eq!(hk.modifiers, 0);
+            assert_eq!(hk.key.as_str(), s);
         }
     }
 
     #[test]
-    fn a_symbol_cap_and_its_shifted_twin_are_one_key() {
-        // egui reports `?` and `/` as different variants of one cap. Two
-        // tokens would be two names for one binding — and one of them would
-        // be unspellable, since `+` is the separator.
-        let pairs = [
-            (Key::Slash, Key::Questionmark, "/"),
-            (Key::Backslash, Key::Pipe, "\\"),
-            (Key::Equals, Key::Plus, "="),
-            (Key::Semicolon, Key::Colon, ";"),
-            (Key::OpenBracket, Key::OpenCurlyBracket, "["),
-            (Key::CloseBracket, Key::CloseCurlyBracket, "]"),
-        ];
-        for (unshifted, shifted, expected) in pairs {
-            for k in [unshifted, shifted] {
-                let hk = hotkey_from_egui(Modifiers::NONE, k).unwrap();
-                assert_eq!(hk.key.as_str(), expected, "{k:?}");
-            }
-        }
-        for (k, expected) in [
-            (Key::Minus, "-"),
-            (Key::Quote, "'"),
-            (Key::Comma, ","),
-            (Key::Period, "."),
-            (Key::Backtick, "`"),
-        ] {
-            let hk = hotkey_from_egui(Modifiers::NONE, k).unwrap();
-            assert_eq!(hk.key.as_str(), expected);
+    fn one_modifier_is_enough_for_anything() {
+        for s in ["Ctrl+J", "⇧/", "Alt+Space"] {
+            assert!(parse(s).is_ok(), "{s} should parse");
         }
     }
 
     #[test]
-    fn the_new_keys_round_trip_through_format_and_parse() {
-        // Same contract as `roundtrip_via_format_and_parse`, extended over the
-        // keys §5 grew: whatever the recorder produces, Save can write and the
-        // next launch can read back.
-        for k in [
-            Key::ArrowLeft,
-            Key::PageDown,
-            Key::Delete,
-            Key::Slash,
-            Key::Minus,
-            Key::Backtick,
-            Key::Backslash,
-        ] {
-            let hk = hotkey_from_egui(Modifiers::ALT, k).expect("supported");
-            let text = format(&hk);
-            let parsed = parse(&text).expect("format() output must parse");
-            assert_eq!(parsed, hk, "roundtrip failed for {text}");
-        }
+    fn default_hotkey_is_ctrl_shift_space() {
+        let hk = default_hotkey();
+        assert_eq!(format(&hk), "Ctrl+Shift+Space");
     }
 
-    #[test]
-    fn multi_word_named_keys_are_spelled_the_way_they_are_read() {
-        // A mechanical title-casing would write "Pagedown" here, and that is
-        // what goes into config.json and back out of it.
-        assert_eq!(format(&parse("ctrl+pagedown").unwrap()), "Ctrl+PageDown");
-        assert_eq!(format(&parse("ctrl+pgup").unwrap()), "Ctrl+PageUp");
-        assert_eq!(format(&parse("ctrl+ins").unwrap()), "Ctrl+Insert");
-    }
-
-    #[test]
-    fn symbol_caps_parse_in_both_spellings() {
-        // The symbol form needs no separator after a modifier glyph, and the
-        // word form needs one — the same rule as `⌥⌘J` versus `Alt+Cmd+J`.
-        assert_eq!(parse("⌘,").unwrap(), parse("Cmd+,").unwrap());
-        assert_eq!(parse("⌃⇧[").unwrap(), parse("Ctrl+Shift+[").unwrap());
-        // `+` is the separator, never the key: the cap is `=`.
-        assert_eq!(parse("Ctrl+=").unwrap().key.as_str(), "=");
-        assert!(parse("Ctrl++").is_err());
-    }
-
-    #[test]
-    fn roundtrip_via_format_and_parse() {
-        // Whatever the recorder produces, format() → parse() must reconstruct
-        // the same Hotkey. This is the contract that lets Save just write the
-        // text label: the parser will accept it back on next launch.
-        let samples: &[(Modifiers, Key)] = &[
-            (
-                Modifiers {
-                    ctrl: true,
-                    shift: true,
-                    ..Modifiers::NONE
-                },
-                Key::Space,
-            ),
-            (Modifiers::ALT, Key::J),
-            (Modifiers::NONE, Key::F12),
-            (
-                Modifiers {
-                    ctrl: true,
-                    alt: true,
-                    ..Modifiers::NONE
-                },
-                Key::Num7,
-            ),
-            (Modifiers::CTRL, Key::Enter),
-            (Modifiers::CTRL, Key::Backspace),
-        ];
-        for (m, k) in samples {
-            let hk = hotkey_from_egui(*m, *k).expect("supported");
-            let text = format(&hk);
-            let parsed = parse(&text).expect("format() output must parse");
-            assert_eq!(parsed, hk, "roundtrip failed for {text}");
-        }
-    }
 }

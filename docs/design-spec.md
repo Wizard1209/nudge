@@ -295,13 +295,19 @@ keeps its meaning; only the way it is written back changes.
   same four, so `fn` reaches neither the binding nor the app. macOS also
   sets the `fn` flag by itself for arrows and the F-row, so it is not a
   modifier a user chooses in the first place.
+- **At least one modifier is required, except for `F1`–`F24`.** The
+  registration call accepts a bare key — measured: a lone `J` registers on
+  macOS and returns success — and it then takes that key away from every
+  application on the machine. The F-row is the exception because it types
+  nothing, which is what makes a bare `F13` a usable shortcut.
 - **`F1`–`F12` need `fn` held on a Mac** unless *Use F1, F2, etc. as
-  standard function keys* is on. **`F21`–`F24`** satisfy the grammar but
-  fail to register there.
+  standard function keys* is on. The vocabulary line offers `F1`–`F20`
+  there and `F1`–`F24` on Windows: `F21`–`F24` parse on both, but whether
+  a Mac registers them has never been measured.
 - **The numeric keypad is not in the grammar.** Its keys carry their own
-  codes, distinct from the digit row, so `Num5` would be a second name for
-  neither the same key nor the same binding. §9 has the consequence for the
-  recorder.
+  codes and register perfectly well; leaving them out is a choice about the
+  size of the vocabulary, not a limit of the platform. Adding them means
+  adding a parallel name for every digit and operator.
 - **`Insert` has no cap on an Apple keyboard**, and `Delete` (`⌦`, forward
   delete) is a different key from `Backspace` (`⌫`), whatever the Mac
   keycap says. Both register; only one of them is reachable on a laptop.
@@ -309,12 +315,19 @@ keeps its meaning; only the way it is written back changes.
 #### When it cannot be applied
 
 If the config file is absent, a default is written on first launch. A
-combination that cannot be registered — one that breaks the grammar, or one
-another app already holds — is not fatal, and **does not fall back to the
-default**: the app runs **without a hotkey**, says so on stderr, and stays
-reachable through the tray icon. Silently binding something else would take
-over a shortcut the user never asked for while hiding which one failed.
+combination that cannot be registered is not fatal, and **does not fall back
+to the default**: the app runs **without a hotkey**, says so on stderr, and
+stays reachable through the tray icon. Silently binding something else would
+take over a shortcut the user never asked for while hiding which one failed.
 Startup and live reload (§9) follow the same rule.
+
+**A combination another application already holds is not one of those
+cases.** On macOS registration succeeds anyway — measured: the same
+combination registers from two processes and both calls return success, and
+`⌘Space` registers with no complaint at all. Nothing is reported because
+nothing failed; the hotkey simply never fires, because the other holder gets
+the keystroke first. Detecting this needs a different call than the one that
+registers, and that work is specified in `docs/TASK-hotkey-native.md`.
 
 ## 6. Pill (browser build only — tray emulation)
 
@@ -395,9 +408,9 @@ file while a hand-editing user reads the other.
 #### The hotkey row
 
 The field always holds a string in the §5 grammar, shown in this platform's
-spelling, with the accepted vocabulary printed under it — the field is one of
-the two ways to set a hotkey, so what may go in it is standing information,
-not an error message.
+spelling, with the accepted vocabulary printed under it — this is how a
+hotkey is set, so what may go in it is standing information, not an error
+message.
 
 A stored value that parses is re-spelled for this platform on load, so a
 config written by the other build, seeded by first-run or edited by hand
@@ -405,122 +418,11 @@ reads as `⌃⇧Space` on a Mac. One that does *not* parse is shown exactly as
 stored: it is the only copy of what the user typed, and the field is where
 they fix it.
 
-#### The recorder
+#### Capturing a hotkey from the keyboard
 
-`Record` captures a combination from the keyboard. **Two states, six events,
-twelve cells, no clock.**
-
-| State | On screen |
-|---|---|
-| **Idle** | the editable field, the vocabulary line, a `Record` button |
-| **Armed** | a prompt in place of the field, the line *"Modifiers plus one key. Esc cancels."*, a `Cancel` button |
-
-**The only keyboard input an Armed recorder accepts is a key press edge**:
-one press of a non-modifier key, carrying the modifiers held at that instant.
-It is defined negatively as well, because that is where the failures were:
-not the set of currently-held keys, not a release, not a duration, not a
-repeat.
-
-The key it reads off that edge is the **physical** one — the cap that went
-down, not the character the active layout prints for it. §5 stores and
-registers positions, so this is the only reading that survives a layout
-switch, and it is what folds `⇧/` and `?` onto one combination without a
-rule of its own.
-
-| | Idle | Armed |
-|---|---|---|
-| **Record** | → Armed | — |
-| **Press** — §5 can bind it | — | → Idle, field := the combination, canonically spelled |
-| **Press** — bare `Esc` | — | → Idle, field := the saved hotkey |
-| **Press** — §5 cannot bind it | — | → **Armed**, with a hint naming the key |
-| **Cancel** | — | → Idle, field := the saved hotkey |
-| **Focus lost** | — | → Idle, field := the saved hotkey |
-
-Every cell is stated; there are no guards and no conditions outside this
-table.
-
-Five consequences, all read off the table rather than added to it:
-
-- **A chord of modifiers alone is not an event.** Modifiers are not keys, so
-  holding `⌥⌘` produces no press edge and the recorder waits. Nothing is
-  accepted and nothing is refused.
-- **An unbindable key does not disarm.** Disarming there would leave a
-  mistyped chord looking like a recorded one.
-- **Bare `Esc` cancels** because a hotkey is modifiers **plus** a key, so a
-  lone `Esc` can never be one; the keystroke is therefore free to mean "back
-  out". With any modifier held it is an ordinary key and `⌃⎋` records.
-- **Every cancelling path lands on the saved hotkey**, so the recorder has
-  nothing to remember when it starts and cancelling has one meaning: the row
-  reads what `config.json` holds. A typed, unsaved edit is discarded along
-  with it.
-- **Losing the focus cancels**, because *which* shortcut took it is not
-  observable — macOS consumes `⌘Tab`, `⌘Space` and Spaces switching before
-  any application sees them. Focus loss is the entire signal, and a recorder
-  still listening behind another window is worse than a cancelled one.
-
-On the way back to Idle the recorder does not hand keyboard focus to the
-text field: a hand still resting on the keys, or the auto-repeat of a key
-held a beat too long, would otherwise type over what was just recorded.
-
-**What the recorder cannot capture.** Three sets, and all three stay
-reachable by **typing** into the field — which is the second reason the field
-is not a fallback.
-
-- **Held elsewhere.** A combination the system or another application
-  already owns never reaches the window, and that includes this app's own
-  current hotkey: the running instance has it registered system-wide while
-  the settings window is a separate process. Pressing it opens the popup, and
-  the focus that takes cancels the recording.
-- **The clipboard trio.** The toolkit turns `⌘X`, `⌘C` and `⌘V` into cut,
-  copy and paste before any window sees a key — on Windows `⇧Del`, `⌃Ins` and
-  `⇧Ins` as well. The recorder answers these the way it answers any key it
-  cannot bind: it stays armed and says so. Silence here would read as a dead
-  recorder, which is the failure this feature keeps returning to.
-- **The keypad.** The toolkit reports keypad keys as their main-row twins —
-  keypad `5` arrives as `5`, keypad `/` as `/`. A keypad press therefore
-  records the main-row key and binds there, and the shortcut will not fire
-  from the keypad. §5 leaves the keypad out for this reason too.
-
-Capturing only edits the staged value. `Save` is still what writes to
-`config.json`, and it validates per §5 like any typed value.
-
-**Acceptance.** The recorder is done when, from a real keyboard on macOS:
-
-- `⌥⌘J`, `⌥⌘←` and `⇧/` each land in the field spelled the way §5 writes them;
-- `⌥⌘` alone changes nothing and shows no error, and neither does `fn`, which
-  reaches the window as no key at all;
-- `⌘C` shows a hint and leaves the recorder armed;
-- with a Russian layout active, `⌥⌘J` still records as `⌥⌘J`;
-- bare `Esc` puts the saved hotkey back, and so does `⌘Tab`;
-- pressing the app's own current hotkey opens the popup and ends the
-  recording cancelled;
-- the captured label survives `Save` and a relaunch — the app registers it
-  and logs no error.
-
-#### What broke twice, and the measurement that settles it
-
-The toolkit exposes both a set of currently-held keys and a stream of press
-events. **On macOS the held set is unreliable in exactly the situation a
-hotkey recorder lives in**, and both earlier attempts read it.
-
-Measured over one real typing session, 965 frames with a modifier held: the
-key dropped out of the held set **25 times mid-press**, for 0.08–0.63 s at a
-time; the longest unbroken stretch of one combination was **0.67 s**. Across
-all 18 gaps where the key came back, the **modifiers were unchanged** — the
-key was re-arriving as fresh press events. The hole is in the held set, not
-in the input.
-
-- **Attempt 1 — first key in the held set wins.** The set is unordered, so
-  which key that is is not defined. It also fired on chords the user was
-  still assembling.
-- **Attempt 2 — held unchanged for 0.8 s.** Unsatisfiable on the signal
-  above: nothing was ever held that long without a gap, so the row accepted
-  nothing at all — and silently, because a row that never accepts anything
-  raises no error to point at.
-
-Both had passing unit tests, because both were tested against an input
-sequence the platform never produces. **A test for this feature is only
-evidence if its input is a recorded real session or a real keypress.**
+Not built. The contract is being rewritten against the OS event stream
+rather than the window toolkit's — see `docs/TASK-hotkey-native.md`. Until
+it lands, the field above is the only way to set a hotkey.
 
 ### Saving
 

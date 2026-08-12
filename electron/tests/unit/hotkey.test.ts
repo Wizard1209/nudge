@@ -76,6 +76,31 @@ describe("parseHotkey", () => {
     });
   });
 
+  it("rejects a key that types something when nothing is held", () => {
+    // Registration would take every one of these and then own the key on the
+    // whole machine (spec §5).
+    for (const s of ["J", "5", "Space", "Enter"]) {
+      expect(parseHotkey(s)).toEqual({
+        ok: false,
+        error: { kind: "missingModifier", key: parseHotkey(`Ctrl+${s}`).hotkey?.key },
+      });
+    }
+  });
+
+  it("lets the F-row stand alone", () => {
+    for (const s of ["F1", "F13", "F24"]) {
+      const result = parseHotkey(s);
+      expect(result.ok).toBe(true);
+      expect(result.hotkey).toEqual({
+        ctrl: false,
+        alt: false,
+        shift: false,
+        win: false,
+        key: s,
+      });
+    }
+  });
+
   it("rejects more than one key", () => {
     expect(parseHotkey("Ctrl+A+B")).toEqual({
       ok: false,
