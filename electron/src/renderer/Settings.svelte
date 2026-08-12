@@ -1,7 +1,19 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { SettingsForm } from "../shared/settingsForm";
-  import { decideCapture, formatHotkey, type Modifiers } from "../shared/hotkey";
+  import { SettingsForm, respell } from "../shared/settingsForm";
+  import {
+    describeParseError,
+    formatHotkeyNative,
+    vocabulary,
+  } from "../shared/hotkey";
+  import {
+    classifyPress,
+    hintText,
+    recorderStep,
+    type RecorderInput,
+    type RecorderState,
+  } from "../shared/hotkeyRecorder";
+  import { detectPlatform } from "../shared/platform";
   import { FakeProvider, applyAutostart } from "../shared/autostart";
   import {
     DEFAULT_CONFIG,
@@ -16,6 +28,9 @@
     typeof window !== "undefined" ? window.nudgeSettings : undefined;
 
   const STORAGE_KEY = "nudge-config";
+
+  /** Which spelling this build shows and writes (§5: one per platform). */
+  const platform = detectPlatform();
 
   // Browser persistence. The Electron Settings window will swap these for IPC
   // calls (Layer B5); the pure SettingsForm/recorder logic stays identical.
@@ -37,7 +52,7 @@
   const initial = loadStored();
   let persisted = $state<Config>(initial);
   const provider = new FakeProvider(initial.autostart);
-  const form = SettingsForm.fromConfig(initial);
+  const form = SettingsForm.fromConfig(initial, platform);
 
   // Reactive mirrors of the form fields (Svelte 5 runes can't bind to a class
   // field directly, so we mirror and push changes back into the form).
@@ -45,8 +60,7 @@
   let intervalText = $state(form.intervalText);
   let autostart = $state(form.autostart);
 
-  let recording = $state(false);
-  let hotkeyBeforeRecord = "";
+  let recorder = $state<RecorderState>("idle");
   let banner = $state("");
 
   // Electron loads its config over IPC (async), so seed the fields after mount.
@@ -58,8 +72,9 @@
 
   function reseed(cfg: Config) {
     persisted = cfg;
-    form.hotkey = cfg.hotkey;
-    form.intervalText = SettingsForm.fromConfig(cfg).intervalText;
+    // §9: a stored value that parses is re-spelled for this platform on load.
+    form.hotkey = respell(cfg.hotkey, platform);
+    form.intervalText = SettingsForm.fromConfig(cfg, platform).intervalText;
     form.autostart = cfg.autostart;
     hotkey = form.hotkey;
     intervalText = form.intervalText;
@@ -72,52 +87,65 @@
     form.autostart = autostart;
   }
 
-  function startRecording() {
-    hotkeyBeforeRecord = hotkey;
-    recording = true;
-    banner = "Press a key combination…";
-  }
-  function stopRecording() {
-    recording = false;
+  // --- The recorder (docs/TASK-hotkey-native.md) ---
+  //
+  // This shell owns none of the decisions: it turns real events into the
+  // table's inputs, hands them to `recorderStep`, and performs the effect it
+  // gets back. The one thing it decides is *when* a keydown is a press edge,
+  // and `classifyPress` answers even that.
+
+  /** The saved hotkey, re-read on every cancelling path. The recorder
+   * remembers nothing when it arms, so a value changed on disk (or by the
+   * other surface) while the field was armed is the one that comes back. */
+  async function savedHotkey(): Promise<string> {
+    const cfg = settingsApi ? await settingsApi.getConfig() : loadStored();
+    return respell(cfg.hotkey, platform);
   }
 
-  const MODIFIER_KEYS = new Set([
-    "Control",
-    "Alt",
-    "Shift",
-    "Meta",
-    "OS",
-    "AltGraph",
-  ]);
-
-  function onWindowKeydown(e: KeyboardEvent) {
-    if (!recording) return;
-    e.preventDefault();
-    const mods: Modifiers = {
-      ctrl: e.ctrlKey,
-      alt: e.altKey,
-      shift: e.shiftKey,
-      win: e.metaKey,
-    };
-    const keys = MODIFIER_KEYS.has(e.key) ? [] : [e.key];
-    const outcome = decideCapture(mods, keys);
-    switch (outcome.kind) {
+  async function step(input: RecorderInput) {
+    const { state, effect } = recorderStep(recorder, input);
+    recorder = state;
+    switch (effect.kind) {
+      case "none":
+        break;
       case "captured":
-        hotkey = formatHotkey(outcome.hotkey);
+        hotkey = formatHotkeyNative(effect.hotkey, platform);
         banner = "";
-        stopRecording();
         break;
-      case "cancel":
-        hotkey = hotkeyBeforeRecord;
+      case "restoreSaved":
+        hotkey = await savedHotkey();
         banner = "";
-        stopRecording();
         break;
-      case "unsupported":
-        banner = "Unsupported key, try another";
-        break;
-      case "waiting":
+      case "hint":
+        banner = hintText(effect.keyName, effect.reason, platform);
         break;
     }
+  }
+
+  function onWindowKeydown(e: KeyboardEvent) {
+    if (recorder !== "armed") return;
+    // While armed the recorder owns the keyboard: nothing types into the
+    // field, and ⌘C records as ⌘C instead of copying. (In the packaged app a
+    // combination that matches a menu accelerator is eaten by the menu before
+    // the renderer sees it — Electron has no app-local key monitor the way
+    // the task doc's macOS one does. The prototype has no menu bar, so the
+    // gap is invisible here; the Rust app must not rely on it.)
+    e.preventDefault();
+    e.stopPropagation();
+    const verdict = classifyPress(e);
+    // A chord of modifiers alone is not an event: holding ⌥⌘ neither accepts
+    // nor refuses, and neither does an auto-repeat.
+    if (verdict === null) return;
+    void step({ kind: "press", verdict });
+  }
+
+  function onWindowBlur() {
+    // Focus loss cancels: *which* shortcut took the focus is not observable.
+    void step({ kind: "focusLost" });
+  }
+
+  function onRecordClick() {
+    void step(recorder === "armed" ? { kind: "cancel" } : { kind: "record" });
   }
 
   async function onAutostartChange(e: Event) {
@@ -158,7 +186,13 @@
     syncToForm();
     const result = form.toConfig();
     if (!result.ok) {
-      banner = "Interval must be a positive number of minutes";
+      // §9: if either field fails the file is not touched at all, and the
+      // hotkey's banner also states the accepted vocabulary — the banner is
+      // the only place that list appears at the moment it is needed.
+      banner =
+        result.error.field === "interval"
+          ? "Interval must be a positive number of minutes"
+          : `${describeParseError(result.error.error)}. ${vocabulary(platform)}`;
       return;
     }
     if (settingsApi) {
@@ -173,19 +207,21 @@
     banner = "Saved";
   }
 
-  function cancel() {
+  async function cancel() {
     // Revert to the persisted view. In Electron, Cancel closes the window
     // (spec §9); in the browser sub-app there's no window, so we just reset.
-    hotkey = persisted.hotkey;
-    intervalText = SettingsForm.fromConfig(persisted).intervalText;
+    // An armed recorder is cancelled through the table, which is what puts
+    // the saved hotkey back in the field.
+    await step({ kind: "cancel" });
+    hotkey = respell(persisted.hotkey, platform);
+    intervalText = SettingsForm.fromConfig(persisted, platform).intervalText;
     autostart = persisted.autostart;
-    recording = false;
     banner = "";
     settingsApi?.close();
   }
 </script>
 
-<svelte:window onkeydown={onWindowKeydown} />
+<svelte:window onkeydown={onWindowKeydown} onblur={onWindowBlur} />
 
 <main class="min-h-screen bg-zinc-950 text-white p-8">
   <div class="max-w-md mx-auto space-y-6">
@@ -201,18 +237,31 @@
           data-testid="settings-hotkey"
           type="text"
           bind:value={hotkey}
-          readonly={recording}
-          placeholder="Ctrl+Shift+Space"
-          class="flex-1 bg-zinc-900 rounded px-3 py-2 outline-none border border-zinc-700"
+          readonly={recorder === "armed"}
+          placeholder={formatHotkeyNative(
+            { ctrl: true, alt: false, shift: true, win: false, key: "SPACE" },
+            platform,
+          )}
+          class="flex-1 bg-zinc-900 rounded px-3 py-2 outline-none border {recorder ===
+          'armed'
+            ? 'border-indigo-500'
+            : 'border-zinc-700'}"
         />
         <button
           data-testid="settings-hotkey-record"
-          onclick={startRecording}
+          data-recorder={recorder}
+          onclick={onRecordClick}
           class="px-3 py-2 rounded bg-zinc-800 hover:bg-zinc-700 text-sm"
         >
-          {recording ? "Recording…" : "Record"}
+          {recorder === "armed" ? "Press a key…" : "Record"}
         </button>
       </div>
+      <!-- §9: the accepted vocabulary is printed under the field, not held
+           back for an error — this is how a hotkey is set, so it is standing
+           information. -->
+      <p data-testid="settings-hotkey-vocabulary" class="text-xs text-zinc-500">
+        {vocabulary(platform)}
+      </p>
     </div>
 
     <div class="space-y-2">

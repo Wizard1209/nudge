@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { SettingsForm } from "../../src/shared/settingsForm";
+import { SettingsForm, respell } from "../../src/shared/settingsForm";
 import { DEFAULT_CONFIG, type Config } from "../../src/shared/config";
 
 const cfg = (over: Partial<Config> = {}): Config => ({
@@ -7,94 +7,140 @@ const cfg = (over: Partial<Config> = {}): Config => ({
   ...over,
 });
 
+// Every form here names its platform: §5 has one canonical spelling per
+// platform, so a form that read the host's would assert a different string on
+// a Mac than on a PC.
+const form = (over: Partial<Config> = {}, platform: "macos" | "windows" = "windows") =>
+  SettingsForm.fromConfig(cfg(over), platform);
+
 describe("SettingsForm.fromConfig", () => {
   it("seeds fields from the config and starts clean", () => {
-    const form = SettingsForm.fromConfig(
-      cfg({ hotkey: "Alt+J", default_interval_minutes: 7, autostart: true }),
-    );
-    expect(form.hotkey).toBe("Alt+J");
-    expect(form.intervalText).toBe("7");
-    expect(form.autostart).toBe(true);
-    expect(form.isDirty()).toBe(false);
+    const f = form({ hotkey: "Alt+J", default_interval_minutes: 7, autostart: true });
+    expect(f.hotkey).toBe("Alt+J");
+    expect(f.intervalText).toBe("7");
+    expect(f.autostart).toBe(true);
+    expect(f.isDirty()).toBe(false);
+  });
+
+  it("re-spells a stored hotkey for this platform, and stays clean (§9)", () => {
+    const mac = form({ hotkey: "Alt+Cmd+J" }, "macos");
+    expect(mac.hotkey).toBe("⌥⌘J");
+    expect(mac.isDirty()).toBe(false);
+
+    const win = form({ hotkey: "⌥⌘J" }, "windows");
+    expect(win.hotkey).toBe("Alt+Win+J");
+    expect(win.isDirty()).toBe(false);
+  });
+
+  it("shows a value that does not parse exactly as stored", () => {
+    // It is the only copy of what the user typed, and the field is where they
+    // fix it.
+    expect(form({ hotkey: "Ctrl+Nonsense" }, "macos").hotkey).toBe("Ctrl+Nonsense");
   });
 
   it("renders a fractional interval without trailing-zero noise", () => {
-    const form = SettingsForm.fromConfig(cfg({ default_interval_minutes: 7.5 }));
-    expect(form.intervalText).toBe("7.5");
+    expect(form({ default_interval_minutes: 7.5 }).intervalText).toBe("7.5");
   });
 });
 
 describe("SettingsForm dirty tracking", () => {
   it("becomes dirty when a field changes and clean again on revert", () => {
-    const form = SettingsForm.fromConfig(cfg({ hotkey: "Alt+J" }));
-    form.hotkey = "Ctrl+K";
-    expect(form.isDirty()).toBe(true);
-    form.hotkey = "Alt+J";
-    expect(form.isDirty()).toBe(false);
+    const f = form({ hotkey: "Alt+J" });
+    f.hotkey = "Ctrl+K";
+    expect(f.isDirty()).toBe(true);
+    f.hotkey = "Alt+J";
+    expect(f.isDirty()).toBe(false);
   });
 
   it("tracks interval and autostart edits", () => {
-    const form = SettingsForm.fromConfig(cfg({ default_interval_minutes: 10 }));
-    form.intervalText = "12";
-    expect(form.isDirty()).toBe(true);
-    form.intervalText = "10";
-    expect(form.isDirty()).toBe(false);
-    form.autostart = !form.autostart;
-    expect(form.isDirty()).toBe(true);
+    const f = form({ default_interval_minutes: 10 });
+    f.intervalText = "12";
+    expect(f.isDirty()).toBe(true);
+    f.intervalText = "10";
+    expect(f.isDirty()).toBe(false);
+    f.autostart = !f.autostart;
+    expect(f.isDirty()).toBe(true);
   });
 });
 
 describe("SettingsForm.parsedInterval", () => {
   it("accepts finite positive numbers (with surrounding whitespace)", () => {
-    const form = SettingsForm.fromConfig(cfg());
-    form.intervalText = " 7.5 ";
-    expect(form.parsedInterval()).toEqual({ ok: true, value: 7.5 });
-    form.intervalText = "0.1";
-    expect(form.parsedInterval()).toEqual({ ok: true, value: 0.1 });
+    const f = form();
+    f.intervalText = " 7.5 ";
+    expect(f.parsedInterval()).toEqual({ ok: true, value: 7.5 });
+    f.intervalText = "0.1";
+    expect(f.parsedInterval()).toEqual({ ok: true, value: 0.1 });
   });
 
   it("rejects empty, non-numeric, zero and negative values", () => {
-    const form = SettingsForm.fromConfig(cfg());
+    const f = form();
     for (const bad of ["", "abc", "0", "-5"]) {
-      form.intervalText = bad;
-      expect(form.parsedInterval().ok).toBe(false);
+      f.intervalText = bad;
+      expect(f.parsedInterval().ok).toBe(false);
     }
   });
 });
 
 describe("SettingsForm.toConfig", () => {
-  it("trims the hotkey and uses the parsed interval", () => {
-    const form = SettingsForm.fromConfig(cfg());
-    form.hotkey = "  Ctrl+Shift+A  ";
-    form.intervalText = "15";
-    form.autostart = true;
-    const result = form.toConfig();
-    expect(result).toEqual({
+  it("writes the canonical spelling, not the typed text", () => {
+    const f = form({}, "macos");
+    f.hotkey = "  alt + cmd + j  ";
+    f.intervalText = "15";
+    f.autostart = true;
+    expect(f.toConfig()).toEqual({
       ok: true,
       config: {
-        hotkey: "Ctrl+Shift+A",
+        hotkey: "⌥⌘J",
         default_interval_minutes: 15,
         autostart: true,
       },
     });
   });
 
+  it("refuses a hotkey the app cannot register (§9: nothing is written)", () => {
+    const f = form();
+    f.hotkey = "Ctrl+Numpad5";
+    expect(f.toConfig()).toEqual({
+      ok: false,
+      error: { field: "hotkey", error: { kind: "unknownToken", token: "Numpad5" } },
+    });
+    f.hotkey = "J";
+    expect(f.toConfig()).toEqual({
+      ok: false,
+      error: { field: "hotkey", error: { kind: "missingModifier", key: "J" } },
+    });
+  });
+
   it("propagates an interval parse error", () => {
-    const form = SettingsForm.fromConfig(cfg());
-    form.intervalText = "nope";
-    expect(form.toConfig().ok).toBe(false);
+    const f = form();
+    f.intervalText = "nope";
+    expect(f.toConfig()).toEqual({
+      ok: false,
+      error: { field: "interval", input: "nope" },
+    });
   });
 });
 
 describe("SettingsForm.markClean", () => {
   it("rebaselines so a saved form is no longer dirty and text is normalized", () => {
-    const form = SettingsForm.fromConfig(cfg());
-    form.hotkey = "  Alt+J  ";
-    form.intervalText = "8";
-    expect(form.isDirty()).toBe(true);
-    form.markClean();
-    expect(form.isDirty()).toBe(false);
-    expect(form.hotkey).toBe("Alt+J");
-    expect(form.intervalText).toBe("8");
+    const f = form();
+    f.hotkey = "  alt+j  ";
+    f.intervalText = "8";
+    expect(f.isDirty()).toBe(true);
+    f.markClean();
+    expect(f.isDirty()).toBe(false);
+    expect(f.hotkey).toBe("Alt+J");
+    expect(f.intervalText).toBe("8");
+  });
+});
+
+describe("respell", () => {
+  it("puts a stored hotkey in this platform's spelling", () => {
+    expect(respell("Ctrl+Shift+Space", "macos")).toBe("⌃⇧Space");
+    expect(respell("⌃⇧Space", "windows")).toBe("Ctrl+Shift+Space");
+  });
+
+  it("leaves a value that does not parse alone", () => {
+    expect(respell("nonsense", "macos")).toBe("nonsense");
   });
 });
