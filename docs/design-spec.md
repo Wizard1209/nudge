@@ -326,8 +326,15 @@ cases.** On macOS registration succeeds anyway — measured: the same
 combination registers from two processes and both calls return success, and
 `⌘Space` registers with no complaint at all. Nothing is reported because
 nothing failed; the hotkey simply never fires, because the other holder gets
-the keystroke first. Detecting this needs a different call than the one that
-registers, and that work is specified in `docs/TASK-hotkey-native.md`.
+the keystroke first.
+
+Detecting it needs different calls than the one that registers, and macOS has
+two, neither sufficient alone: its own shortcut table, and an exclusive
+registration probe. Both are read, the answer names which one found the
+holder, and the app logs one line on stderr when it binds a combination
+somebody else has. It is a warning, not a refusal — a taken combination is
+still the one the user asked for. §9 says what the settings window does with
+it; `docs/TASK-hotkey-native.md` records what each source can and cannot see.
 
 ## 6. Pill (browser build only — tray emulation)
 
@@ -420,9 +427,84 @@ they fix it.
 
 #### Capturing a hotkey from the keyboard
 
-Not built. The contract is being rewritten against the OS event stream
-rather than the window toolkit's — see `docs/TASK-hotkey-native.md`. Until
-it lands, the field above is the only way to set a hotkey.
+Next to the field is a `Record` button — on macOS. Windows has no recorder
+and shows no button, because none of its platform facts have been measured
+(`docs/TASK-hotkey-native.md`); a button that cannot record is worse than no
+button.
+
+The recorder has **two states and no clock**. Everything that decides is one
+transition table, and every cell of it is stated:
+
+| | Idle | Armed |
+|---|---|---|
+| **Record** | → Armed | — |
+| **Press** — bindable | — | → Idle, field := the combination, canonically spelled |
+| **Press** — bare `Esc` | — | → Idle, field := the saved hotkey |
+| **Press** — not bindable | — | → **Armed**, with a hint naming the key |
+| **Cancel** | — | → Idle, field := the saved hotkey |
+| **Focus lost** | — | → Idle, field := the saved hotkey |
+
+What follows from the table rather than being added to it:
+
+- **A chord of modifiers alone is not an event.** Holding `⌥⌘` neither accepts
+  nor refuses, and neither does `fn`. They are not keys the recorder ignores;
+  they never arrive.
+- **An unbindable key does not disarm.** Disarming would leave a mistyped
+  chord looking exactly like a recorded one. The hint names the key —
+  `Keypad 5`, `J` — and the next press still lands.
+- **Bare `Esc` cancels** because a hotkey needs a modifier, so a lone `Esc`
+  can never be one. `⌘Esc` records like any other combination.
+- **Every cancelling path reads `config.json`**, so the recorder has nothing
+  to remember when it arms — and a typed-but-unsaved edit goes with the
+  cancel, because cancelling has one meaning.
+- **Focus loss cancels** because *which* shortcut took the focus is not
+  observable: macOS consumes `⌘Tab` and `⌘Space` itself.
+
+While armed the row asks for the combination — `Press modifiers plus one key.
+Esc cancels.` — in place of both the field and the vocabulary line under it.
+The field goes because a text box under that prompt reads as somewhere to
+type; it is not cleared, and a cancel puts the *saved* value in it rather than
+whatever was typed before `Record`.
+
+The only keyboard input an armed recorder accepts is a **press edge** — one
+press of a non-modifier key, carrying the modifiers held at that instant. Not
+the set of currently-held keys, not a release, not a duration, not a repeat.
+Those edges are read from the OS, at the same layer that registers the
+hotkey, so the key code that arrives is the key code that gets bound and
+nothing sits between them. Three things follow that a toolkit-level reader
+cannot give: the keypad is a distinct key rather than a fold onto the digit
+row, `⌘C` is a combination rather than a copy command, and what is captured is
+the physical cap (§5 rule 7) — with a Russian layout active, the cap that
+types `о` still records `⌥⌘J`. While armed the
+keys are swallowed, so `⌘C` does not copy, `Esc` does not close the window and
+`Tab` does not move the focus.
+
+A hotkey the running app already holds is not recordable, and does not need
+to be: the settings window is a separate process, the running instance owns
+the combination system-wide, and pressing it opens the popup. The popup taking
+the focus is what ends the recording.
+
+#### When somebody else already holds the combination
+
+Save reports it and saves anyway. §5 blocks the save on a combination the OS
+**cannot bind**; one that is merely *taken* is a different thing — it binds
+fine and simply never fires, because the other holder gets the keystroke
+first — and the user is the one who decides whether that matters.
+
+The report is best-effort and says which source found the holder, because
+neither source alone can see everything (measured; see
+`docs/TASK-hotkey-native.md`):
+
+- **The system's own shortcut table** catches `⌘Space`, `⌘Tab` and the
+  screenshot shortcuts. This is the source that fires in practice.
+- **An exclusive registration probe** catches another application that took
+  the combination exclusively. Almost nothing does, so it rarely fires — but
+  when it does the answer is certain.
+
+Neither can see an ordinary registration made by another application, and the
+report never claims otherwise. Nothing anywhere derives "somebody else holds
+it" from the registration call succeeding or failing: on macOS it succeeds
+either way.
 
 ### Saving
 

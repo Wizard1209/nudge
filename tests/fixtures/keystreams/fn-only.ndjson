@@ -1,0 +1,1 @@
+{"bullet":"fn-only","harness":"macos_hotkey_native::modifiers_alone_and_fn_alone_are_not_events","input":"synthetic-cgevent","keys":"fn held, nothing else (after ⌥⌘fnJ proved fn is delivered)","layout":"com.apple.keylayout.US","os":"macOS 26.6.1 (25G76)"}

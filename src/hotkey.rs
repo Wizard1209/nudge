@@ -163,6 +163,58 @@ pub fn parse(input: &str) -> Result<Hotkey, ParseError> {
     })
 }
 
+/// Build a [`Hotkey`] from a modifier mask and one key token, applying the
+/// same canonicalisation and the same modifier rule [`parse`] does.
+///
+/// This is the door a *captured* press comes through, where [`parse`] is the
+/// door a *typed* string comes through. It exists so the platform never has to
+/// format a label and re-parse it to get a `Hotkey` — a round trip through
+/// text is a second grammar waiting to disagree with this one. Both entry
+/// points call [`canonicalize_key`] and both apply the F-row exception, and a
+/// test asserts they agree for every token the grammar knows.
+pub fn from_parts(modifiers: u8, token: &str) -> Result<Hotkey, ParseError> {
+    let upper = token.to_ascii_uppercase();
+    let key = canonicalize_key(&upper).ok_or_else(|| ParseError::UnknownToken(token.to_string()))?;
+    if modifiers == 0 && !is_function_key(&key) {
+        return Err(ParseError::MissingModifier(key));
+    }
+    Ok(Hotkey {
+        modifiers,
+        key: HotkeyKey(key),
+    })
+}
+
+/// Every canonical key token the grammar accepts, once each.
+///
+/// Its reason for existing is the platform's key-code table: "every token maps
+/// to exactly one key code" is only an assertion a test can make if the token
+/// set is enumerable from the grammar itself. Eyeballing two hand-written
+/// tables against each other is the defect this whole feature exists to
+/// remove, and a list nobody can enumerate is how that defect hides.
+///
+/// Test-only, so far — the `dead_code` allow is for the binary's copy of this
+/// module, where nothing calls it.
+#[allow(dead_code)]
+pub fn all_key_tokens() -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(80);
+    for ch in 'A'..='Z' {
+        out.push(ch.to_string());
+    }
+    for ch in '0'..='9' {
+        out.push(ch.to_string());
+    }
+    for n in 1..=24u8 {
+        out.push(format!("F{n}"));
+    }
+    for (token, ..) in NAMED_KEYS {
+        out.push((*token).to_string());
+    }
+    for ch in SYMBOL_KEYS.chars() {
+        out.push(ch.to_string());
+    }
+    out
+}
+
 /// Whether a canonical key token is one of `F1`..`F24` — the keys that type
 /// nothing, and so are the only ones allowed to stand alone (§5).
 fn is_function_key(key: &str) -> bool {
@@ -338,6 +390,15 @@ pub fn format_native(hk: &Hotkey) -> String {
         out.push_str(&key_label);
         out
     }
+}
+
+/// How to *name* one key token in a sentence — `PageUp`, `Space`, `J`, `F13`.
+///
+/// The platform layer needs this to refuse a key by name ("J cannot be part of
+/// a hotkey"), and the name has to be the one the rest of the app prints or
+/// the refusal teaches the wrong spelling.
+pub fn key_label(token: &str) -> String {
+    title_case_key(token)
 }
 
 fn title_case_key(upper: &str) -> String {
@@ -637,6 +698,78 @@ mod tests {
     fn one_modifier_is_enough_for_anything() {
         for s in ["Ctrl+J", "⇧/", "Alt+Space"] {
             assert!(parse(s).is_ok(), "{s} should parse");
+        }
+    }
+
+    // ---- the two doors into the grammar --------------------------------------
+
+    #[test]
+    fn from_parts_agrees_with_parse_for_every_token() {
+        // The two entry points must be one grammar. A token that parses one
+        // way and not the other is a hotkey a user can type but not record,
+        // or record but not save.
+        for token in all_key_tokens() {
+            let typed = parse(&format!("Ctrl+{token}")).unwrap_or_else(|e| {
+                panic!("Ctrl+{token} must parse: {e}");
+            });
+            let built = from_parts(MOD_CTRL, &token)
+                .unwrap_or_else(|e| panic!("from_parts(Ctrl, {token}) must build: {e}"));
+            assert_eq!(built, typed, "token {token}");
+        }
+    }
+
+    #[test]
+    fn from_parts_applies_the_modifier_rule() {
+        // Same rule, same error, same exception — this door cannot be the one
+        // that lets a bare letter through.
+        assert!(matches!(
+            from_parts(0, "J"),
+            Err(ParseError::MissingModifier(_))
+        ));
+        let f13 = from_parts(0, "F13").expect("the F-row may stand alone");
+        assert_eq!(f13.modifiers, 0);
+        assert_eq!(f13.key.as_str(), "F13");
+    }
+
+    #[test]
+    fn from_parts_canonicalises_its_token() {
+        // A platform reporting a key by an accepted spelling gets the same
+        // hotkey a user typing it does.
+        assert_eq!(
+            from_parts(MOD_WIN, "esc").unwrap(),
+            parse("Cmd+Escape").unwrap()
+        );
+        assert!(matches!(
+            from_parts(MOD_CTRL, "Numpad5"),
+            Err(ParseError::UnknownToken(t)) if t == "Numpad5"
+        ));
+    }
+
+    #[test]
+    fn all_key_tokens_is_the_whole_grammar_and_nothing_twice() {
+        let tokens = all_key_tokens();
+        let mut sorted = tokens.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), tokens.len(), "a token is listed twice");
+        for token in &tokens {
+            let hk = parse(&format!("Ctrl+{token}"))
+                .unwrap_or_else(|e| panic!("Ctrl+{token} must parse: {e}"));
+            assert_eq!(
+                hk.key.as_str(),
+                token,
+                "the listed token must already be canonical"
+            );
+        }
+        // And it is complete in the other direction: what the parser produces
+        // for a spelling it accepts is always in the list.
+        for spelling in ["Return", "PgUp", "Del", "Ins", "␣", "⎋", "↩", "←"] {
+            let hk = parse(&format!("Ctrl+{spelling}")).unwrap();
+            assert!(
+                tokens.iter().any(|t| t == hk.key.as_str()),
+                "{spelling} canonicalises to {}, which is not listed",
+                hk.key.as_str()
+            );
         }
     }
 

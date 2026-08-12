@@ -64,3 +64,22 @@ pub fn sync_card_backdrop(_ctx: &egui::Context, _frame: &eframe::Frame, _card: e
 /// No-op on Windows: the shortcut vocabulary here is words (`Ctrl+Shift+A`),
 /// and every glyph in that is in egui's default fonts.
 pub fn install_native_fonts(_ctx: &egui::Context) {}
+
+/// No key source on Windows yet, so the hotkey row stays the typed field it
+/// has always been — which is the point of returning `None` rather than
+/// wiring a half-measure: **nothing on this platform has been measured**
+/// (`docs/TASK-hotkey-native.md`), and a recorder built against documentation
+/// is what that task exists to stop. The order of work there puts Windows
+/// after its facts.
+pub fn new_edge_source(_ctx: &egui::Context) -> Option<Box<dyn crate::recorder::EdgeSource>> {
+    None
+}
+
+/// No conflict report on Windows. `RegisterHotKey` is *documented* to
+/// arbitrate across processes and to return an already-registered error — but
+/// documented is not measured, and this is the platform the task doc forbids
+/// relying on documentation for. Saying nothing is the honest answer until
+/// somebody runs the probe here.
+pub fn hotkey_conflict(_hk: &Hotkey) -> Option<String> {
+    None
+}

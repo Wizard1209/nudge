@@ -23,8 +23,9 @@
 //!
 //! # Why the event handlers wake the context instead of feeding a channel
 //!
-//! `tray_icon` / `muda` / `global_hotkey` each offer a receiver *or* a global
-//! handler, not both. The receiver is only readable from a tick, and a tick
+//! `tray_icon` and `muda` each offer a receiver *or* a global handler, not
+//! both, and the Carbon hotkey handler ([`hotkey_carbon`]) is a callback with
+//! no receiver at all. A receiver is only readable from a tick, and a tick
 //! only happens when something wakes the event loop — which a status-item click
 //! or a Carbon hotkey does not do on its own: winit services the AppKit event,
 //! eframe sees no pending repaint and goes straight back to sleep. Polling a
@@ -58,8 +59,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use global_hotkey::hotkey::{Code, HotKey as GlobalHotKey, Modifiers as GlobalModifiers};
-use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use objc2::rc::Retained;
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameVibrantDark, NSApplication, NSView,
@@ -74,13 +73,14 @@ use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIc
 use crate::config;
 use crate::config_watcher::{self, ConfigChange};
 use crate::daisy;
-use crate::hotkey::{
-    self, Hotkey, MOD_ALT as MY_MOD_ALT, MOD_CTRL as MY_MOD_CTRL, MOD_SHIFT as MY_MOD_SHIFT,
-    MOD_WIN as MY_MOD_WIN,
-};
+use crate::hotkey::{self, Hotkey};
 use crate::nudge_state;
 
+pub mod hotkey_carbon;
+pub mod key_monitor;
+pub mod keycode;
 pub mod settings_lock;
+pub mod symbolic;
 pub use settings_lock::acquire_settings_singleton;
 
 // ---------- shared state ---------------------------------------------------
@@ -182,11 +182,9 @@ struct UiState {
 /// unless a hotkey is actually being re-registered, so this is also the part
 /// of the module that can be exercised without a menu bar.
 struct ReloadState {
-    /// `None` when `GlobalHotKeyManager::new()` failed — the app runs on
-    /// without a hotkey rather than refusing to start.
-    hotkeys: Option<GlobalHotKeyManager>,
-    /// The binding currently registered, so a config reload can unregister it.
-    registered: Option<GlobalHotKey>,
+    /// The binding currently registered. Unregistering is what dropping it
+    /// does, so a config reload is `take()` followed by a fresh [`register`].
+    registered: Option<hotkey_carbon::Registration>,
     /// Where the config lives, and what is currently in effect — the baseline
     /// a reload diffs against, exactly as the tray thread keeps it on Windows.
     config_path: PathBuf,
@@ -250,17 +248,7 @@ pub fn start_on_event_loop(ctx: &egui::Context) {
         }
     };
 
-    let hotkeys = match GlobalHotKeyManager::new() {
-        Ok(m) => Some(m),
-        Err(e) => {
-            eprintln!("[nudge] global hotkey unavailable: {e}");
-            None
-        }
-    };
-    let registered = hotkeys
-        .as_ref()
-        .zip(hotkey.as_ref())
-        .and_then(|(manager, hk)| try_register_hotkey(manager, hk));
+    let registered = hotkey.as_ref().and_then(try_register_hotkey);
 
     UI.with_borrow_mut(|slot| {
         *slot = Some(UiState {
@@ -269,7 +257,6 @@ pub fn start_on_event_loop(ctx: &egui::Context) {
             last_icon_key: None,
             last_tooltip_minutes: None,
             reload: ReloadState {
-                hotkeys,
                 registered,
                 config_path,
                 previous_cfg: initial,
@@ -319,14 +306,9 @@ fn install_event_handlers([show_id, settings_id, quit_id]: [MenuId; 3]) {
         }
     }));
 
-    GlobalHotKeyEvent::set_event_handler(Some(|event: GlobalHotKeyEvent| {
-        // Press only. Carbon delivers both edges and the release would
-        // immediately re-open a popup the user just dismissed with the same
-        // chord.
-        if event.state == HotKeyState::Pressed {
-            request_manual_open();
-        }
-    }));
+    // The hotkey's handler is installed by `hotkey_carbon::register`, on the
+    // Carbon application event target and for the press edge only — there is
+    // no release edge to filter, because none is subscribed.
 }
 
 fn request_manual_open() {
@@ -653,119 +635,54 @@ fn next_wake(frame: &daisy::DaisyFrame, remaining: Duration) -> Duration {
 
 // ---------- global hotkey --------------------------------------------------
 
-/// The `global_hotkey` key code for one of our canonical key tokens. `None`
-/// means we don't know how to register this token globally (caller logs and
-/// skips) — the macOS counterpart of `tray_bridge::vk_for_key`.
+/// The combination this app currently holds machine-wide, as far as this
+/// process knows.
 ///
-/// The token set is exactly what `hotkey::canonicalize_key` produces, so a
-/// combo the parser accepts is a combo this can translate. Whether the *OS* will take it is a separate question:
-/// `global_hotkey`'s macOS scancode table stops at F20, so F21..F24 map here
-/// and then fail at `register`, loudly.
-fn code_for_key(key: &str) -> Option<Code> {
-    // `Code`'s own `FromStr` is the mapping — the W3C code names it parses
-    // ("KeyA", "Digit0", "F5", "Space", …) are one rename away from our
-    // tokens, and enumerating 60 variants by hand would only add a place for
-    // them to disagree.
-    let name = if key.len() == 1 {
-        let ch = key.as_bytes()[0];
-        if ch.is_ascii_uppercase() {
-            format!("Key{key}")
-        } else if ch.is_ascii_digit() {
-            format!("Digit{key}")
-        } else {
-            // A symbol cap. `Code`'s names for these are words, not the
-            // legend, so this is the one place the rename is a table.
-            match ch {
-                b'-' => "Minus",
-                b'=' => "Equal",
-                b'[' => "BracketLeft",
-                b']' => "BracketRight",
-                b'\\' => "Backslash",
-                b';' => "Semicolon",
-                b'\'' => "Quote",
-                b',' => "Comma",
-                b'.' => "Period",
-                b'/' => "Slash",
-                b'`' => "Backquote",
-                _ => return None,
-            }
-            .to_string()
+/// Set by whichever process binds — in practice the main one; the settings
+/// window never registers anything. Its one use is telling "we already have
+/// this" apart from "another application has this" when the exclusive probe
+/// refuses, and that case is real and *local*: measured, an exclusive probe
+/// collides with this process's own **non-exclusive** binding, while the same
+/// probe cannot see another process's non-exclusive binding at all. So this
+/// answers a question only the process holding the binding can be asked, and
+/// the settings window has nothing to put in it.
+static NUDGE_HOTKEY: Mutex<Option<Hotkey>> = Mutex::new(None);
+
+/// Tell this process which combination Nudge itself holds. `None` for "none".
+pub fn note_own_hotkey(hk: Option<Hotkey>) {
+    *NUDGE_HOTKEY.lock().unwrap() = hk;
+}
+
+/// Whether `hk` is the combination Nudge itself holds. Reads a static rather
+/// than the `UI` cell on purpose: this is called from inside a conflict probe
+/// that a config reload can trigger while `UI` is already mutably borrowed.
+fn holds_this_hotkey(hk: &Hotkey) -> bool {
+    NUDGE_HOTKEY.lock().unwrap().as_ref() == Some(hk)
+}
+
+/// Register `hk`, returning the live binding. Failure is logged and never
+/// fatal — §5: the app runs *without* a hotkey rather than falling back to
+/// some other combination the user did not ask for.
+///
+/// The conflict assessment runs **before** the binding exists, so the
+/// exclusive probe inside it cannot collide with our own registration and
+/// report us to ourselves.
+fn try_register_hotkey(hk: &Hotkey) -> Option<hotkey_carbon::Registration> {
+    let label = hotkey::format_native(hk);
+    match hotkey_carbon::assess(hk) {
+        hotkey_carbon::HotkeyStatus::Free => {}
+        status => eprintln!("[nudge] hotkey \"{label}\": {status}"),
+    }
+    match hotkey_carbon::register(hk) {
+        Ok(registration) => {
+            note_own_hotkey(Some(hk.clone()));
+            Some(registration)
         }
-    } else if key
-        .strip_prefix('F')
-        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-    {
-        key.to_string()
-    } else {
-        match key {
-            "SPACE" => "Space".to_string(),
-            "ENTER" => "Enter".to_string(),
-            "TAB" => "Tab".to_string(),
-            "ESCAPE" => "Escape".to_string(),
-            "BACKSPACE" => "Backspace".to_string(),
-            "LEFT" => "ArrowLeft".to_string(),
-            "RIGHT" => "ArrowRight".to_string(),
-            "UP" => "ArrowUp".to_string(),
-            "DOWN" => "ArrowDown".to_string(),
-            "HOME" => "Home".to_string(),
-            "END" => "End".to_string(),
-            "PAGEUP" => "PageUp".to_string(),
-            "PAGEDOWN" => "PageDown".to_string(),
-            "INSERT" => "Insert".to_string(),
-            "DELETE" => "Delete".to_string(),
-            _ => return None,
-        }
-    };
-    name.parse().ok()
-}
-
-/// Our modifier mask as `global_hotkey`'s. `MOD_WIN` is Cmd here, matching the
-/// parser's `Win|Super|Meta|Cmd` aliasing.
-fn modifiers_to_global(m: u8) -> GlobalModifiers {
-    let mut out = GlobalModifiers::empty();
-    if m & MY_MOD_CTRL != 0 {
-        out |= GlobalModifiers::CONTROL;
-    }
-    if m & MY_MOD_ALT != 0 {
-        out |= GlobalModifiers::ALT;
-    }
-    if m & MY_MOD_SHIFT != 0 {
-        out |= GlobalModifiers::SHIFT;
-    }
-    if m & MY_MOD_WIN != 0 {
-        out |= GlobalModifiers::SUPER;
-    }
-    out
-}
-
-/// Translate a parsed [`Hotkey`] into the binding to register. `None` for a key
-/// this backend cannot express.
-fn global_hotkey_for(hk: &Hotkey) -> Option<GlobalHotKey> {
-    let code = code_for_key(hk.key.as_str())?;
-    Some(GlobalHotKey::new(
-        Some(modifiers_to_global(hk.modifiers)),
-        code,
-    ))
-}
-
-/// Register `hk`, returning the binding on success. Failure (taken by another
-/// app, a key macOS has no scancode for) is logged — we never abort startup
-/// over a hotkey.
-fn try_register_hotkey(manager: &GlobalHotKeyManager, hk: &Hotkey) -> Option<GlobalHotKey> {
-    let Some(binding) = global_hotkey_for(hk) else {
-        eprintln!(
-            "[nudge] cannot register hotkey: unknown key \"{}\"",
-            hk.key.as_str()
-        );
-        return None;
-    };
-    match manager.register(binding) {
-        Ok(()) => Some(binding),
         Err(e) => {
-            eprintln!(
-                "[nudge] registering hotkey \"{}\" failed: {e}",
-                hotkey::format(hk)
-            );
+            // Deliberately not a fallback binding: taking over some other
+            // shortcut the user never asked for would hide which one failed.
+            eprintln!("[nudge] registering hotkey \"{label}\" failed: {e} — running with no hotkey");
+            note_own_hotkey(None);
             None
         }
     }
@@ -863,22 +780,19 @@ fn reload_config(state: &mut ReloadState) {
         match change {
             ConfigChange::Hotkey { from, to } => {
                 eprintln!("[nudge] config reload: hotkey \"{from}\" → \"{to}\"");
-                let Some(manager) = state.hotkeys.as_ref() else {
-                    eprintln!("[nudge] config reload: no hotkey manager, leaving unbound");
-                    continue;
-                };
-                if let Some(previous) = state.registered.take()
-                    && let Err(e) = manager.unregister(previous)
-                {
-                    eprintln!("[nudge] config reload: unregistering \"{from}\" failed: {e}");
-                }
+                // Dropping the old registration is what unregisters it, and it
+                // happens before the new one is attempted: two live bindings on
+                // one combination would leave the OS delivering to whichever
+                // the OS chose.
+                state.registered = None;
+                note_own_hotkey(None);
                 let (parsed, invalid) = new_cfg.resolved_hotkey();
                 if invalid {
                     eprintln!(
                         "[nudge] config reload: hotkey \"{to}\" is unparseable, leaving unbound"
                     );
                 } else {
-                    state.registered = try_register_hotkey(manager, &parsed);
+                    state.registered = try_register_hotkey(&parsed);
                 }
             }
             ConfigChange::Interval => eprintln!(
@@ -1073,194 +987,64 @@ pub fn install_native_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
+/// The settings window's key source: an app-local `NSEvent` monitor.
+///
+/// **Main thread, with an `NSApplication` up** — call it from the eframe
+/// creator closure, the same precondition [`start_on_event_loop`] has. `None`
+/// means the monitor could not be installed and the hotkey row is the typed
+/// field alone; nothing else about the window changes.
+///
+/// It is installed in the *settings* process only. The process that registers
+/// the hotkey never reads a key, and the process that reads keys never
+/// registers one — which is why pressing the app's own hotkey while the
+/// recorder is armed opens the popup instead of being recorded.
+pub fn new_edge_source(ctx: &egui::Context) -> Option<Box<dyn crate::recorder::EdgeSource>> {
+    key_monitor::KeyMonitor::install(ctx.clone())
+        .map(|m| Box::new(m) as Box<dyn crate::recorder::EdgeSource>)
+}
+
+/// Who else holds `hk`, in one line, or `None` when nothing we can see does.
+///
+/// A warning, never a refusal: a taken combination saves and registers
+/// perfectly well, it simply never fires, and that is a different thing from
+/// the unregistrable one §5 blocks the save on. Both sources are read; the
+/// line says which one answered.
+pub fn hotkey_conflict(hk: &Hotkey) -> Option<String> {
+    match hotkey_carbon::assess(hk) {
+        // `HeldByNudge` cannot happen here — measured, an exclusive probe
+        // cannot see another process's non-exclusive binding, and the settings
+        // window binds nothing of its own. If it ever does appear, it is us,
+        // and warning the user about ourselves would be noise.
+        hotkey_carbon::HotkeyStatus::Free | hotkey_carbon::HotkeyStatus::HeldByNudge => None,
+        status => Some(status.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // === hotkey → global_hotkey ==============================================
+    // === hotkey registration =================================================
     //
-    // The same combos `hotkey.rs`'s own tests round-trip, carried one step
-    // further: parse the label a user can write, then assert the binding this
-    // backend would hand to Carbon. A key the parser accepts and this cannot
-    // translate is a hotkey that silently never fires.
-
-    fn binding(label: &str) -> GlobalHotKey {
-        let hk = hotkey::parse(label).expect("label must parse");
-        global_hotkey_for(&hk).unwrap_or_else(|| panic!("no binding for {label}"))
-    }
+    // The table this backend used to own — our token to the crate's key code —
+    // is gone, and with it the tests that walked it. What replaces it lives in
+    // `keycode.rs`, where one array is proved total against the grammar in both
+    // directions, and in `hotkey_carbon.rs`. Nothing is asserted here about the
+    // *outcome* of a registration: on macOS success says nothing about who else
+    // holds the combination, which is the measurement this whole change rests
+    // on, and a test that asserted otherwise would be re-asserting the bug.
 
     #[test]
-    fn default_hotkey_maps_to_ctrl_shift_space() {
-        let hk = hotkey::default_hotkey();
-        let b = global_hotkey_for(&hk).expect("the default must be registrable");
-        assert_eq!(b.key, Code::Space);
-        assert_eq!(
-            b.mods,
-            GlobalModifiers::CONTROL | GlobalModifiers::SHIFT,
-            "Ctrl+Shift, and nothing else"
-        );
-    }
-
-    #[test]
-    fn letters_map_to_key_codes() {
-        assert_eq!(binding("Ctrl+A").key, Code::KeyA);
-        assert_eq!(binding("Ctrl+J").key, Code::KeyJ);
-        assert_eq!(binding("Ctrl+Z").key, Code::KeyZ);
-    }
-
-    #[test]
-    fn digits_map_to_digit_codes() {
-        assert_eq!(binding("Ctrl+0").key, Code::Digit0);
-        assert_eq!(binding("Ctrl+7").key, Code::Digit7);
-        assert_eq!(binding("Ctrl+9").key, Code::Digit9);
-    }
-
-    #[test]
-    fn f_keys_map_across_the_whole_parser_range() {
-        // F1..F24 is what `canonicalize_key` accepts, so all 24 must translate
-        // — even the ones macOS has no scancode for. Those fail at
-        // `register`, with a message; they must not fail here, silently.
-        for n in 1..=24u8 {
-            let b = binding(&format!("Ctrl+F{n}"));
-            assert_eq!(
-                b.key,
-                format!("F{n}").parse::<Code>().unwrap(),
-                "F{n} must map"
-            );
-        }
-    }
-
-    #[test]
-    fn named_keys_map() {
-        assert_eq!(binding("Ctrl+Space").key, Code::Space);
-        assert_eq!(binding("Ctrl+Enter").key, Code::Enter);
-        assert_eq!(binding("Ctrl+Return").key, Code::Enter);
-        assert_eq!(binding("Ctrl+Tab").key, Code::Tab);
-        assert_eq!(binding("Ctrl+Esc").key, Code::Escape);
-        assert_eq!(binding("Ctrl+Escape").key, Code::Escape);
-        assert_eq!(binding("Ctrl+Backspace").key, Code::Backspace);
-    }
-
-    #[test]
-    fn arrows_and_navigation_map_to_key_codes() {
-        assert_eq!(binding("Ctrl+Left").key, Code::ArrowLeft);
-        assert_eq!(binding("Ctrl+←").key, Code::ArrowLeft);
-        assert_eq!(binding("Ctrl+Right").key, Code::ArrowRight);
-        assert_eq!(binding("Ctrl+Up").key, Code::ArrowUp);
-        assert_eq!(binding("Ctrl+Down").key, Code::ArrowDown);
-        assert_eq!(binding("Ctrl+Home").key, Code::Home);
-        assert_eq!(binding("Ctrl+End").key, Code::End);
-        assert_eq!(binding("Ctrl+PageUp").key, Code::PageUp);
-        assert_eq!(binding("Ctrl+PgDn").key, Code::PageDown);
-        assert_eq!(binding("Ctrl+Insert").key, Code::Insert);
-        // Forward delete, a different key from Backspace whatever the Mac
-        // keycap says.
-        assert_eq!(binding("Ctrl+Delete").key, Code::Delete);
-        assert_eq!(binding("Ctrl+Backspace").key, Code::Backspace);
-    }
-
-    #[test]
-    fn symbol_caps_map_to_position_codes() {
-        // `Code` names the cap by position, which is the promise §5 makes: the
-        // binding follows the key, not the character a layout prints on it.
-        assert_eq!(binding("Ctrl+-").key, Code::Minus);
-        assert_eq!(binding("Ctrl+=").key, Code::Equal);
-        assert_eq!(binding("Ctrl+[").key, Code::BracketLeft);
-        assert_eq!(binding("Ctrl+]").key, Code::BracketRight);
-        assert_eq!(binding("Ctrl+\\").key, Code::Backslash);
-        assert_eq!(binding("Ctrl+;").key, Code::Semicolon);
-        assert_eq!(binding("Ctrl+'").key, Code::Quote);
-        assert_eq!(binding("Ctrl+,").key, Code::Comma);
-        assert_eq!(binding("Ctrl+.").key, Code::Period);
-        assert_eq!(binding("Ctrl+/").key, Code::Slash);
-        assert_eq!(binding("Ctrl+`").key, Code::Backquote);
-    }
-
-    #[test]
-    fn every_key_the_parser_accepts_has_a_binding() {
-        // The invariant that matters: `hotkey::parse` and `code_for_key` share
-        // one key set. Anything the config file can legally name has to reach
-        // the OS.
-        let mut labels: Vec<String> = Vec::new();
-        for ch in ('A'..='Z').chain('0'..='9') {
-            labels.push(format!("Ctrl+{ch}"));
-        }
-        for n in 1..=24u8 {
-            labels.push(format!("Ctrl+F{n}"));
-        }
-        for named in [
-            "Space",
-            "Enter",
-            "Return",
-            "Tab",
-            "Esc",
-            "Escape",
-            "Backspace",
-            "Left",
-            "Right",
-            "Up",
-            "Down",
-            "Home",
-            "End",
-            "PageUp",
-            "PgUp",
-            "PageDown",
-            "PgDn",
-            "Insert",
-            "Ins",
-            "Delete",
-            "Del",
-        ] {
-            labels.push(format!("Ctrl+{named}"));
-        }
-        for symbol in ["-", "=", "[", "]", "\\", ";", "'", ",", ".", "/", "`"] {
-            labels.push(format!("Ctrl+{symbol}"));
-        }
-        for label in labels {
-            let hk = hotkey::parse(&label).expect("label must parse");
-            assert!(
-                global_hotkey_for(&hk).is_some(),
-                "{label} parses but has no binding"
-            );
-        }
-    }
-
-    #[test]
-    fn modifiers_map_one_for_one() {
-        assert_eq!(modifiers_to_global(0), GlobalModifiers::empty());
-        assert_eq!(modifiers_to_global(MY_MOD_CTRL), GlobalModifiers::CONTROL);
-        assert_eq!(modifiers_to_global(MY_MOD_ALT), GlobalModifiers::ALT);
-        assert_eq!(modifiers_to_global(MY_MOD_SHIFT), GlobalModifiers::SHIFT);
-        // Cmd, not Control: the parser aliases Win/Super/Meta/Cmd onto one bit
-        // and this is the platform where that bit is the Command key.
-        assert_eq!(modifiers_to_global(MY_MOD_WIN), GlobalModifiers::SUPER);
-    }
-
-    #[test]
-    fn all_four_modifiers_compose() {
-        let b = binding("Ctrl+Alt+Shift+Cmd+J");
-        assert_eq!(
-            b.mods,
-            GlobalModifiers::CONTROL
-                | GlobalModifiers::ALT
-                | GlobalModifiers::SHIFT
-                | GlobalModifiers::SUPER
-        );
-        assert_eq!(b.key, Code::KeyJ);
-    }
-
-    #[test]
-    fn unknown_tokens_have_no_binding() {
-        // Not reachable through `parse` — these are the shapes `code_for_key`
-        // must reject on its own, so a future widening of the parser cannot
-        // quietly produce an unregistrable binding.
-        // "F" is absent on purpose: it is the letter F, a key the parser does
-        // accept, and it must map — see `letters_map_to_key_codes`.
-        // "HOME" is absent for the same reason as "F": the parser accepts it
-        // and it must map — see `named_keys_map_to_key_codes`.
-        for token in ["", "+", "ARROWUP", "NUMPAD5", "F0", "F99", "AA", "мама"] {
-            assert!(code_for_key(token).is_none(), "{token:?} must not map");
-        }
+    fn the_process_can_be_told_which_hotkey_is_its_own() {
+        // The settings window is a separate process from the one that binds,
+        // so "Nudge already has this" is knowledge each process is handed
+        // rather than something either can observe.
+        let hk = hotkey::parse("Alt+Cmd+J").unwrap();
+        note_own_hotkey(Some(hk.clone()));
+        assert!(holds_this_hotkey(&hk));
+        assert!(!holds_this_hotkey(&hotkey::parse("Alt+Cmd+K").unwrap()));
+        note_own_hotkey(None);
+        assert!(!holds_this_hotkey(&hk));
     }
 
     // === the wake schedule ===================================================
@@ -1500,14 +1284,20 @@ mod tests {
 
     // === config live-reload ==================================================
 
-    /// The state a failed status item now leaves behind: no tray, and (if
-    /// `GlobalHotKeyManager::new` also failed) no hotkey manager either. A
-    /// reload must still run to completion in it — the defect was that this
-    /// code was unreachable, because a tray failure returned before `UI` was
-    /// ever populated and `apply_config_reload` then early-returned forever,
+    /// The state a failed status item leaves behind: no tray, and a reload
+    /// that must still run to completion in it — the defect was that this code
+    /// was unreachable, because a tray failure returned before `UI` was ever
+    /// populated and `apply_config_reload` then early-returned forever,
     /// silently discarding every later edit to `config.json`.
+    ///
+    /// The edited hotkey is `Ctrl+F21` on purpose. It parses (§5 accepts the
+    /// whole F row, because Windows binds it) and macOS has no key code for
+    /// it, so the reload runs its full length and is refused *before* any OS
+    /// call — this test never takes a real key away from the machine running
+    /// it, and it pins the §5 rule that a combination we cannot bind leaves
+    /// the app unbound rather than falling back to something else.
     #[test]
-    fn a_reload_applies_with_neither_a_status_item_nor_a_hotkey_manager() {
+    fn a_reload_applies_without_a_status_item_and_refuses_an_unbindable_hotkey() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("config.json");
 
@@ -1517,14 +1307,13 @@ mod tests {
             autostart: false,
         };
         let after = config::Config {
-            hotkey: "Alt+J".to_string(),
+            hotkey: "Ctrl+F21".to_string(),
             default_interval_minutes: 25.0,
             autostart: true,
         };
         config::save(&path, &after).expect("write the edited config");
 
         let mut state = ReloadState {
-            hotkeys: None,
             registered: None,
             config_path: path.clone(),
             previous_cfg: before,
@@ -1537,7 +1326,12 @@ mod tests {
         );
         assert!(
             state.registered.is_none(),
-            "with no manager there is nothing to bind to, and nothing to pretend about"
+            "a combination macOS cannot bind must leave the app with no hotkey, \
+             not with a fallback the user never asked for"
+        );
+        assert!(
+            !holds_this_hotkey(&hotkey::parse("Ctrl+Shift+Space").unwrap()),
+            "the old binding is dropped before the new one is attempted"
         );
     }
 
@@ -1555,7 +1349,6 @@ mod tests {
             autostart: false,
         };
         let mut state = ReloadState {
-            hotkeys: None,
             registered: None,
             config_path: path,
             previous_cfg: before.clone(),

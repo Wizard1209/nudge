@@ -70,21 +70,30 @@ objc2-app-kit = { version = "0.2", features = [
     "NSWindow",
     "NSAppearance",       # pin the material dark — the card is dark in every theme
     "objc2-quartz-core",  # NSView::layer(), to clip the blur to the card's radius
+    "NSEvent",            # the app-local key-down monitor the recorder reads
+    "block2",             # the monitor's handler is an Objective-C block
 ] }
+# The handler an `NSEvent` monitor takes is an Objective-C block, and this is
+# the crate that builds one. Already in the tree via winit 0.30's objc2 0.5
+# line, so it adds no crate to the build — same rule as `objc2` itself below.
+block2 = "0.5"
 objc2-foundation = "0.2"
 # `Retained`, the smart pointer every AppKit object above comes back in.
 # Pinned to the 0.5 line for the same reason as objc2-app-kit 0.2: that is the
 # tree winit 0.30 already links.
 objc2 = "0.5"
-# Global hotkey. On macOS this crate registers through Carbon's
-# `RegisterEventHotKey`, which needs no TCC grant and fires while the app is
-# unfocused — measured, including from a launchd-parented unsigned bundle, with
-# no permission dialog. That property is conditional on the binding: a media
-# key switches the crate onto a `CGEventTap`, which *does* need Input
-# Monitoring. `crate::hotkey`'s key allowlist (letters, digits, F1..F24, Space,
-# Enter, Tab, Escape, Backspace) contains no media key, so the Carbon path is
-# the only one this app can reach.
-global-hotkey = "0.8"
+# Reading the system's own shortcut table (`CopySymbolicHotKeys`), which is
+# the only source that can say ⌘Space is taken — the registration call reports
+# nothing about it. CFArray/CFDictionary/CFNumber wrappers with the Create/Get
+# rules encoded in the types; doing it by hand would put a retain-count bug
+# between us and a warning line. Was a dev-dependency for the native tests
+# already, so no crate joins the build graph.
+#
+# `global-hotkey` used to sit here. It is gone: it cannot reach the exclusive
+# registration mode, and on macOS its error type never reports a conflict for
+# a real key, so a check written against it works on Windows and silently
+# never fires here. `platform::macos::hotkey_carbon` calls Carbon directly.
+core-foundation = "0.9"
 # `flock` for the settings-window single-instance lockfile — the macOS
 # counterpart of the named Win32 mutex. Already in the tree via winit, so this
 # adds no crate to the build.

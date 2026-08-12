@@ -17,6 +17,7 @@ mod journal;
 mod nudge_state;
 #[cfg(not(target_arch = "wasm32"))]
 mod platform;
+mod recorder;
 #[cfg(not(target_arch = "wasm32"))]
 mod settings_app;
 #[cfg(not(target_arch = "wasm32"))]

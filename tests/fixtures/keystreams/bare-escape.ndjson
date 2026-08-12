@@ -1,0 +1,2 @@
+{"bullet":"bare-escape","harness":"macos_hotkey_native::escape_and_focus_loss_put_the_saved_hotkey_back","input":"synthetic-cgevent","keys":"Esc","layout":"com.apple.keylayout.US","os":"macOS 26.6.1 (25G76)"}
+{"keycode":53,"modifiers":0,"ns_flags":0}

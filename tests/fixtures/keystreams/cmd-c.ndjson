@@ -1,0 +1,2 @@
+{"bullet":"cmd-c","harness":"macos_hotkey_native::cmd_c_records_and_does_not_reach_the_clipboard","input":"synthetic-cgevent","keys":"⌘C","layout":"com.apple.keylayout.US","os":"macOS 26.6.1 (25G76)"}
+{"keycode":8,"modifiers":8,"ns_flags":1048576}

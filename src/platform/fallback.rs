@@ -49,3 +49,14 @@ pub fn tick(_ctx: &egui::Context) {}
 pub fn sync_card_backdrop(_ctx: &egui::Context, _frame: &eframe::Frame, _card: egui::Rect) {}
 
 pub fn install_native_fonts(_ctx: &egui::Context) {}
+
+/// No key source here, so the settings window's hotkey row is the plain typed
+/// field it has always been. `None` is the whole answer: the row asks for a
+/// source and renders a Record button only if it gets one.
+pub fn new_edge_source(_ctx: &egui::Context) -> Option<Box<dyn crate::recorder::EdgeSource>> {
+    None
+}
+
+pub fn hotkey_conflict(_hk: &Hotkey) -> Option<String> {
+    None
+}

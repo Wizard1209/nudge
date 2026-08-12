@@ -1,8 +1,10 @@
 # Task — read and register hotkeys through the OS, not the toolkit
 
 Nudge has one system-wide hotkey (§5 of `docs/design-spec.md`). It can be
-typed into the settings field. It cannot be captured from the keyboard: that
-part of §9 is a stub, and this document is what fills it.
+typed into the settings field, and on macOS pressed into it — this document is
+what that was built from, and §9 now describes what shipped. Windows can still
+only be typed into: none of its platform facts are measured, and that is the
+work this document still holds open.
 
 ## What to build
 
@@ -39,6 +41,32 @@ the decisions below rest on.
 - An app-local key monitor needs **no permission**, sees the app's own keys
   before menus and text fields do, and can swallow them. The global monitor
   and the event tap both need a permission prompt and are the wrong tool.
+
+Measured afterwards by `cargo run --example hotkey_probe`, on macOS 26.5.2,
+because the conflict decisions rest on them and nothing documents them:
+
+- **Exclusive mode arbitrates against *any* registration in the same process,
+  and only against *exclusive* ones in another.** A process that holds a
+  combination non-exclusively refuses its own exclusive probe
+  (`eventHotKeyExistsErr`), while the same probe run against another process's
+  non-exclusive holder returns success. Two consequences, both load-bearing:
+  a process must never probe a combination it already holds without expecting
+  to find itself, and **the settings window cannot see the running Nudge's
+  binding at all** — that is what "cross-process, non-exclusive is invisible"
+  means.
+- **A non-exclusive registration succeeds against an exclusive holder.** So the
+  exclusive mode is a question, never a claim on the key: the app binds
+  non-exclusively and gets its binding no matter who else asked first.
+- Since almost every application registers non-exclusively — it is the default,
+  and what the crate this task removed always did — the exclusive probe finds
+  **almost nothing in practice**. It is kept because when it does fire the
+  answer is certain, but the source that actually catches the common case is
+  the system table below. A conflict report that leaned on the probe alone
+  would be a check that never fires, which is the defect this task removed.
+- **`CopySymbolicHotKeys` still works**: 230 entries on a stock machine, 171 of
+  them enabled. Disabled rows *are* included and carry the flag, which is what
+  lets a system shortcut the user turned off read as free. `⌘Space`, `⌃←`,
+  `⇧⌘3` and `⇧⌘5` are all in it.
 
 **Nothing on Windows has been measured.** The documentation says
 `RegisterHotKey` does arbitrate across processes and reports an
@@ -96,11 +124,30 @@ the set of currently-held keys, not a release, not a duration, not a repeat.
 
 ## Order of work
 
-1. macOS: capture, behind the existing settings field.
-2. macOS: registration, replacing `global-hotkey`.
-3. macOS: conflict reporting.
-4. Windows: the same three, after its facts are measured.
-5. §9 of the spec regains its recorder section, written against what shipped.
+1. ~~macOS: capture, behind the existing settings field.~~ Done — an app-local
+   `NSEvent` monitor in the settings process, `src/platform/macos/key_monitor.rs`.
+2. ~~macOS: registration, replacing `global-hotkey`.~~ Done — Carbon directly,
+   `src/platform/macos/hotkey_carbon.rs`; the crate and its second objc2 tree
+   are out of `Cargo.toml`.
+3. ~~macOS: conflict reporting.~~ Done — two sources, and the report says which
+   one answered. What each can see is in the measured facts above.
+4. **Windows: the same three, after its facts are measured.** Nothing is
+   started. `platform::windows::new_edge_source` returns `None`, so the row
+   there is the typed field it has always been, and `hotkey_conflict` returns
+   `None` rather than a check written from documentation.
+5. ~~§9 of the spec regains its recorder section, written against what
+   shipped.~~ Done.
+
+The guest tier has run. `SUITE=macos_hotkey_native scripts/native-tests-macos.sh`
+passes 13/13 against a real desktop, and every stream those tests recorded is in
+`tests/fixtures/keystreams/`, where `tests/hotkey_replay.rs` asserts against it
+on every `cargo test`. So the acceptance list below is a result on macOS rather
+than a specification — the Windows line excepted, which nothing has run.
+
+The port's own suite was re-run on the same guest afterwards
+(`scripts/native-tests-macos.sh`, 11/11): removing `global-hotkey` reached far
+enough into `src/platform/macos.rs` that the recorder's own tier passing is not
+evidence about the rest of it.
 
 ## Acceptance
 

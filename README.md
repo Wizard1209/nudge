@@ -117,8 +117,19 @@ The hotkey is typed in, in any of the spellings above — `⌥⌘J`, `Alt+Cmd+J`
 and `alt+cmd+j` are one combination. Full grammar: `docs/design-spec.md` §5.
 `Save` refuses a combination the OS cannot bind rather than writing it.
 
-Capturing a combination from the keyboard instead of typing it is specified
-in `docs/TASK-hotkey-native.md` and not built.
+On macOS it can also be pressed instead of typed: `Record`, then the
+combination. The keys are read from the OS rather than from the window
+toolkit, so `⌘C` records as `⌘C` instead of copying, the keypad is its own key
+rather than a fold onto the digit row, and a shortcut follows the physical cap
+— with a Russian layout active, the cap that types `о` still records `⌥⌘J`.
+`Esc`, `Cancel` and clicking away all put the saved value back. Windows has no
+`Record` button: its platform facts are unmeasured, and
+`docs/TASK-hotkey-native.md` is where that work is specified. Behaviour in
+full: `docs/design-spec.md` §9.
+
+If another application or macOS itself already holds the combination, `Save`
+says so and saves it anyway — it is the shortcut the user asked for, and a
+taken one binds normally, it just never fires.
 
 ## Development: the Electron prototype
 

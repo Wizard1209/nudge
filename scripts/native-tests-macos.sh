@@ -12,6 +12,14 @@
 #   scripts/native-tests-macos.sh                # full cycle, leaves the VM up
 #   scripts/native-tests-macos.sh --stop         # ... and stop it afterwards
 #   scripts/native-tests-macos.sh -- <filter>    # extra args for the test binary
+#   SUITE=macos_hotkey_native scripts/native-tests-macos.sh   # the recorder tier
+#
+# SUITE picks which test binary to ship and run. `macos_hotkey_native` is also
+# the *recorder* for tests/fixtures/keystreams: it presses real keys, writes
+# down every press edge the app's key monitor saw, and step 6 copies those
+# streams back to the host, where tests/hotkey_replay.rs replays them on every
+# `cargo test`. That is the whole reason the fast tier is allowed to exist —
+# its inputs came from here.
 #
 # First run needs a guest. The one this was built against:
 #   tart clone ghcr.io/cirruslabs/macos-tahoe-base:latest nudge-base
@@ -22,6 +30,10 @@
 set -euo pipefail
 
 VM=${VM:-nudge-base}
+# Which test binary to ship and run. `macos_native` is the port's acceptance
+# suite; `macos_hotkey_native` is the recorder tier, and it also writes the key
+# streams that tests/hotkey_replay.rs replays on the host.
+SUITE=${SUITE:-macos_native}
 VM_USER=${VM_USER:-admin}
 VM_PASS=${VM_PASS:-admin}
 REPO=${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
@@ -113,15 +125,16 @@ vs '
 # find it. Both binaries link only system frameworks, so the guest needs no
 # Rust toolchain and none is installed there.
 say "building on the host"
-( cd "$REPO" && cargo build --bin nudge --example control_backdrop && cargo test --no-run --test macos_native )
-TEST_BIN=$(cd "$REPO" && cargo test --no-run --test macos_native --message-format=json 2>/dev/null \
-  | /usr/bin/python3 -c 'import sys,json
+( cd "$REPO" && cargo build --bin nudge --example control_backdrop && cargo test --no-run --test "$SUITE" )
+TEST_BIN=$(cd "$REPO" && cargo test --no-run --test "$SUITE" --message-format=json 2>/dev/null \
+  | SUITE="$SUITE" /usr/bin/python3 -c 'import sys, json, os
+want = os.environ["SUITE"]
 for l in sys.stdin:
-    try: m=json.loads(l)
+    try: m = json.loads(l)
     except Exception: continue
-    if m.get("target",{}).get("name")=="macos_native" and m.get("executable"):
+    if m.get("target", {}).get("name") == want and m.get("executable"):
         print(m["executable"])' | tail -1)
-[[ -n $TEST_BIN ]] || { echo "could not locate the macos_native test binary" >&2; exit 1; }
+[[ -n $TEST_BIN ]] || { echo "could not locate the $SUITE test binary" >&2; exit 1; }
 echo "test binary: $TEST_BIN"
 
 say "shipping binaries to $REPO inside the guest"
@@ -170,6 +183,22 @@ set +e
 vs "$GUEST_ENV '$GUEST_TEST' --ignored --nocapture --test-threads=1 ${TEST_ARGS[*]:-} 2>&1"
 RC=$?
 set -e
+
+# --- 6. bring the recorded key streams home --------------------------------
+# The recorder tier writes one NDJSON stream per acceptance bullet, inside the
+# guest, from keys the guest's own session delivered. Those streams are the
+# input of the host-side replay tier, so they have to come back — without them
+# the fast tier stays empty and its coverage is a promise rather than a fact.
+# Collected even on failure: a stream recorded before the assertion that failed
+# is still a real recording, and often the thing that explains the failure.
+if vs "test -d '$REPO/tests/fixtures/keystreams'"; then
+  say "collecting recorded key streams"
+  mkdir -p "$REPO/tests/fixtures/keystreams"
+  scp -q -i "$KEY" "${SSH_OPTS[@]}" \
+    "$VM_USER@$IP:$REPO/tests/fixtures/keystreams/*.ndjson" \
+    "$REPO/tests/fixtures/keystreams/" || echo "no streams to collect"
+  ls -1 "$REPO/tests/fixtures/keystreams" | sed 's/^/  /'
+fi
 
 [[ $STOP_AFTER -eq 1 ]] && { say "stopping $VM"; $TART stop "$VM"; }
 exit $RC
