@@ -72,7 +72,9 @@ vs() { ssh -i "$KEY" "${SSH_OPTS[@]}" "$VM_USER@$IP" "$@"; }
 
 # --- 2. key-based ssh, once ------------------------------------------------
 # The guest's prompt is capital-P "Password:"; a lowercase expect pattern hangs
-# until the timeout with no clue as to why.
+# until the timeout with no clue as to why. The pause before the send is not
+# decoration either: sent on the prompt's heels the password lands before
+# sshd has turned echo off and is read as empty, and the key never installs.
 mkdir -p "$(dirname "$KEY")"
 [[ -f $KEY ]] || ssh-keygen -t ed25519 -N '' -f "$KEY" -C nudge-vm >/dev/null
 if ! ssh -i "$KEY" "${SSH_OPTS[@]}" -o BatchMode=yes "$VM_USER@$IP" true 2>/dev/null; then
@@ -83,7 +85,7 @@ if ! ssh -i "$KEY" "${SSH_OPTS[@]}" -o BatchMode=yes "$VM_USER@$IP" true 2>/dev/
     log_user 0
     spawn ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null $VM_USER@$IP \
       \"mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '$PUB' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys\"
-    expect { -re {assword:} { send \"$VM_PASS\r\"; exp_continue } eof }
+    expect { -re {assword:} { sleep 1; send \"$VM_PASS\r\"; exp_continue } eof }
   "
   ssh -i "$KEY" "${SSH_OPTS[@]}" -o BatchMode=yes "$VM_USER@$IP" true
 fi
