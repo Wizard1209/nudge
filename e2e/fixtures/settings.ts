@@ -27,6 +27,10 @@ async function launchSettings(): Promise<SettingsContext> {
             "--no-sandbox",
             "--disable-setuid-sandbox",
             "--window-size=800,600",
+            // The tests click and sample at CSS-pixel coordinates measured on CI's
+            // 1x display; on a Retina host the canvas would render at 2x and every
+            // coordinate would land in the wrong place.
+            "--force-device-scale-factor=1",
         ],
     })
 
