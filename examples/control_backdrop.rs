@@ -12,7 +12,7 @@
 //! things. Alpha scales the checker's contrast but leaves its edges where they
 //! are; a blur destroys the edges and collapses the squares toward their mean.
 //! So the discriminating measurement is high-spatial-frequency energy behind
-//! the card versus beside it — see `card_blurs_what_is_behind_it` in
+//! the card versus beside it — see `card_is_frosted_glass_not_a_tinted_pane` in
 //! `tests/macos_native.rs`. Cells are deliberately small relative to the
 //! card's blur radius: a checker coarser than the radius survives blurring and
 //! would make a correct render look like a failure.
@@ -34,8 +34,10 @@
 //! dismissal (spec §4).
 //!
 //! The window paints its first frame at the default size and only then
-//! resizes to the monitor, so a caller must *verify* the pattern is on screen
-//! rather than sleep on it — see `backdrop_is_up` in `tests/macos_native.rs`.
+//! resizes to the monitor, and anything the OS puts above it (a system alert)
+//! is in the photograph too, so a caller must *verify* the pattern is what it
+//! sampled rather than trust that it is up — see the `BACKDROP_*_LUMA` checks
+//! in `tests/macos_native.rs`.
 
 use eframe::egui;
 
@@ -72,33 +74,35 @@ fn main() -> eframe::Result<()> {
         ..Default::default()
     };
 
+    let (mut moved, mut sized_to) = (false, None::<egui::Vec2>);
     eframe::run_ui_native("nudge control backdrop", options, move |ui, _frame| {
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
-        // Converge on "filling the main display" instead of computing it once.
-        // Two reasons it cannot be a one-shot: the window's first frame runs
-        // before it has been moved, so the monitor it reports is whichever one
-        // it happened to open on — with a second display attached that is
-        // routinely not the one the app under test picks (it uses the *main*
-        // display) — and the move itself takes a frame to land. Screen origin
-        // (0,0) is the main display's top-left by definition, so positioning
-        // there first is what makes the size read afterwards the right one.
-        let (position, size, monitor) = ui.ctx().input(|i| {
-            (
-                i.viewport().outer_rect.map(|r| r.min),
-                i.viewport().inner_rect.map(|r| r.size()),
-                i.viewport().monitor_size,
-            )
-        });
-        if position.is_some_and(|p| p.to_vec2().length() > 1.0) {
+        // Fill the main display: move to its top-left, then size to it. Two
+        // steps over several frames rather than one: the first frame runs
+        // before the window has been moved, so the monitor it reports is
+        // whichever one it happened to open on — with a second display that
+        // is routinely not the main one the app under test picks — and the
+        // move takes a frame to land. Screen origin (0,0) is the main
+        // display's top-left by definition, so the size read after the move
+        // is the right one.
+        //
+        // Each command is sent once per target, never re-sent until the window
+        // matches: macOS keeps a window below the menu bar, so its position
+        // never reads (0,0), and waiting for that would repaint forever and
+        // never reach the resize.
+        let monitor = ui.ctx().input(|i| i.viewport().monitor_size);
+        if !moved {
+            moved = true;
             ui.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(0.0, 0.0)));
             ui.ctx().request_repaint();
         } else if let Some(monitor) = monitor
-            && size.is_some_and(|s| (s - monitor).length() > 1.0)
+            && sized_to != Some(monitor)
         {
+            sized_to = Some(monitor);
             ui.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::InnerSize(monitor));
             ui.ctx().request_repaint();
