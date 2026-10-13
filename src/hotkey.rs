@@ -338,9 +338,12 @@ pub fn format(hk: &Hotkey) -> String {
 /// outside it on purpose — §5 says why.
 // The modifier symbols stay — they are what the keycaps say, and the line
 // exists to teach the form the field uses. The key symbols do not, with the
-// arrows as the one exception: at the size this renders, `⌫` and `↩` are a
-// smudge and have unambiguous names anyway, while `Left` reads as a word
-// where `←` reads as the cap.
+// arrows as the one exception on macOS: at the size this renders, `⌫` and
+// `↩` are a smudge and have unambiguous names anyway, while `Left` reads as
+// a word where `←` reads as the cap. Elsewhere the arrows are words too:
+// only macOS installs a symbol font, and egui's bundled faces have no arrow
+// glyphs, so `←` renders as an empty box there — and `Left` is how the field
+// itself spells the key on those platforms.
 #[cfg(target_os = "macos")]
 pub const VOCABULARY: &str = "Modifiers ⌃ ⌥ ⇧ ⌘ (or Ctrl, Option, Shift, Cmd) \
     plus one key: A–Z, 0–9, F1–F20, Space, Enter, Tab, Esc, Backspace, \
@@ -349,7 +352,7 @@ pub const VOCABULARY: &str = "Modifiers ⌃ ⌥ ⇧ ⌘ (or Ctrl, Option, Shift,
 #[cfg(not(target_os = "macos"))]
 pub const VOCABULARY: &str = "Modifiers Ctrl, Alt, Shift, Win \
     plus one key: A–Z, 0–9, F1–F24, Space, Enter, Tab, Esc, Backspace, \
-    ← ↑ → ↓, Home, End, PageUp, PageDown, Insert, Delete, \
+    Left, Right, Up, Down, Home, End, PageUp, PageDown, Insert, Delete, \
     or a symbol cap: - = [ ] \\ ; ' , . / `";
 
 /// The label to *show* a user of this platform — on macOS the symbol form,
