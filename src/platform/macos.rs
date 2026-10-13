@@ -681,7 +681,9 @@ fn try_register_hotkey(hk: &Hotkey) -> Option<hotkey_carbon::Registration> {
         Err(e) => {
             // Deliberately not a fallback binding: taking over some other
             // shortcut the user never asked for would hide which one failed.
-            eprintln!("[nudge] registering hotkey \"{label}\" failed: {e} — running with no hotkey");
+            eprintln!(
+                "[nudge] registering hotkey \"{label}\" failed: {e} — running with no hotkey"
+            );
             note_own_hotkey(None);
             None
         }

@@ -620,8 +620,26 @@ mod tests {
             labels.push(format!("Ctrl+F{n}"));
         }
         for named in [
-            "Space", "Enter", "Return", "Tab", "Esc", "Escape", "Backspace", "Left", "Right", "Up",
-            "Down", "Home", "End", "PageUp", "PgUp", "PageDown", "PgDn", "Insert", "Ins", "Delete",
+            "Space",
+            "Enter",
+            "Return",
+            "Tab",
+            "Esc",
+            "Escape",
+            "Backspace",
+            "Left",
+            "Right",
+            "Up",
+            "Down",
+            "Home",
+            "End",
+            "PageUp",
+            "PgUp",
+            "PageDown",
+            "PgDn",
+            "Insert",
+            "Ins",
+            "Delete",
             "Del",
         ] {
             labels.push(format!("Ctrl+{named}"));

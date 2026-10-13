@@ -34,7 +34,10 @@ fn main() {
         // The shape the real app has: the main instance binds NON-exclusively.
         match hotkey_carbon::register(&probe) {
             Ok(held) => {
-                println!("child: holding {} non-exclusively", hotkey::format_native(&probe));
+                println!(
+                    "child: holding {} non-exclusively",
+                    hotkey::format_native(&probe)
+                );
                 std::thread::sleep(std::time::Duration::from_secs(3));
                 drop(held);
             }
@@ -45,7 +48,10 @@ fn main() {
     if mode == "--hold-exclusive" {
         match hotkey_carbon::register_exclusive(&probe) {
             Ok(held) => {
-                println!("child: holding {} exclusively", hotkey::format_native(&probe));
+                println!(
+                    "child: holding {} exclusively",
+                    hotkey::format_native(&probe)
+                );
                 // Long enough for the parent to try, short enough that a
                 // forgotten child releases it on its own.
                 std::thread::sleep(std::time::Duration::from_secs(3));
@@ -85,7 +91,10 @@ fn main() {
     // left as a check that never fires.
     println!("\n== across processes ==");
     let exe = std::env::current_exe().expect("own path");
-    match std::process::Command::new(exe).arg("--hold-exclusive").spawn() {
+    match std::process::Command::new(exe)
+        .arg("--hold-exclusive")
+        .spawn()
+    {
         Ok(mut child) => {
             std::thread::sleep(std::time::Duration::from_millis(700));
             println!(
@@ -95,7 +104,8 @@ fn main() {
             println!(
                 "  and a NON-exclusive registration against that exclusive holder: {}",
                 match hotkey_carbon::register(&probe) {
-                    Ok(_) => "ok — the app can still bind what somebody holds exclusively".to_string(),
+                    Ok(_) =>
+                        "ok — the app can still bind what somebody holds exclusively".to_string(),
                     Err(e) => e.to_string(),
                 }
             );

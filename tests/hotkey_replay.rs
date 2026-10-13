@@ -431,9 +431,13 @@ fn every_fixture_carries_its_provenance() {
     // Run over the directory rather than the expectation list, so a stray file
     // cannot sit there unread and a future bullet cannot be added without one.
     let dir = fixture_dir();
-    let entries = std::fs::read_dir(&dir)
-        .unwrap_or_else(|e| panic!("{}: {e} — the fixture directory is part of the repo, and a \
-                                    missing one is a lost recording, not an empty tier", dir.display()));
+    let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
+        panic!(
+            "{}: {e} — the fixture directory is part of the repo, and a \
+                                    missing one is a lost recording, not an empty tier",
+            dir.display()
+        )
+    });
     let mut seen = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
@@ -443,7 +447,8 @@ fn every_fixture_carries_its_provenance() {
         let stream = parse_stream(&path).unwrap_or_else(|e| panic!("{e}"));
         let expected = path.file_stem().unwrap().to_string_lossy();
         assert_eq!(
-            stream.provenance.bullet, expected,
+            stream.provenance.bullet,
+            expected,
             "{} says it was recorded for a different bullet",
             path.display()
         );
@@ -461,7 +466,10 @@ fn every_fixture_carries_its_provenance() {
         );
         seen.push(expected.to_string());
     }
-    assert!(!seen.is_empty(), "no fixtures at all — see the ratchet above");
+    assert!(
+        !seen.is_empty(),
+        "no fixtures at all — see the ratchet above"
+    );
 }
 
 #[test]
@@ -552,7 +560,10 @@ fn the_recorded_flags_convert_to_the_recorded_modifiers() {
             edges += 1;
         }
     }
-    assert!(edges > 0, "no recorded edges at all — see the ratchet above");
+    assert!(
+        edges > 0,
+        "no recorded edges at all — see the ratchet above"
+    );
     assert_ne!(
         stray_bits, 0,
         "not one recorded edge carries a flag outside the four Carbon can bind, so the \

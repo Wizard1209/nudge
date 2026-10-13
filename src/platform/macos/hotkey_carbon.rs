@@ -58,8 +58,7 @@ struct EventTypeSpec {
     event_kind: u32,
 }
 
-type EventHandlerProcPtr =
-    extern "C" fn(EventHandlerCallRef, EventRef, *mut c_void) -> OSStatus;
+type EventHandlerProcPtr = extern "C" fn(EventHandlerCallRef, EventRef, *mut c_void) -> OSStatus;
 
 #[link(name = "Carbon", kind = "framework")]
 unsafe extern "C" {

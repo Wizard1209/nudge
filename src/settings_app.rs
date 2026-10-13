@@ -867,7 +867,11 @@ mod tests {
         let row = HotkeyRecorder::new(None);
         assert!(!row.available());
         assert!(!row.is_armed());
-        assert_eq!(row.hint(), None, "the vocabulary line stands where no hint is");
+        assert_eq!(
+            row.hint(),
+            None,
+            "the vocabulary line stands where no hint is"
+        );
     }
 
     #[test]
@@ -904,7 +908,11 @@ mod tests {
         row.feed(&Input::Record);
         assert_eq!(row.pump(false), vec![Effect::Restore]);
         assert!(!row.is_armed());
-        assert_eq!(row.pump(false), vec![], "still unfocused is not a new event");
+        assert_eq!(
+            row.pump(false),
+            vec![],
+            "still unfocused is not a new event"
+        );
     }
 
     #[test]

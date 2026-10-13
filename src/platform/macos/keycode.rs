@@ -259,8 +259,9 @@ mod tests {
     #[test]
     fn every_key_code_in_the_table_maps_to_a_token_the_parser_accepts() {
         for (code, token) in KEYS {
-            let hk = hotkey::parse(&format!("Ctrl+{token}"))
-                .unwrap_or_else(|e| panic!("key code {code} names {token}, which does not parse: {e}"));
+            let hk = hotkey::parse(&format!("Ctrl+{token}")).unwrap_or_else(|e| {
+                panic!("key code {code} names {token}, which does not parse: {e}")
+            });
             assert_eq!(
                 hk.key.as_str(),
                 *token,

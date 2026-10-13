@@ -735,6 +735,8 @@ impl eframe::App for NudgeApp {
         crate::platform::tick(ctx);
     }
 
+    // `frame` only feeds the card backdrop, which has no web counterpart.
+    #[cfg_attr(target_arch = "wasm32", expect(unused_variables))]
     fn ui(&mut self, root_ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         // eframe 0.34 replaced `App::update(ctx)` with `App::ui(ui)`. The
         // `ui` we're handed is the central panel (transparent, no margin); we
@@ -873,6 +875,7 @@ impl eframe::App for NudgeApp {
             // The blur behind the card is an OS-side panel, so it has to be
             // told where the card ended up — every frame, because the card's
             // width tracks the screen and its height tracks its content.
+            #[cfg(not(target_arch = "wasm32"))]
             if let Some(card) = self.card_rect {
                 crate::platform::sync_card_backdrop(ctx, frame, card);
             }

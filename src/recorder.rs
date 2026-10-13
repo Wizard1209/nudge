@@ -71,6 +71,7 @@ pub trait EdgeSource {
 /// A press, already judged against §5 by the platform. The three answers are
 /// exhaustive: a key either makes a hotkey, cancels, or is refused by name.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // only the macOS edge source hands out verdicts
 pub enum Verdict {
     /// §5 accepts it and this platform can register it.
     Bindable(Hotkey),

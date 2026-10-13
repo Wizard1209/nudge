@@ -415,7 +415,9 @@ fn select_input_source(id: &str) -> bool {
     let mut selected = false;
     for i in 0..unsafe { CFArrayGetCount(list) } {
         let source = unsafe { CFArrayGetValueAtIndex(list, i) };
-        let Some(sid) = source_id(source) else { continue };
+        let Some(sid) = source_id(source) else {
+            continue;
+        };
         if sid == id {
             selected = unsafe { TISSelectInputSource(source) } == 0;
             break;
@@ -742,11 +744,7 @@ fn click_button(name: &str) {
                      click (first button of g whose name is "{name}")
                      set answer to "ok""#
     ));
-    assert_eq!(
-        answer.trim(),
-        "ok",
-        "could not click the {name:?} button"
-    );
+    assert_eq!(answer.trim(), "ok", "could not click the {name:?} button");
     std::thread::sleep(SETTLE);
 }
 
@@ -831,7 +829,9 @@ fn window_present(pid: u32, require_elevated: bool) -> bool {
     let on_screen_key = unsafe { CFString::wrap_under_get_rule(kCGWindowIsOnscreen) };
 
     for i in 0..windows.len() {
-        let Some(entry) = windows.get(i) else { continue };
+        let Some(entry) = windows.get(i) else {
+            continue;
+        };
         let dict: CFDictionary<CFString, CFType> =
             unsafe { TCFType::wrap_under_get_rule(*entry as CFDictionaryRef) };
 
@@ -1050,7 +1050,11 @@ fn the_settings_window_can_be_read_and_clicked() {
     let _app = Sandboxed::settings("Ctrl+Shift+Space");
 
     let idle = Ui::settings();
-    assert!(!idle.armed(), "a fresh window must not be armed: {:#?}", idle.0);
+    assert!(
+        !idle.armed(),
+        "a fresh window must not be armed: {:#?}",
+        idle.0
+    );
     assert_eq!(
         idle.hotkey_field().as_deref(),
         Some("⌃⇧Space"),
@@ -1105,7 +1109,11 @@ fn records_the_spelled_combinations() {
         press_chord(code, flags);
 
         let ui = Ui::settings();
-        assert!(!ui.armed(), "{expected} did not end the recording: {:#?}", ui.0);
+        assert!(
+            !ui.armed(),
+            "{expected} did not end the recording: {:#?}",
+            ui.0
+        );
         assert_eq!(
             ui.hotkey_field().as_deref(),
             Some(expected),
@@ -1345,7 +1353,11 @@ fn modifiers_alone_and_fn_alone_are_not_events() {
     app.truncate_keystream();
     hold_modifiers_only(alt_cmd());
     let ui = Ui::settings();
-    assert_eq!(app.edges(), vec![], "a modifier chord produced a press edge");
+    assert_eq!(
+        app.edges(),
+        vec![],
+        "a modifier chord produced a press edge"
+    );
     assert!(ui.armed(), "holding ⌥⌘ ended the recording: {:#?}", ui.0);
     assert_eq!(
         ui.hint(),
@@ -1604,14 +1616,16 @@ fn saving_cmd_space_says_the_system_holds_it() {
     assert_eq!(Ui::settings().hotkey_field().as_deref(), Some("⌘Space"));
 
     click_button("Save");
-    let banner = Ui::settings()
-        .banner()
-        .expect("Save must say something");
+    let banner = Ui::settings().banner().expect("Save must say something");
     assert!(
         banner.contains("system shortcut"),
         "⌘Space was accepted silently: {banner:?}"
     );
-    assert_eq!(app.saved_hotkey(), "⌘Space", "it is a warning, not a refusal");
+    assert_eq!(
+        app.saved_hotkey(),
+        "⌘Space",
+        "it is a warning, not a refusal"
+    );
     // The window is addressed by content, not by pid, so a second settings
     // window would make every reading below ambiguous.
     drop(app);

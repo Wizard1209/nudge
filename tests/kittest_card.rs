@@ -349,4 +349,3 @@ fn toggling_autostart_goes_through_the_injected_provider_not_the_os() {
         "the confirmed autostart change is persisted through the injected closure"
     );
 }
-

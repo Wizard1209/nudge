@@ -89,10 +89,9 @@ pub fn read_symbolic_hotkeys() -> Vec<SymbolicHotkey> {
             continue;
         }
         let dict = entry as CFDictionaryRef;
-        let (Some(code), Some(carbon_modifiers)) = (
-            dict_i64(dict, &key_code),
-            dict_i64(dict, &key_modifiers),
-        ) else {
+        let (Some(code), Some(carbon_modifiers)) =
+            (dict_i64(dict, &key_code), dict_i64(dict, &key_modifiers))
+        else {
             unparsed += 1;
             continue;
         };
@@ -116,8 +115,7 @@ pub fn read_symbolic_hotkeys() -> Vec<SymbolicHotkey> {
 }
 
 fn dict_value(dict: CFDictionaryRef, key: &CFString) -> Option<CFTypeRef> {
-    let value =
-        unsafe { CFDictionaryGetValue(dict, key.as_concrete_TypeRef() as *const c_void) };
+    let value = unsafe { CFDictionaryGetValue(dict, key.as_concrete_TypeRef() as *const c_void) };
     if value.is_null() {
         None
     } else {

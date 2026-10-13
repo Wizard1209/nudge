@@ -172,9 +172,11 @@ pub fn parse(input: &str) -> Result<Hotkey, ParseError> {
 /// text is a second grammar waiting to disagree with this one. Both entry
 /// points call [`canonicalize_key`] and both apply the F-row exception, and a
 /// test asserts they agree for every token the grammar knows.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // only the macOS edge source builds from key codes
 pub fn from_parts(modifiers: u8, token: &str) -> Result<Hotkey, ParseError> {
     let upper = token.to_ascii_uppercase();
-    let key = canonicalize_key(&upper).ok_or_else(|| ParseError::UnknownToken(token.to_string()))?;
+    let key =
+        canonicalize_key(&upper).ok_or_else(|| ParseError::UnknownToken(token.to_string()))?;
     if modifiers == 0 && !is_function_key(&key) {
         return Err(ParseError::MissingModifier(key));
     }
@@ -397,6 +399,7 @@ pub fn format_native(hk: &Hotkey) -> String {
 /// The platform layer needs this to refuse a key by name ("J cannot be part of
 /// a hotkey"), and the name has to be the one the rest of the app prints or
 /// the refusal teaches the wrong spelling.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // only the macOS edge source refuses keys by name
 pub fn key_label(token: &str) -> String {
     title_case_key(token)
 }
@@ -778,5 +781,4 @@ mod tests {
         let hk = default_hotkey();
         assert_eq!(format(&hk), "Ctrl+Shift+Space");
     }
-
 }
