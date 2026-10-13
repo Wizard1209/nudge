@@ -21,11 +21,17 @@ pub const CLEAR_COLOR_TRANSPARENT: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
 /// over the dark card.
 const HINT_TEXT_COLOR: egui::Color32 = egui::Color32::from_gray(170);
 
-/// Card corner radius, in points. Shared by the card frame, the contour and
-/// the focused-row background so the three curves are concentric by
-/// construction — an inset highlight with its own smaller radius reads as a
-/// second, misaligned outline where the two corners diverge.
+/// Card corner radius, in points. Shared by the card frame and the contour so
+/// the two curves are concentric by construction.
 pub(crate) const CARD_RADIUS: u8 = 16;
+
+/// The focused row's tint (spec §3): a rounded field drawn around the text,
+/// inset from the row's band by this much sideways and vertically. The inset
+/// is what keeps it from reading as a second card outline: a plate that hugs
+/// the contour at a different radius shows up as a misaligned double edge at
+/// the corners, while a field well inside the row is its own shape.
+const FOCUS_FIELD_INSET: egui::Vec2 = egui::vec2(10.0, 5.0);
+const FOCUS_FIELD_RADIUS: u8 = 8;
 
 /// Opacity of the card's fill. Two values, because the fill has two different
 /// jobs depending on whether the platform can put a frosted backdrop behind
@@ -475,7 +481,7 @@ impl NudgeApp {
             ))
             .corner_radius(egui::CornerRadius::same(CARD_RADIUS))
             // No `.stroke()` here on purpose: a Frame paints its stroke *before*
-            // its content, so a row background (spec §3) would paint over it.
+            // its content, so the focus field (spec §3) would paint over it.
             // `draw_card` paints the contour after the Area instead.
             .shadow(CARD_SHADOW)
             // Zero inner margin so rows + dividers span full card width;
@@ -507,8 +513,7 @@ impl NudgeApp {
                     .rect
             });
 
-        // Contour last: it has to survive the full-bleed row background that
-        // `row_field` paints over the card's own edge.
+        // Contour last: `Frame::stroke` would paint it under the content.
         ctx.layer_painter(inner.response.layer_id).rect_stroke(
             inner.inner,
             egui::CornerRadius::same(CARD_RADIUS),
@@ -519,15 +524,7 @@ impl NudgeApp {
         self.card_rect = Some(inner.inner);
     }
 
-    /// `corners` is the rounding the focused-row background takes: the card's
-    /// radius on the corners this row shares with the card, square elsewhere.
-    fn row_field(
-        ui: &mut egui::Ui,
-        value: &mut String,
-        hint: &str,
-        key: &str,
-        corners: egui::CornerRadius,
-    ) -> egui::Response {
+    fn row_field(ui: &mut egui::Ui, value: &mut String, hint: &str, key: &str) -> egui::Response {
         const ROW_HEIGHT: f32 = 40.0;
         let field_id = egui::Id::new(key);
         let width = ui.available_width();
@@ -547,12 +544,6 @@ impl NudgeApp {
             // on Cyrillic text. Must run BEFORE TextEdit drains the events.
             word_jump::intercept_ctrl_word_keys(ui.ctx(), field_id, value);
 
-            // Spec §3: the focused row is marked by a change of *row
-            // background* — not by a plate with edges of its own. So the tint
-            // spans the row edge to edge and takes the card's radius on the
-            // corners it touches; a shrunk rect with a smaller radius cannot
-            // stay concentric with the card and shows up as a second outline.
-            //
             // egui 0.34 corrected its alpha compositing (0.31 over-brightened
             // low alphas — `2` there rendered like a +20 brightness jump); on
             // 0.34 the same value is nearly invisible, so alpha 20 is what
@@ -585,14 +576,18 @@ impl NudgeApp {
             // advances the cursor by what the widget actually took, not by what
             // was allocated for it. The divider therefore sits ~3pt below
             // `row_rect`'s bottom edge, and a tint painted on `row_rect` stops
-            // short of it, leaving a strip of untinted card between the
-            // highlight and the line — the highlight reads as misaligned with
-            // its own row. So the tint is painted on the band the row really
-            // consumed, measured from the cursor rather than declared.
+            // short of it and the field sits crooked in its row — closer to
+            // the top than to the divider. So the field is inset from the band
+            // the row really consumed, measured from the cursor rather than
+            // declared.
             let row = egui::Rect::from_x_y_ranges(row_rect.x_range(), row_top..=ui.cursor().top());
             ui.painter().set(
                 background,
-                egui::epaint::RectShape::filled(row, corners, egui::Color32::from_white_alpha(20)),
+                egui::epaint::RectShape::filled(
+                    row.shrink2(FOCUS_FIELD_INSET),
+                    egui::CornerRadius::same(FOCUS_FIELD_RADIUS),
+                    egui::Color32::from_white_alpha(20),
+                ),
             );
         }
 
@@ -613,40 +608,20 @@ impl NudgeApp {
         // Reset spacing so dividers sit flush against rows
         ui.style_mut().spacing.item_spacing = egui::vec2(0.0, 0.0);
 
-        let top = egui::CornerRadius {
-            nw: CARD_RADIUS,
-            ne: CARD_RADIUS,
-            sw: 0,
-            se: 0,
-        };
-        let bottom = egui::CornerRadius {
-            nw: 0,
-            ne: 0,
-            sw: CARD_RADIUS,
-            se: CARD_RADIUS,
-        };
-
-        let doing_response = Self::row_field(ui, &mut self.doing, "Что я делаю?", "row_doing", top);
+        let doing_response = Self::row_field(ui, &mut self.doing, "Что я делаю?", "row_doing");
         if self.focus_first {
             doing_response.request_focus();
             self.focus_first = false;
         }
 
         Self::divider(ui);
-        Self::row_field(
-            ui,
-            &mut self.bullshit,
-            "Хуйня?",
-            "row_bullshit",
-            egui::CornerRadius::ZERO,
-        );
+        Self::row_field(ui, &mut self.bullshit, "Хуйня?", "row_bullshit");
         Self::divider(ui);
         Self::row_field(
             ui,
             &mut self.next_minutes,
             "Следующий через (мин)",
             "row_minutes",
-            bottom,
         );
 
         // Show error message if journal write failed

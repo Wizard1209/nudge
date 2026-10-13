@@ -13,7 +13,7 @@ const ROW3_Y = 254
 // Each assert protects a separate regression:
 //   1. visible       — focused row is brighter than unfocused rows
 //   2. subtle        — focused row is NOT a solid white block
-//   3. inset         — highlight stops short of the card's left edge
+//   3. inset         — highlight is a field inside the row, not a row fill
 test("focused row is visibly highlighted, subtle, and inset from card edges", async ({ nudge }) => {
     await nudge.page.bringToFront()
     // Click into row 1 so the canvas receives focus, then Tab to row 2.
@@ -48,10 +48,10 @@ test("focused row is visibly highlighted, subtle, and inset from card edges", as
     expect(row2Mid - row1Mid).toBeLessThan(25)
 
     // ─── 3. Inset: highlight stops short of card's left edge ───
-    // Card left ≈ x=160. Gutter band (~4 px in) should still show card fill,
-    // not the highlight tint.
-    const GUTTER_X = 163
-    const GUTTER_W = 8
+    // Card left ≈ x=160 and the field starts 10px in (spec §3). The gutter
+    // band (2–8 px in) should still show card fill, not the highlight tint.
+    const GUTTER_X = 162
+    const GUTTER_W = 6
     const INSIDE_X = 280
     const INSIDE_W = 40
     const INSIDE_H = 12

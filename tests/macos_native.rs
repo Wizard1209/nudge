@@ -1018,23 +1018,24 @@ fn card_contour_survives_a_dark_backdrop() {
     );
 }
 
-/// Spec §3: the focused row is marked by a change of row *background*, with no
-/// outline of its own.
+/// Spec §3: the focused row shows a rounded tint around its text — a field
+/// inset from the row's sides and from its divider, not a fill of the whole
+/// row and not a plate hugging the card's contour.
 ///
-/// The failure this exists to catch is a highlight drawn as an inset plate:
-/// visually it is a second rounded rectangle nested inside the card, and
-/// because it cannot stay concentric with the card's corners it reads as a
-/// smudged double outline at the top of the card. Insetting is invisible to
-/// any assertion about *whether* a highlight exists, so the measurement has to
-/// be where the highlight ends horizontally, not whether it is there.
+/// Two failures this exists to catch, and they are opposites. A tint that
+/// runs to the card edge is a row fill: a different design, and one that
+/// reads as a second card edge where it meets the contour's corners. A tint
+/// that is inset sideways but reaches down to the divider is the older defect:
+/// a plate painted on the row's declared height rather than the height it
+/// really takes, sitting crooked in its own row. Whether a tint exists at all
+/// says nothing about either, so the measurements are where it ends.
 ///
-/// Three steps, so a red test says which one broke: that a highlight exists at
-/// all in the row that opens focused, then that it reaches the card edge
-/// sideways, then that it reaches its divider downwards. The two directions
-/// fail for different reasons and neither implies the other.
+/// Three steps, so a red test says which one broke: that a tint exists at all
+/// in the row that opens focused, then where it ends sideways, then where it
+/// ends downwards.
 #[test]
 #[ignore = "needs a GUI session + Screen Recording grant; run via --ignored"]
-fn focused_row_background_fills_its_row() {
+fn focused_row_tint_is_a_field_inside_the_row() {
     let app = SandboxedApp::launch();
     let (window, img) = capture_card(&app);
     let scale = capture_scale(&img, &window);
@@ -1046,32 +1047,33 @@ fn focused_row_background_fills_its_row() {
     let focused_y = y0 + pt(20.0);
     let plain_y = y0 + pt(61.0);
     let middle_x = (x0 + x1) / 2;
-    // Just inside the contour — well within the inset an inset plate would
-    // leave blank, and clear of the stroke's own antialias.
-    let edge_x = x0 + pt(1.0).max(1) + pt(2.0);
+    // Just inside the contour, clear of the stroke's own antialias: bare card
+    // under an inset field, tinted under a row fill.
+    let gutter_x = x0 + pt(1.0).max(1) + pt(2.0);
+    // Past the field's 10pt inset and its corner radius.
+    let field_x = x0 + pt(14.0);
+    let delta = |x: u32, y: u32| luma_over_black(&img, x, y) - luma_over_black(&img, x, plain_y);
 
-    let at_middle =
-        luma_over_black(&img, middle_x, focused_y) - luma_over_black(&img, middle_x, plain_y);
+    let at_middle = delta(middle_x, focused_y);
     assert!(
         at_middle >= 8.0,
         "the focused row is not tinted at all (Δ{at_middle:.1} against the row below, \
-         need 8) — focus is invisible, so the edge measurement below would be \
+         need 8) — focus is invisible, so the edge measurements below would be \
          meaningless"
     );
 
-    let at_edge = luma_over_black(&img, edge_x, focused_y) - luma_over_black(&img, edge_x, plain_y);
+    let at_field_edge = delta(field_x, focused_y);
+    let at_gutter = delta(gutter_x, focused_y);
     assert!(
-        at_edge >= 8.0,
-        "the focused row is tinted in its middle (Δ{at_middle:.1}) but not at the card \
-         edge (Δ{at_edge:.1}) — the highlight is an inset plate, not a row background. \
-         Its own corners cannot stay concentric with the card's, which is what shows \
-         up as a double outline. See spec §3 and `row_field` in src/app.rs."
+        at_field_edge >= 8.0 && at_gutter < 3.0,
+        "the focused row is tinted in its middle (Δ{at_middle:.1}) but sideways the tint \
+         ends in the wrong place: Δ{at_field_edge:.1} at 14pt in (need 8), Δ{at_gutter:.1} \
+         at 3pt in (need under 3). The field is inset 10pt from the row's sides — see \
+         FOCUS_FIELD_INSET in src/app.rs and spec §3."
     );
 
-    // Vertically, the same question. A row is bounded by the card above it and
-    // by the divider below, and the tint has to meet both — a tint that stops
-    // short leaves a strip of bare card between the highlight and the line,
-    // and the highlight reads as sitting crooked in its own row.
+    // Vertically, the same question. The row ends at its divider, and the
+    // field stops 5pt short of it — a strip of bare card the tint must leave.
     //
     // The divider is found rather than assumed: it is the brightest row in the
     // band under the focused one, and where it lands depends on the field's
@@ -1082,15 +1084,15 @@ fn focused_row_background_fills_its_row() {
         .map(|y| (y, luma_over_black(&img, middle_x, y)))
         .max_by(|a, b| a.1.total_cmp(&b.1))
         .expect("empty scan band");
-    let just_above_divider = luma_over_black(&img, middle_x, divider_y - pt(1.5).max(1))
-        - luma_over_black(&img, middle_x, plain_y);
+    let above_divider = delta(middle_x, divider_y - pt(2.0).max(1));
+    let in_field = delta(middle_x, divider_y - pt(9.0));
     assert!(
-        just_above_divider >= 8.0,
-        "the focused row is tinted at its top (Δ{at_middle:.1}) but not just above its \
-         divider (Δ{just_above_divider:.1}) — the tint is shorter than the row. The row is \
-         taller than the height `row_field` allocates for it, because the field's own \
-         margins overflow it and `put` advances the cursor by the larger amount; paint the \
-         tint on the band the cursor actually moved through, not on the allocated rect."
+        in_field >= 8.0 && above_divider < 3.0,
+        "the focused row is tinted at its middle (Δ{at_middle:.1}) but downwards the tint \
+         ends in the wrong place: Δ{in_field:.1} 9pt above the divider (need 8), \
+         Δ{above_divider:.1} 2pt above it (need under 3). The field is inset 5pt from \
+         the band the row really consumed — `row_field` measures that band from the \
+         cursor, because the field's own margins make the row taller than it allocates."
     );
 }
 

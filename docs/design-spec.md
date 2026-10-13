@@ -56,9 +56,9 @@ explicitly. Otherwise the spec applies to both.
 - Contour: a light hairline runs the full perimeter. It is what separates the
   card from the desktop when the shadow cannot — the shadow is dark, so over a
   dark window behind the popup it contributes nothing and the card would lose
-  its boundary. Anything drawn inside the card stays clear of the hairline and
-  concentric with it: a second curve at a different radius reads as a
-  misaligned double outline at the corners.
+  its boundary. Anything drawn inside the card stays well clear of the
+  hairline: a second curve running next to it at a different radius reads as
+  a misaligned double outline at the corners.
 - Three rows of equal height, separated by thin horizontal lines. The margin
   between the outer rows and the card edges matches the margin between fields.
 
@@ -72,8 +72,10 @@ explicitly. Otherwise the spec applies to both.
   - Field 3: `Следующий через (мин)`
 - Focus is on the first field on open.
 - Navigation: Tab forward, Shift+Tab backward.
-- The active (focused) row is highlighted by a subtle background change. No
-  borders, outlines, or color accents.
+- The active (focused) row shows a subtle rounded tint around its text: a
+  field inside the row, inset 10pt from the row's sides and 5pt from its top
+  and bottom, corner radius 8. It reads as the text's own input box, not as
+  a second edge of the card (§2). No borders, outlines, or color accents.
 - The minutes field accepts integers and decimals (e.g. `0.1` = 6 seconds, for
   testing).
 - What happens to the fields on close is decided by the §4 transition table
