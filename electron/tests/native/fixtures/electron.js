@@ -23,9 +23,17 @@ export async function launchApp(extraEnv = {}) {
       ...extraEnv,
     },
   });
-  const popup = await app.firstWindow();
-  await popup.waitForLoadState('domcontentloaded');
-  return { app, popup };
+  try {
+    const popup = await app.firstWindow();
+    await popup.waitForLoadState('domcontentloaded');
+    return { app, popup };
+  } catch (err) {
+    // The caller never receives `app`, so its afterEach cannot close it.
+    // SIGKILL, not app.close(): close() goes through the main thread, which is
+    // exactly what is stuck when no window ever appears.
+    app.process().kill('SIGKILL');
+    throw err;
+  }
 }
 
 /** Snapshot of every BrowserWindow's native state, keyed for assertions. */
