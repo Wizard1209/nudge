@@ -624,14 +624,21 @@ impl NudgeApp {
             "row_minutes",
         );
 
-        // Show error message if journal write failed
+        // A failed submit (spec §4): the popup stays and says why. The line
+        // takes the rows' own 20pt text inset and a margin below, so it sits
+        // inside the card like a fourth row rather than flush against the
+        // card's edge and on top of its contour.
         if let Some(err) = &self.error_message {
             ui.add_space(8.0);
-            ui.label(
-                egui::RichText::new(err)
-                    .size(12.0)
-                    .color(egui::Color32::from_rgb(255, 80, 80)),
-            );
+            ui.horizontal(|ui| {
+                ui.add_space(20.0);
+                ui.label(
+                    egui::RichText::new(err)
+                        .size(12.0)
+                        .color(egui::Color32::from_rgb(255, 80, 80)),
+                );
+            });
+            ui.add_space(12.0);
         }
     }
 
