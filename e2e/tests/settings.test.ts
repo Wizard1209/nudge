@@ -11,7 +11,8 @@ import { test } from "../fixtures/settings"
  *
  * Coordinates below are tuned for the 800×600 viewport and egui's default
  * spacing. The SettingsApp renders a heading, then three rows with ~24px
- * each, then a banner area, then the button row.
+ * each — the hotkey row followed by its vocabulary line (design-spec §9) —
+ * then a banner area, then the button row.
  */
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -19,11 +20,13 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms))
 // Approximate Y-coordinates for the SettingsApp rows under egui's default
 // spacing in the 800x600 viewport. Calibrated against a screenshot of the
 // rendered canvas (e2e/dist served at localhost:8080). Loosen by ±5px if
-// egui's default spacing changes upstream.
+// egui's default spacing changes upstream. Everything below the hotkey row
+// sits one small-text line (~14px) lower than it would without the
+// vocabulary line under the hotkey field.
 const ROW_HOTKEY_Y = 42
-const ROW_INTERVAL_Y = 68
-const ROW_AUTOSTART_Y = 97
-const BUTTON_ROW_Y = 130
+const ROW_INTERVAL_Y = 82
+const ROW_AUTOSTART_Y = 110
+const BUTTON_ROW_Y = 143
 
 // The hotkey + interval TextEdits sit to the right of their labels; X
 // coordinates target the middle of each input box.
