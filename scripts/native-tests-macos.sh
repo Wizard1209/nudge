@@ -118,6 +118,23 @@ vs '
   osascript -e "tell application \"System Events\" to key code 53" >/dev/null
   echo "console=$console  screencapture=${size}B  System Events keystroke: ok"
 '
+# macOS re-asks every 30 days whether sshd may keep capturing the screen. The
+# grant itself holds; the panel is a reminder, raised by a capture (the probe
+# above is one) and parked dead centre at a level above the popup — so every
+# appearance test that follows photographs the panel instead of the card.
+# Answer it here, before the suite captures anything.
+say "dismissing the screen-recording reminder, if raised"
+vs '
+  for i in $(seq 1 5); do
+    if osascript -e "tell application \"System Events\" to exists button \"Allow\" of window 1 of process \"UserNotificationCenter\"" 2>/dev/null | grep -q true; then
+      osascript -e "tell application \"System Events\" to click button \"Allow\" of window 1 of process \"UserNotificationCenter\"" >/dev/null
+      echo "answered: $(osascript -e "tell application \"System Events\" to count windows of process \"UserNotificationCenter\"") panel(s) left"
+      exit 0
+    fi
+    sleep 1
+  done
+  echo "none raised"
+'
 
 # --- 4. build on the host, ship the binaries -------------------------------
 # The test resolves the app through env!("CARGO_MANIFEST_DIR"), i.e. an

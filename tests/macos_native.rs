@@ -1132,6 +1132,18 @@ impl Backdrop {
     }
 }
 
+/// What each `examples/control_backdrop.rs` pattern reads as, in the luma
+/// `mean_luma` computes: its `DARK` and `LIGHT` are rgb(20) and rgb(200), and
+/// the checker averages the two. A precondition compares against these rather
+/// than against a loose "bright enough": a system alert parked over the popup
+/// (macOS's periodic screen-recording consent panel is one) is bright too, and
+/// a loose bound reads it as the backdrop and goes on to measure the alert.
+const BACKDROP_DARK_LUMA: f64 = 20.0;
+const BACKDROP_LIGHT_LUMA: f64 = 200.0;
+const BACKDROP_CHECKER_LUMA: f64 = (BACKDROP_DARK_LUMA + BACKDROP_LIGHT_LUMA) / 2.0;
+/// How far a reading may sit from those and still be the pattern.
+const BACKDROP_TOLERANCE: f64 = 4.0;
+
 /// Mean high-spatial-frequency energy of a region, as mean |Laplacian|.
 ///
 /// This is the measurement that tells a blur from a dimming. Alpha scales a
@@ -1262,7 +1274,7 @@ fn card_is_frosted_glass_not_a_tinted_pane() {
          backdrop mean={control_mean:.1} hf={control_hf:.1}"
     );
     assert!(
-        control_hf > 20.0 && control_mean > 80.0,
+        control_hf > 20.0 && (control_mean - BACKDROP_CHECKER_LUMA).abs() < BACKDROP_TOLERANCE,
         "the checkerboard is not behind the popup (backdrop reads mean {control_mean:.1}, \
          hf {control_hf:.1}) — nothing below this measures the card, it measures the \
          developer's desktop. Build the instrument first: \
@@ -1272,8 +1284,9 @@ fn card_is_frosted_glass_not_a_tinted_pane() {
     let (dark_mean, _, _, dark_control) = measure_over("dark");
     eprintln!("[frost] over dark: card mean={dark_mean:.1} | backdrop mean={dark_control:.1}");
     assert!(
-        dark_control < 40.0,
-        "the dark control field is not behind the popup either (reads {dark_control:.1})"
+        (dark_control - BACKDROP_DARK_LUMA).abs() < BACKDROP_TOLERANCE,
+        "the dark control field is not behind the popup either (reads {dark_control:.1}, \
+         want {BACKDROP_DARK_LUMA:.0})"
     );
 
     assert!(
@@ -1353,15 +1366,22 @@ fn card_casts_one_soft_shadow_and_no_hard_rim() {
     // dither and sampling noise.
     let profile: Vec<f64> = (0..h).map(|y| mean_luma(&img, 0, y, w, y + 1)).collect();
 
-    // The instrument: the far end of the strip must still be the untouched
-    // backdrop. If the app's shadow reaches all the way there, or something
-    // else is on screen, the steepness below is measured against nothing.
+    // The instrument: the far quarter of the strip must still be the untouched
+    // backdrop, row for row. If the app's shadow reaches all the way there, or
+    // something else is on screen, the shape below is measured against nothing.
     let far = profile[0];
+    let far_rows = &profile[..profile.len() / 4];
+    let off = far_rows
+        .iter()
+        .map(|l| (l - BACKDROP_LIGHT_LUMA).abs())
+        .fold(0.0_f64, f64::max);
     assert!(
-        far > 150.0,
-        "the top of the strip reads {far:.0}, not the flat light backdrop — either the \
-         pattern is not behind the popup or the shadow reaches further than {REACH}pt, \
-         and nothing below this measures the shadow's shape"
+        off < BACKDROP_TOLERANCE,
+        "the far end of the strip strays {off:.0} levels from the flat light backdrop \
+         ({BACKDROP_LIGHT_LUMA:.0}) — either the pattern is not behind the popup, \
+         something else is on screen over it, or the shadow reaches further than \
+         {}pt, and nothing below this measures the shadow's shape",
+        REACH * 0.75
     );
 
     // Walk outward from the card and look for the backdrop getting *darker*
