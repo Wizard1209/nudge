@@ -3,6 +3,7 @@ import { config } from "dotenv"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { PNG } from "pngjs"
+import { mkdirSync, writeFileSync } from "node:fs"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 config({ path: path.resolve(__dirname, "../../.env") })
@@ -51,7 +52,7 @@ function cropPng(buf: Buffer, r: Region): Buffer {
 }
 
 /**
- * Send a screenshot to the judge model (default gpt-5.4-nano) and judge whether
+ * Send a screenshot to the judge model (default gpt-6-luna) and judge whether
  * it satisfies the assertion.
  *
  * Stability comes from three things:
@@ -68,17 +69,25 @@ export async function visualAssert(
 ): Promise<Judgment> {
     const cropped = opts.region ? cropPng(screenshot, opts.region) : screenshot
     const base64 = cropped.toString("base64")
+    // OPENAI_JUDGE_DUMP=<dir>: keep every image exactly as the judge saw it,
+    // so a surprising verdict can be checked against the pixels it was given.
+    if (process.env.OPENAI_JUDGE_DUMP) {
+        const dir = process.env.OPENAI_JUDGE_DUMP
+        mkdirSync(dir, { recursive: true })
+        const name = assertion.slice(0, 40).replace(/[^a-z0-9]+/gi, "-").toLowerCase()
+        writeFileSync(path.join(dir, `${Date.now()}-${name}.png`), cropped)
+    }
 
-    // gpt-5.4-nano is the cheap default ($0.20→$1.25 /1M); these e2e checks are
-    // coarse atomic facts (card present, three rows, typed text), so nano's
-    // vision is plenty. Override with OPENAI_JUDGE_MODEL.
+    // gpt-6-luna is the default ($0.10→$0.50 /1M, the cheapest current-gen
+    // vision model). Override with OPENAI_JUDGE_MODEL.
     //
-    // GPT-5.x / o-series are *reasoning* models: on chat/completions they reject
-    // `max_tokens` (need `max_completion_tokens`), burn hidden reasoning tokens
-    // out of that budget, and don't take a custom `temperature`. Legacy gpt-4o*
-    // use the old shape. Branch so either family works.
-    const model = process.env.OPENAI_JUDGE_MODEL ?? "gpt-5.4-nano"
-    const isReasoning = model.startsWith("gpt-5") || model.startsWith("o")
+    // GPT-5.x / GPT-6.x / o-series are *reasoning* models: on chat/completions
+    // they reject `max_tokens` (need `max_completion_tokens`), burn hidden
+    // reasoning tokens out of that budget, and don't take a custom
+    // `temperature`. Legacy gpt-4o* use the old shape. Branch so either family
+    // works.
+    const model = process.env.OPENAI_JUDGE_MODEL ?? "gpt-6-luna"
+    const isReasoning = /^(gpt-[5-9]|o)/.test(model)
     // Reasoning models run at temperature=1 (they REJECT temperature:0), so
     // their verdict has some sampling jitter; effort is the only stability /
     // quality lever. Default "low"; raise via OPENAI_JUDGE_EFFORT.
@@ -131,9 +140,17 @@ Respond ONLY with valid JSON: {"pass": true/false, "comment": "brief explanation
 // Reusable atomic prompts. Pair each with the region indicated.
 // ────────────────────────────────────────────────────────────────────
 
+// Prompts describe what the product actually looks like, in measurable
+// terms. A current-gen judge takes every word literally: "occupying a
+// substantial portion of the window" false-failed a correct 480×130 card in an
+// 800×600 window (13% of its area), and "rows separated by divider lines"
+// was read as one line per row, so three rows with two lines between them
+// failed. Older, more lenient judges let those claims through, which is how
+// they survived.
+
 /** Full screen — no region. */
 export const PROMPT_CARD_PRESENT =
-    "A single large rounded rectangular card with a dark translucent fill is clearly visible in the screenshot, occupying a substantial portion of the window area (much larger than a small icon or pill)."
+    "A dark rounded rectangular card with text rows inside it is visible, horizontally centred in the upper half of the screenshot. It spans roughly half the screenshot's width (it is a panel with several lines of text, not a small icon or pill)."
 
 /** Full screen — no region. */
 export const PROMPT_CARD_ABSENT =
@@ -149,7 +166,7 @@ export const PROMPT_PILL_PRESENT =
 
 /** Use with `region: CARD_REGION`. */
 export const PROMPT_THREE_ROWS =
-    "Inside the dark card there are exactly three horizontal rows stacked vertically, separated by thin horizontal divider lines. Each row is a single strip of one text-line in height (not two)."
+    "The dark card contains exactly three horizontal rows of text stacked vertically, one line of text per row, with a thin horizontal line between neighbouring rows. (Count the rows of text, not the lines between them.)"
 
 /** Use with `region: CARD_REGION`. Substitute the typed text into the prompt. */
 export function promptTypedText(text: string): string {

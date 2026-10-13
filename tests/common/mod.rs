@@ -65,31 +65,35 @@ pub fn vision_verdict(png: &[u8], prompt: &str) -> Option<(bool, String)> {
         }
     };
 
-    // ── Judge model menu (OpenAI API, current as of 2026-05) ─────────────
+    // ── Judge model menu (OpenAI API, current as of 2026-10) ─────────────
     // Per-call cost is a fraction of a cent on ANY of these (one small
     // screenshot + tiny JSON, run rarely), so pick for vision quality, not
     // price. The bug that set this floor was a ~20px text inset on a
     // transparent card over a busy desktop — fine enough that gpt-4o-mini's
     // vision CAN'T resolve it and false-fails a CORRECT render at full/half/low
     // res alike (a capability ceiling, not a cost knob — observed). gpt-4o
-    // cleared it; gpt-5.4-mini is the newer-gen default.
+    // cleared it; so did gpt-5.4-mini and gpt-6-luna.
     //
     //   OPENAI_JUDGE_MODEL    in→out $/1M     notes
-    //   gpt-5.5               $5.00 → $30.00   flagship, max reliability
-    //   gpt-5.4               $2.50 → $15.00   strong, cheaper flagship
-    //   gpt-5.4-mini  (def)   $0.75 →  $4.50   best quality/cost
-    //   gpt-5.4-nano          $0.20 →  $1.25   cheapest 5.x; coarse checks only
+    //   gpt-6-sol             $2.00 → $10.00   current-gen flagship tier
+    //   gpt-6-luna    (def)   $0.10 →  $0.50   current-gen small; cleared the floor
+    //   gpt-5.4-mini          $0.75 →  $4.50   previous default
+    //   gpt-5.4-nano          $0.20 →  $1.25   coarse checks only
     //   gpt-4o                $2.50 → $10.00   legacy, cleared that bug
     //   gpt-4o-mini           legacy           too weak — false-fails (see above)
-    let model = std::env::var("OPENAI_JUDGE_MODEL").unwrap_or_else(|_| "gpt-5.4-mini".to_string());
+    let model = std::env::var("OPENAI_JUDGE_MODEL").unwrap_or_else(|_| "gpt-6-luna".to_string());
 
-    // GPT-5.x / o-series are *reasoning* models: on /v1/chat/completions they
-    // REJECT `max_tokens` (require `max_completion_tokens`), spend hidden
-    // reasoning tokens out of that budget before the JSON, and don't take a
-    // custom `temperature`. Legacy gpt-4o* use the old `max_tokens` +
-    // `temperature` shape. Branch on the family so OPENAI_JUDGE_MODEL "just
-    // works" either way.
-    let is_reasoning = model.starts_with("gpt-5") || model.starts_with('o');
+    // GPT-5.x / GPT-6.x / o-series are *reasoning* models: on
+    // /v1/chat/completions they REJECT `max_tokens` (require
+    // `max_completion_tokens`), spend hidden reasoning tokens out of that
+    // budget before the JSON, and don't take a custom `temperature`. Legacy
+    // gpt-4o* use the old `max_tokens` + `temperature` shape. Branch on the
+    // family so OPENAI_JUDGE_MODEL "just works" either way.
+    let is_reasoning = model
+        .strip_prefix("gpt-")
+        .and_then(|rest| rest.chars().next())
+        .is_some_and(|major| major >= '5')
+        || model.starts_with('o');
     let effort = std::env::var("OPENAI_JUDGE_EFFORT").unwrap_or_else(|_| "low".to_string());
     // OPENAI_JUDGE_DETAIL "low" (default) sends one flat ~512px / ~85-token
     // tile — judged correctly and ~13x cheaper than "high".
