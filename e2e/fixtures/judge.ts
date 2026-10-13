@@ -34,6 +34,10 @@ export interface Region {
 // `detail: "low"` for cheap, rate-limit-safe API calls.
 export const CARD_REGION: Region = { x: 130, y: 130, w: 540, h: 180 }
 export const BOTTOM_RIGHT_REGION: Region = { x: 600, y: 460, w: 200, h: 140 }
+/** The card plus the error line it grows to show on a failed submit. */
+export const CARD_ERROR_REGION: Region = { x: 130, y: 130, w: 540, h: 230 }
+/** The settings page's form: title, three rows, buttons. */
+export const SETTINGS_REGION: Region = { x: 0, y: 0, w: 800, h: 320 }
 
 function cropPng(buf: Buffer, r: Region): Buffer {
     const src = PNG.sync.read(buf)
@@ -138,15 +142,19 @@ Respond ONLY with valid JSON: {"pass": true/false, "comment": "brief explanation
 
 // ────────────────────────────────────────────────────────────────────
 // Reusable atomic prompts. Pair each with the region indicated.
+//
+// Every prompt states what the product measurably looks like, in words that
+// are literally true of the pixels. A current-gen judge takes every word at
+// face value: "occupying a substantial portion of the window" false-failed a
+// correct 480×130 card in an 800×600 window (13% of its area), and "rows
+// separated by divider lines" was read as one line per row, so three rows
+// with two lines between them failed. Older, more lenient judges let those
+// claims through, which is how they survived.
+//
+// Each prompt was calibrated on the real render and on a deliberately broken
+// copy of it (text painted over, corners squared, a word replaced), five
+// verdicts per image, before it was trusted — see the commit that added it.
 // ────────────────────────────────────────────────────────────────────
-
-// Prompts describe what the product actually looks like, in measurable
-// terms. A current-gen judge takes every word literally: "occupying a
-// substantial portion of the window" false-failed a correct 480×130 card in an
-// 800×600 window (13% of its area), and "rows separated by divider lines"
-// was read as one line per row, so three rows with two lines between them
-// failed. Older, more lenient judges let those claims through, which is how
-// they survived.
 
 /** Full screen — no region. */
 export const PROMPT_CARD_PRESENT =
@@ -156,19 +164,44 @@ export const PROMPT_CARD_PRESENT =
 export const PROMPT_CARD_ABSENT =
     "The screenshot shows only the wallpaper / background and at most a small pill or icon in a corner. There is NO large rectangular card or panel anywhere in the screenshot."
 
-/** Full screen — no region. */
-export const PROMPT_CARD_FROSTED =
-    "The card has visibly rounded corners and a soft shadow around it. The card's fill is dark but translucent — wallpaper colour bleeds through slightly, like frosted glass — rather than a flat opaque block."
+/** Use with `region: CARD_REGION`. Spec §3: the placeholder copy. */
+export const PROMPT_PLACEHOLDERS =
+    "The dark card has three rows of text. Read top to bottom they are: 'Что я делаю?' in grey, 'Хуйня?' in grey, and '10' in white. (The first row may show a thin text cursor before its text.)"
+
+/** Use with `region: CARD_REGION`. Spec §3: the placeholder yields to input. */
+export function promptTypedText(text: string): string {
+    // One fact only. Adding "and the placeholder is gone" made the judge
+    // object to the *other* rows' placeholders, 1 run in 5 — and egui cannot
+    // draw a hint over a non-empty field anyway.
+    return `The top row of the dark card shows the text '${text}'.`
+}
+
+/** Use with `region: CARD_ERROR_REGION`. Spec §4: a failed submit stays put and shows an error. */
+export const PROMPT_SUBMIT_ERROR =
+    "The dark card is visible with its three text rows, and below the third row, still inside the card, there is one line of small red text that begins with the word 'Interval'."
+
+/** Use with `region: CARD_REGION`. Spec §2: a noticeable, soft corner radius. */
+export const PROMPT_ROUNDED_CORNERS =
+    "The dark card is a rounded rectangle: all four of its corners are visibly rounded, none of them is a sharp 90-degree corner."
 
 /** Use with `region: BOTTOM_RIGHT_REGION`. */
 export const PROMPT_PILL_PRESENT =
     "A small pill-shaped element (a rounded rectangle clearly smaller than a third of the window width) is visible in the bottom-right corner of the screenshot."
 
-/** Use with `region: CARD_REGION`. */
-export const PROMPT_THREE_ROWS =
-    "The dark card contains exactly three horizontal rows of text stacked vertically, one line of text per row, with a thin horizontal line between neighbouring rows. (Count the rows of text, not the lines between them.)"
+/** Use with `region: SETTINGS_REGION`. Spec §9: the hotkey row, in this platform's spelling. */
+export const PROMPT_SETTINGS_HOTKEY_ROW =
+    "There is a text field labelled 'Global hotkey:' and the field contains the text 'Ctrl+Shift+Space'. Directly under that field is a line of smaller, dimmer text that begins with the word 'Modifiers'."
 
-/** Use with `region: CARD_REGION`. Substitute the typed text into the prompt. */
-export function promptTypedText(text: string): string {
-    return `The text '${text}' is visible somewhere in the image, written in a text input field.`
-}
+/** Use with `region: SETTINGS_REGION`. Spec §9: the fields and their labels. */
+export const PROMPT_SETTINGS_FIELDS =
+    "There is a text field labelled 'Default interval (min):' containing '10', and below it a checkbox whose label reads 'Launch with Windows'."
+
+/**
+ * Use with `region: SETTINGS_REGION`. Every glyph in the vocabulary line
+ * renders. Asked as the specific fact rather than as "no empty boxes": a
+ * general no-tofu prompt let a line with four tofu boxes through 1 run in 5,
+ * because the `[ ]` symbol caps at the end look like boxes too and the judge
+ * reasoned its way past the real ones.
+ */
+export const PROMPT_SETTINGS_ARROWS_ARE_WORDS =
+    "In the line of small dim text under the hotkey field, between the words 'Backspace,' and 'Home,' the line reads 'Left, Right, Up, Down' — four words, not arrow symbols and not empty boxes."

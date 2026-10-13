@@ -10,7 +10,13 @@ const NUDGE_URL = "http://localhost:8080"
 
 async function launchNudge(): Promise<NudgeContext> {
     const browser = await puppeteer.launch({
-        headless: false,
+        // Headless on purpose. The popup hides itself the moment
+        // `document.hasFocus()` is false (spec §4, Switch), and a headful
+        // Chrome launched while a person is using the machine comes up behind
+        // whatever they have in front — every test that expects the card then
+        // finds the pill instead. Headless Chrome owns its focus, and renders
+        // the egui canvas on the same GPU path (ANGLE/Metal on a Mac).
+        headless: true,
         args: [
             "--ignore-gpu-blocklist",
             "--no-sandbox",

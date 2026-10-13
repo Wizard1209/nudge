@@ -21,7 +21,9 @@ const SETTINGS_URL = "http://localhost:8080/settings.html"
 
 async function launchSettings(): Promise<SettingsContext> {
     const browser = await puppeteer.launch({
-        headless: false,
+        // Headless, as in nudge.ts: the page must own its focus even while a
+        // person is using the machine.
+        headless: true,
         args: [
             "--ignore-gpu-blocklist",
             "--no-sandbox",
