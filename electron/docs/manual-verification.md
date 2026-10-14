@@ -70,10 +70,16 @@ headless CI/WSL environment. Verify them by hand on a Windows build
 
 ## Focus-loss Switch refinement (§4)
 
-- [ ] Trigger the popup over a **fullscreen** app that keeps the foreground:
-      the popup does **not** instantly Switch-away from a stray blur it never
-      had focus for.
-- [ ] Normal case (popup gets focus) still Switches on blur as before.
+On macOS the case where another app holds activation as the popup appears is
+automated (`tests/native/macosPanel.test.js`): the popup still takes the
+keyboard and a raw `Esc` closes it. What remains manual:
+
+- [ ] Windows: trigger the popup over a **fullscreen** app that keeps the
+      foreground: the popup does **not** instantly Switch-away from a stray
+      blur it never had focus for.
+- [ ] Normal case (popup gets focus) still Switches on blur — on both
+      platforms. Under Playwright the page is pinned as focused, so the
+      renderer never sees the `blur` and the native tier cannot show this.
 - [ ] **Known limitation / to confirm:** a focus→immediate-blur *bounce* right
       after show isn't specifically suppressed (the renderer treats any real
       focus as "got focus"). Watch for the popup vanishing instantly in this

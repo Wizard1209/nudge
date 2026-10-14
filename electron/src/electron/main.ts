@@ -167,7 +167,35 @@ function showNudge(source: TriggerSource) {
   // Spec §4: Switch-on-blur must only fire if the popup actually took focus
   // when it opened — over a fullscreen app the OS may keep us in the
   // background. Tell the renderer whether we got focus; it gates blur on this.
-  win.webContents.send("nudge:show", { gotFocus: win.isFocused() });
+  // Key status arrives asynchronously after focus(), so wait for it; if it
+  // does not come, ask once more with the app's activation behind it.
+  const shown = win;
+  void (async () => {
+    let gotFocus = await becameFocused(shown);
+    if (!gotFocus && !shown.isDestroyed()) {
+      app.focus({ steal: true });
+      shown.focus();
+      gotFocus = await becameFocused(shown);
+    }
+    if (!shown.isDestroyed()) shown.webContents.send("nudge:show", { gotFocus });
+  })();
+}
+
+const FOCUS_WAIT_MS = 300;
+
+function becameFocused(w: BrowserWindow): Promise<boolean> {
+  if (w.isDestroyed()) return Promise.resolve(false);
+  if (w.isFocused()) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const done = (v: boolean) => {
+      clearTimeout(timer);
+      w.removeListener("focus", onFocus);
+      resolve(v);
+    };
+    const onFocus = () => done(true);
+    const timer = setTimeout(() => done(!w.isDestroyed() && w.isFocused()), FOCUS_WAIT_MS);
+    w.on("focus", onFocus);
+  });
 }
 
 // Spec §1: horizontally centered, top edge at 25% of screen height — card
@@ -282,10 +310,7 @@ function openSettings() {
 }
 
 function updateTray() {
-  // The 50ms refresh loop keeps firing during shutdown, after Electron has
-  // destroyed the Tray — touching a destroyed Tray throws "Object has been
-  // destroyed" and surfaces as a crash on quit. Bail if it's gone.
-  if (!tray || tray.isDestroyed()) return;
+  if (!tray) return;
   // Spec §5: "While the popup is open the icon stays in whatever state it
   // was at the moment of opening" — freeze the icon while the popup is up; it
   // resumes when the popup closes (startTimer triggers a fresh updateTray).
@@ -297,9 +322,17 @@ function updateTray() {
 
 // Refresh at 50ms (~20fps) so the petal-fade animation is smooth. The
 // daisy is a tiny 64×64 PNG — encoding cost per frame is negligible, and
-// the loop bails out instantly while the popup is open. Cleared on will-quit
-// so it can't fire against a destroyed tray during shutdown.
+// the loop bails out instantly while the popup is open.
 const trayRefreshId = setInterval(updateTray, 50);
+
+// The only way the tray goes away. Stopping the refresh first matters: a
+// Tray being torn down can still answer isDestroyed() false while its
+// setImage() already throws, so a tick that lands mid-destroy would crash.
+function destroyTray() {
+  clearInterval(trayRefreshId);
+  tray?.destroy();
+  tray = null;
+}
 
 // --- Window ---
 
@@ -315,7 +348,12 @@ function createWindow() {
   // transparent window. Acrylic is a no-op off-Windows, so this changes nothing
   // there.
   const isWindows = process.platform === "win32";
+  const isMac = process.platform === "darwin";
   win = new BrowserWindow({
+    // macOS: a non-activating panel — it takes the keyboard without
+    // activating the app, so another app grabbing activation cannot leave the
+    // card visible but deaf (spec §1).
+    type: isMac ? "panel" : undefined,
     width: 480,
     height: 170,
     useContentSize: true,
@@ -336,6 +374,12 @@ function createWindow() {
       nodeIntegration: false,
     },
   });
+  if (isMac) {
+    win.setVisibleOnAllWorkspaces(true, {
+      visibleOnFullScreen: true,
+      skipTransformProcessType: true,
+    });
+  }
 
   if (isDev) {
     win.loadURL("http://localhost:5173");
@@ -443,6 +487,11 @@ ipcMain.on("settings:close", () => settingsWin?.close());
 // --- App lifecycle ---
 
 app.whenReady().then(() => {
+  // macOS: a menu-bar agent — no Dock icon, no Cmd-Tab entry (spec §1).
+  if (process.platform === "darwin") {
+    app.setActivationPolicy("accessory");
+    app.dock?.hide();
+  }
   // Load persisted config first so the timer interval and global hotkey
   // reflect the user's settings from the very first launch.
   const { config, error } = loadConfig(getConfigPath());
@@ -462,7 +511,7 @@ app.whenReady().then(() => {
 });
 
 app.on("will-quit", () => {
-  clearInterval(trayRefreshId);
+  destroyTray();
   globalShortcut.unregisterAll();
   configWatcher?.close();
 });
@@ -474,13 +523,11 @@ app.on("will-quit", () => {
 if (process.env.NUDGE_E2E) {
   (globalThis as Record<string, unknown>).__nudgeTest = {
     openSettings: () => openSettings(),
-    // Reproduce the quit-time crash deterministically: hide the popup (so the
-    // updateTray loop doesn't early-out), destroy the tray, then tick the
-    // refresh loop once. With the guard in updateTray this is a no-op; without
-    // it, `tray.setImage` on a destroyed Tray throws "Object has been destroyed".
+    // Hide the popup (so the refresh does not early-out), take the tray down
+    // the way quit does, then tick the refresh once: it must be a no-op.
     tickTrayAfterDestroy: () => {
       win?.hide();
-      tray?.destroy();
+      destroyTray();
       updateTray();
     },
     getState: () => ({
