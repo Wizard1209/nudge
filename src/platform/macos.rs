@@ -63,7 +63,7 @@ use objc2::rc::Retained;
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameVibrantDark, NSApplication, NSView,
     NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
-    NSWindowOrderingMode,
+    NSWindowCollectionBehavior, NSWindowOrderingMode,
 };
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -825,6 +825,23 @@ thread_local! {
         const { RefCell::new(None) };
 }
 
+/// How the popup window behaves toward Spaces, Mission Control and the
+/// desktop. A window above the normal level is implicitly `Transient` unless
+/// told otherwise, and transient windows are what "click wallpaper to reveal
+/// desktop" sweeps off the screen.
+///
+/// * `CanJoinAllSpaces` — the popup appears on whichever Space is current,
+///   rather than switching the user back to the one it was created on.
+/// * `FullScreenAuxiliary` — it may appear over another app's full-screen
+///   window.
+/// * `Stationary` — reveal-desktop and Mission Control leave it in place.
+/// * `IgnoresCycle` — never a target of the ⌘` window cycle.
+const POPUP_COLLECTION_BEHAVIOR: NSWindowCollectionBehavior =
+    NSWindowCollectionBehavior::CanJoinAllSpaces
+        .union(NSWindowCollectionBehavior::FullScreenAuxiliary)
+        .union(NSWindowCollectionBehavior::Stationary)
+        .union(NSWindowCollectionBehavior::IgnoresCycle);
+
 /// Put a real blur under the card, and keep it there.
 ///
 /// Spec §2 asks for frosted glass: what is behind the window shows through
@@ -870,6 +887,9 @@ pub fn sync_card_backdrop(ctx: &egui::Context, frame: &eframe::Frame, card: egui
     // and AppKit outlines *it*, laying a hard rim beside the contour.
     if let Some(window) = content.window() {
         window.setHasShadow(true);
+        if unsafe { window.collectionBehavior() } != POPUP_COLLECTION_BEHAVIOR {
+            unsafe { window.setCollectionBehavior(POPUP_COLLECTION_BEHAVIOR) };
+        }
     }
 
     // egui points → AppKit points. Only the zoom factor separates them:

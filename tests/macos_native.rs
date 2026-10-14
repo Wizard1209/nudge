@@ -71,10 +71,11 @@ use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
 use core_foundation::number::CFNumber;
 use core_foundation::string::CFString;
 use core_graphics::display::{CGDisplay, kCGWindowListOptionAll};
-use core_graphics::event::CGKeyCode;
+use core_graphics::event::{CGEventFlags, CGKeyCode};
 use core_graphics::geometry::CGRect as CGWindowRect;
 use core_graphics::window::{
-    kCGWindowBounds, kCGWindowIsOnscreen, kCGWindowLayer, kCGWindowNumber, kCGWindowOwnerPID,
+    kCGWindowBounds, kCGWindowIsOnscreen, kCGWindowLayer, kCGWindowName, kCGWindowNumber,
+    kCGWindowOwnerPID,
 };
 
 /// Wall-clock allowance for eframe to create and present its first frame.
@@ -1550,5 +1551,582 @@ fn press_return() {
             .expect("CGEventCreateKeyboardEvent failed");
         event.post(CGEventTapLocation::HID);
         std::thread::sleep(Duration::from_millis(60));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Revealing the popup after the desktop has had its way with it
+// ---------------------------------------------------------------------------
+
+/// A wallpaper click must not leave the popup somewhere the next reveal cannot
+/// be seen.
+///
+/// "Click wallpaper to reveal desktop" (the macOS 14+ default) sweeps every
+/// window AppKit considers transient off the screen, and a window at any level
+/// above normal is transient unless it says otherwise. The popup hides on the
+/// focus loss the same click causes (spec §4), so the sweep shows only when
+/// the next reveal orders the window back in while the desktop is still
+/// revealed: it comes in above the screen. The displacement is the window
+/// server's, not the window's — AppKit's frame still reads the spec place —
+/// so re-placing the window does not undo it.
+///
+/// Whether the click really entered reveal mode is checked on a window of
+/// another app, not on the popup: the popup's own movement is the thing under
+/// test, and its hiding happens on any focus loss, reveal or not.
+#[test]
+#[ignore = "needs a GUI session + PostEvent grant; run in the guest via scripts/native-tests-macos.sh"]
+fn popup_survives_a_wallpaper_click_and_reappears_on_screen() {
+    let display = main_display_frame();
+    let probe = foreign_probe_window(&display).expect(
+        "no on-screen window of another app to watch — the reveal-desktop sweep \
+         cannot be observed without one (the guest normally has Terminal/Finder up)",
+    );
+    eprintln!("probe window {} at {:?}", probe.0, probe.1);
+
+    let app = SandboxedApp::launch();
+    assert!(
+        popup_visible(app.pid()),
+        "launch popup never appeared — harness problem, not a placement problem"
+    );
+    let before = window_rect(app.pid()).expect("no nudge window").rect;
+
+    let wallpaper = (display.x + 4.0, display.y + display.h / 2.0);
+    let covering = windows_at(wallpaper);
+    assert!(
+        covering.is_empty(),
+        "the wallpaper point {wallpaper:?} is covered by {covering:?} — the click \
+         would land on a window, not on the desktop"
+    );
+    let _restore = RevealDesktopGuard {
+        probe_id: probe.0,
+        home: probe.1,
+        wallpaper,
+    };
+    click_at(wallpaper);
+
+    // Sampled densely rather than read once, to catch the popup moving in the
+    // moment before it hides on the focus loss the click also causes.
+    let mut entered_reveal = false;
+    let mut popup_frames: Vec<(Rect, bool)> = Vec::new();
+    let sample_until = std::time::Instant::now() + Duration::from_secs(2);
+    while std::time::Instant::now() < sample_until {
+        entered_reveal |= window_rect_by_id(probe.0).is_some_and(|r| r != probe.1);
+        if let Some(w) = window_rect(app.pid())
+            && popup_frames.last() != Some(&(w.rect, w.on_screen))
+        {
+            popup_frames.push((w.rect, w.on_screen));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        entered_reveal,
+        "guest is not in reveal-desktop mode: a wallpaper click left {:?} where it was. \
+         Without the sweep this test proves nothing.",
+        probe.1
+    );
+    eprintln!(
+        "popup before={before:?}; (frame, on screen) after the wallpaper click: {popup_frames:?}"
+    );
+    // By centre, with a few points of slack: AppKit's order-out animation
+    // scales the window by a few points about its centre, which is not a move.
+    let swept = popup_frames.iter().any(|(r, _)| displaced(r, &before));
+
+    press_chord(
+        VK_SPACE,
+        CGEventFlags::CGEventFlagControl | CGEventFlags::CGEventFlagShift,
+    );
+    let shown = wait_until(Duration::from_secs(2), || popup_visible(app.pid()));
+    // A few frames' grace, so a placement the app corrects on its next tick
+    // counts as placed.
+    std::thread::sleep(Duration::from_millis(500));
+    let reshown = window_rect(app.pid()).expect("nudge window vanished").rect;
+    assert!(
+        window_rect_by_id(probe.0).is_some_and(|r| r != probe.1),
+        "reveal mode ended before the popup came back, so the re-show below does \
+         not exercise it"
+    );
+    eprintln!(
+        "after ⌃⇧Space: visible={shown} rect={reshown:?}; probe window at {:?} (home {:?})",
+        window_rect_by_id(probe.0),
+        probe.1
+    );
+    assert!(shown, "⌃⇧Space did not bring the popup back at all");
+    assert!(
+        reshown.intersects(&display),
+        "the popup came back off-screen at {reshown:?}, where the wallpaper click \
+         swept it to — visible to the window server, invisible to the user"
+    );
+    use nudge_web::nudge_state::{POPUP_SIZE, window_position};
+    assert_eq!(
+        (reshown.x as i32, reshown.y as i32),
+        window_position((display.w as u32, display.h as u32), POPUP_SIZE),
+        "the popup came back on screen but not at its spec §1 place"
+    );
+
+    // Reveal mode is still on (asserted above), so a sweep applied late would
+    // show up here.
+    let mut drift = Vec::new();
+    let settle_until = std::time::Instant::now() + Duration::from_secs(1);
+    while std::time::Instant::now() < settle_until {
+        if let Some(w) = window_rect(app.pid())
+            && displaced(&w.rect, &reshown)
+        {
+            drift.push(w.rect);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        drift.is_empty(),
+        "the re-shown popup did not stay at its place: {drift:?}"
+    );
+
+    assert!(
+        !swept,
+        "the wallpaper click moved the popup ({popup_frames:?}) — it is still being \
+         swept as a transient window"
+    );
+}
+
+/// The faithful launch path for a login item, under the activation contention
+/// a user produces by switching apps while it starts.
+///
+/// Launched by launchd rather than spawned: a launchd job has no parent the
+/// window server can attribute the launch to, and that is the case in which
+/// the popup has been seen to come up centred and never become key — focus
+/// loss cannot close it (it never armed) and Esc goes to whichever app is
+/// in front.
+#[test]
+#[ignore = "needs a GUI session + PostEvent grant; run in the guest via scripts/native-tests-macos.sh"]
+fn launchd_start_under_activation_contention_still_yields_a_key_popup() {
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop_sampler = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let job = LaunchdApp::bootstrap();
+
+    let switcher = {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            let mut presses = 0u32;
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                quick_cmd_tab();
+                presses += 1;
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            presses
+        })
+    };
+    // Who is frontmost, sampled for the whole run — the assertion below only
+    // sees the end state, and this says whether nudge was ever given the
+    // keyboard on the way there.
+    let fronts = {
+        let stop = stop_sampler.clone();
+        std::thread::spawn(move || {
+            let t0 = std::time::Instant::now();
+            let mut seen: Vec<(u128, Option<u32>)> = Vec::new();
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                let f = frontmost_pid();
+                if seen.last().map(|s| s.1) != Some(f) {
+                    seen.push((t0.elapsed().as_millis(), f));
+                }
+            }
+            seen
+        })
+    };
+    // Released however the test ends: a Command held down by a panicking
+    // test would be inherited by every test after it.
+    let _cmd_up = ReleaseModifiers;
+
+    let pid = job.wait_for_pid(Duration::from_secs(10));
+    let appeared = wait_until(Duration::from_secs(10), || popup_visible(pid));
+    std::thread::sleep(Duration::from_millis(300));
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let presses = switcher.join().expect("switcher thread");
+    assert!(
+        appeared,
+        "the launchd-started popup never appeared; stderr:\n{}",
+        job.stderr()
+    );
+    eprintln!("Cmd-Tab presses during launch: {presses}");
+
+    std::thread::sleep(Duration::from_secs(1));
+    stop_sampler.store(true, std::sync::atomic::Ordering::SeqCst);
+    let fronts = fronts.join().expect("frontmost sampler");
+    eprintln!("frontmost over time (ms since bootstrap, pid): {fronts:?}");
+    let visible = popup_visible(pid);
+    let front = frontmost_pid();
+    eprintln!("1s after contention: visible={visible} frontmost={front:?} nudge={pid}");
+    assert!(
+        !visible || front == Some(pid),
+        "the popup is on screen but its app is not frontmost (frontmost pid {front:?}, \
+         nudge {pid}): it never became key, so focus loss cannot close it and Esc \
+         goes to another app"
+    );
+
+    press_escape();
+    assert!(
+        wait_until(Duration::from_secs(1), || !popup_visible(pid)),
+        "a raw Esc did not dismiss the popup — the keyboard is not reaching it"
+    );
+}
+
+/// Whether `a` sits somewhere else than `b`, judged by centre: the order-in
+/// and order-out animations scale a window by a few points about its centre.
+fn displaced(a: &Rect, b: &Rect) -> bool {
+    let centre = |r: &Rect| (r.x + r.w / 2.0, r.y + r.h / 2.0);
+    let ((ax, ay), (bx, by)) = (centre(a), centre(b));
+    (ax - bx).abs() > 4.0 || (ay - by).abs() > 4.0
+}
+
+/// The first on-screen, ordinary-level window of any other app that is at
+/// least partly on the display: what the reveal-desktop sweep visibly moves.
+fn foreign_probe_window(display: &Rect) -> Option<(u32, Rect)> {
+    let own = std::process::id() as i64;
+    list_windows()
+        .into_iter()
+        .find(|w| w.layer == 0 && w.on_screen && w.owner != own && w.named && w.rect.w > 100.0)
+        .filter(|w| w.rect.intersects(display))
+        .map(|w| (w.id, w.rect))
+}
+
+/// The on-screen windows at ordinary-to-floating levels that contain `p`.
+/// The Dock's full-display layer and the desktop's own windows are left out:
+/// a click there reaches the wallpaper.
+fn windows_at(p: (f64, f64)) -> Vec<(u32, i64, Rect)> {
+    list_windows()
+        .into_iter()
+        .filter(|w| w.on_screen && (0..20).contains(&w.layer))
+        .filter(|w| {
+            p.0 >= w.rect.x
+                && p.0 < w.rect.x + w.rect.w
+                && p.1 >= w.rect.y
+                && p.1 < w.rect.y + w.rect.h
+        })
+        .map(|w| (w.id, w.layer, w.rect))
+        .collect()
+}
+
+fn window_rect_by_id(id: u32) -> Option<Rect> {
+    list_windows()
+        .into_iter()
+        .find(|w| w.id == id)
+        .map(|w| w.rect)
+}
+
+struct ListedWindow {
+    id: u32,
+    owner: i64,
+    layer: i64,
+    rect: Rect,
+    on_screen: bool,
+    named: bool,
+}
+
+fn list_windows() -> Vec<ListedWindow> {
+    let Some(windows) = CGDisplay::window_list_info(kCGWindowListOptionAll, None) else {
+        return Vec::new();
+    };
+    let key = |k| unsafe { CFString::wrap_under_get_rule(k) };
+    let num = |d: &CFDictionary<CFString, CFType>, k| {
+        d.find(key(k))
+            .and_then(|v| v.downcast::<CFNumber>())
+            .and_then(|n| n.to_i64())
+    };
+    let mut out = Vec::new();
+    for i in 0..windows.len() {
+        let Some(entry) = windows.get(i) else {
+            continue;
+        };
+        let d: CFDictionary<CFString, CFType> =
+            unsafe { TCFType::wrap_under_get_rule(*entry as CFDictionaryRef) };
+        let Some(b) = d
+            .find(key(unsafe { kCGWindowBounds }))
+            .and_then(|v| v.downcast::<CFDictionary>())
+            .and_then(|b| CGWindowRect::from_dict_representation(&b))
+        else {
+            continue;
+        };
+        out.push(ListedWindow {
+            id: num(&d, unsafe { kCGWindowNumber }).unwrap_or(0) as u32,
+            owner: num(&d, unsafe { kCGWindowOwnerPID }).unwrap_or(-1),
+            layer: num(&d, unsafe { kCGWindowLayer }).unwrap_or(0),
+            rect: Rect {
+                x: b.origin.x,
+                y: b.origin.y,
+                w: b.size.width,
+                h: b.size.height,
+            },
+            on_screen: d
+                .find(key(unsafe { kCGWindowIsOnscreen }))
+                .and_then(|v| v.downcast::<CFBoolean>())
+                .map(bool::from)
+                .unwrap_or(false),
+            named: d
+                .find(key(unsafe { kCGWindowName }))
+                .and_then(|v| v.downcast::<CFString>())
+                .is_some_and(|s| !s.to_string().is_empty()),
+        });
+    }
+    out
+}
+
+/// Leaves the desktop as the test found it: a second wallpaper click toggles
+/// reveal mode off, and it is only sent if the probe window is still away.
+struct RevealDesktopGuard {
+    probe_id: u32,
+    home: Rect,
+    wallpaper: (f64, f64),
+}
+
+impl Drop for RevealDesktopGuard {
+    fn drop(&mut self) {
+        let at_home = || window_rect_by_id(self.probe_id).is_none_or(|r| r == self.home);
+        if wait_until(Duration::from_millis(500), at_home) {
+            return;
+        }
+        click_at(self.wallpaper);
+        if !wait_until(Duration::from_secs(2), at_home) {
+            eprintln!(
+                "WARNING: the guest desktop is still in reveal mode — window {} did not return to {:?}",
+                self.probe_id, self.home
+            );
+        }
+    }
+}
+
+/// `nudge` started as a launchd job of the GUI domain, the way the login item
+/// starts it, under a label of its own and a throwaway HOME. Booted out and its
+/// plist removed when dropped, including on a panic.
+struct LaunchdApp {
+    label: String,
+    domain: String,
+    home: tempfile::TempDir,
+}
+
+impl LaunchdApp {
+    fn bootstrap() -> Self {
+        let home = tempfile::tempdir().expect("temp HOME");
+        std::fs::create_dir_all(home.path().join("Documents")).expect("Documents");
+        let config = home.path().join(CONFIG_SUBDIR).join("config.json");
+        let label = "com.wizard1209.nudge.test".to_string();
+        let domain = format!("gui/{}", unsafe { getuid() });
+        let plist = home.path().join(format!("{label}.plist"));
+        std::fs::write(
+            &plist,
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>{label}</string>
+  <key>ProgramArguments</key><array>
+    <string>{bin}</string><string>--config</string><string>{config}</string>
+  </array>
+  <key>EnvironmentVariables</key><dict><key>HOME</key><string>{home}</string></dict>
+  <key>StandardErrorPath</key><string>{home}/stderr.log</string>
+  <key>RunAtLoad</key><true/>
+</dict></plist>
+"#,
+                bin = binary_path().display(),
+                config = config.display(),
+                home = home.path().display(),
+            ),
+        )
+        .expect("write plist");
+        // A job left behind by an aborted run would make bootstrap fail.
+        let _ = Command::new("launchctl")
+            .args(["bootout", &format!("{domain}/{label}")])
+            .stderr(std::process::Stdio::null())
+            .status();
+        let app = Self {
+            label,
+            domain,
+            home,
+        };
+        let status = Command::new("launchctl")
+            .arg("bootstrap")
+            .arg(&app.domain)
+            .arg(&plist)
+            .status()
+            .expect("launchctl not runnable");
+        assert!(
+            status.success(),
+            "launchctl bootstrap {} failed",
+            plist.display()
+        );
+        app
+    }
+
+    fn wait_for_pid(&self, timeout: Duration) -> u32 {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let out = Command::new("launchctl")
+                .args(["print", &format!("{}/{}", self.domain, self.label)])
+                .output()
+                .expect("launchctl not runnable");
+            let text = String::from_utf8_lossy(&out.stdout);
+            if let Some(pid) = text
+                .lines()
+                .find_map(|l| l.trim().strip_prefix("pid = "))
+                .and_then(|p| p.trim().parse().ok())
+            {
+                return pid;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "launchd never reported a pid for {}; stderr:\n{}",
+                self.label,
+                self.stderr()
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn stderr(&self) -> String {
+        std::fs::read_to_string(self.home.path().join("stderr.log")).unwrap_or_default()
+    }
+}
+
+impl Drop for LaunchdApp {
+    fn drop(&mut self) {
+        let _ = Command::new("launchctl")
+            .args(["bootout", &format!("{}/{}", self.domain, self.label)])
+            .status();
+        // The plist lives in `home`, which goes with the TempDir.
+    }
+}
+
+unsafe extern "C" {
+    fn getuid() -> u32;
+}
+
+fn wait_until(timeout: Duration, mut done: impl FnMut() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if done() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The pid of the frontmost application, as Launch Services sees it.
+fn frontmost_pid() -> Option<u32> {
+    let asn = Command::new("lsappinfo").arg("front").output().ok()?;
+    let asn = String::from_utf8_lossy(&asn.stdout).trim().to_string();
+    let info = Command::new("lsappinfo")
+        .args(["info", "-only", "pid", &asn])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&info.stdout)
+        .trim()
+        .strip_prefix("\"pid\"=")?
+        .parse()
+        .ok()
+}
+
+/// A left click at a point in the top-left-origin space of `window_rect`,
+/// posted as real HID mouse events (a move first, so the cursor is there).
+fn click_at((x, y): (f64, f64)) {
+    use core_graphics::event::{CGEvent, CGEventTapLocation, CGEventType, CGMouseButton};
+    use core_graphics::geometry::CGPoint;
+
+    let p = CGPoint::new(x, y);
+    for (kind, pause) in [
+        (CGEventType::MouseMoved, 100),
+        (CGEventType::LeftMouseDown, 60),
+        (CGEventType::LeftMouseUp, 60),
+    ] {
+        CGEvent::new_mouse_event(event_source(), kind, p, CGMouseButton::Left)
+            .expect("CGEventCreateMouseEvent failed")
+            .post(CGEventTapLocation::HID);
+        std::thread::sleep(Duration::from_millis(pause));
+    }
+}
+
+const VK_SPACE: CGKeyCode = 0x31;
+const VK_TAB: CGKeyCode = 0x30;
+const VK_ESCAPE: CGKeyCode = 0x35;
+const VK_COMMAND: CGKeyCode = 0x37;
+const VK_SHIFT: CGKeyCode = 0x38;
+const VK_OPTION: CGKeyCode = 0x3A;
+const VK_CONTROL: CGKeyCode = 0x3B;
+
+/// Press and release one key with `modifiers` held, each modifier cap pressed
+/// and released as its own flags-changed edge around it. The window server
+/// keeps its own idea of what is held, and the flags on a key event never tell
+/// it a modifier went up — so a chord posted as one flagged key edge leaves
+/// the modifier stuck for every test after this one.
+fn press_chord(code: CGKeyCode, modifiers: CGEventFlags) {
+    use core_graphics::event::{CGEvent, CGEventTapLocation};
+
+    let caps: Vec<(CGEventFlags, CGKeyCode)> = [
+        (CGEventFlags::CGEventFlagCommand, VK_COMMAND),
+        (CGEventFlags::CGEventFlagShift, VK_SHIFT),
+        (CGEventFlags::CGEventFlagAlternate, VK_OPTION),
+        (CGEventFlags::CGEventFlagControl, VK_CONTROL),
+    ]
+    .into_iter()
+    .filter(|(flag, _)| modifiers.contains(*flag))
+    .collect();
+
+    let mut held = CGEventFlags::CGEventFlagNull;
+    for (flag, cap) in &caps {
+        held |= *flag;
+        post_flags_changed(*cap, held, 60);
+    }
+    for down in [true, false] {
+        let event = CGEvent::new_keyboard_event(event_source(), code, down)
+            .expect("CGEventCreateKeyboardEvent failed");
+        event.set_flags(modifiers);
+        event.post(CGEventTapLocation::HID);
+        std::thread::sleep(Duration::from_millis(60));
+    }
+    for (flag, cap) in caps.iter().rev() {
+        held.remove(*flag);
+        post_flags_changed(*cap, held, 60);
+    }
+}
+
+fn post_flags_changed(cap: CGKeyCode, held: CGEventFlags, pause_ms: u64) {
+    use core_graphics::event::{CGEvent, CGEventTapLocation, CGEventType};
+
+    let event = CGEvent::new_keyboard_event(event_source(), cap, true)
+        .expect("CGEventCreateKeyboardEvent failed");
+    event.set_flags(held);
+    event.set_type(CGEventType::FlagsChanged);
+    event.post(CGEventTapLocation::HID);
+    std::thread::sleep(Duration::from_millis(pause_ms));
+}
+
+/// A bare Esc, posted to whatever has the keyboard — unlike
+/// `dismiss_with_escape`, which makes nudge frontmost first and so cannot see
+/// a popup that never got the focus.
+fn press_escape() {
+    press_chord(VK_ESCAPE, CGEventFlags::CGEventFlagNull);
+}
+
+/// ⌘Tab as a quick tap: switches to the previous app without lingering long
+/// enough to raise the switcher panel.
+fn quick_cmd_tab() {
+    use core_graphics::event::{CGEvent, CGEventTapLocation};
+
+    post_flags_changed(VK_COMMAND, CGEventFlags::CGEventFlagCommand, 5);
+    for down in [true, false] {
+        let event = CGEvent::new_keyboard_event(event_source(), VK_TAB, down)
+            .expect("CGEventCreateKeyboardEvent failed");
+        event.set_flags(CGEventFlags::CGEventFlagCommand);
+        event.post(CGEventTapLocation::HID);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    post_flags_changed(VK_COMMAND, CGEventFlags::CGEventFlagNull, 5);
+}
+
+/// Posts "nothing held" on drop.
+struct ReleaseModifiers;
+
+impl Drop for ReleaseModifiers {
+    fn drop(&mut self) {
+        post_flags_changed(VK_COMMAND, CGEventFlags::CGEventFlagNull, 20);
     }
 }

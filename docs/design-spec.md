@@ -21,6 +21,10 @@ explicitly. Otherwise the spec applies to both.
 
 - No system title bar or frame.
 - Always on top of other windows while visible.
+- On macOS the popup appears on whichever Space is current, full-screen
+  ones included; Mission Control and the click-wallpaper-to-reveal-desktop
+  gesture leave it where it is. It takes the keyboard when shown even if
+  another application is activating at the same moment.
 - Not resizable.
 - Does not appear in the taskbar or in ALT+TAB.
 - Lives in the tray: closing the popup does not exit the app.

@@ -33,6 +33,11 @@ pub(crate) const CARD_RADIUS: u8 = 16;
 const FOCUS_FIELD_INSET: egui::Vec2 = egui::vec2(10.0, 5.0);
 const FOCUS_FIELD_RADIUS: u8 = 8;
 
+/// How long an open keeps re-asking for activation before it settles for not
+/// having the keyboard. See `NudgeApp::retry_focus_until_armed`.
+#[cfg(target_os = "macos")]
+const FOCUS_RETRY_WINDOW: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// Opacity of the card's fill. Two values, because the fill has two different
 /// jobs depending on whether the platform can put a frosted backdrop behind
 /// the window (spec §2).
@@ -121,6 +126,10 @@ pub struct NudgeApp {
     /// the first frame the window is key. Both are "did this open get focus",
     /// they just observe it at the only moment their OS can answer.
     armed: bool,
+    /// When the current open began, for the bounded re-activation in
+    /// `retry_focus_until_armed`.
+    #[cfg(target_os = "macos")]
+    shown_at: Option<std::time::Instant>,
 
     // Native window handle for Win32 API calls.
     // The tray icon itself lives on a dedicated thread (see tray_bridge);
@@ -185,6 +194,8 @@ impl NudgeApp {
             #[cfg(target_arch = "wasm32")]
             pill_rect: None,
             armed: false,
+            #[cfg(target_os = "macos")]
+            shown_at: None,
             #[cfg(target_os = "windows")]
             hwnd: None,
         }
@@ -248,6 +259,10 @@ impl NudgeApp {
         // almost certainly false and the latch in `ui` is what arms us; see
         // `current_foreground_matches`.
         self.armed = self.current_foreground_matches(ctx);
+        #[cfg(target_os = "macos")]
+        {
+            self.shown_at = Some(std::time::Instant::now());
+        }
     }
 
     /// Source of truth for "is our popup the OS-foreground / page-focused
@@ -350,6 +365,27 @@ impl NudgeApp {
         #[cfg(target_os = "macos")]
         if focused_now {
             self.armed = true;
+        }
+    }
+
+    /// Ask for activation again, every frame, for the first moments of an open
+    /// that has not got the keyboard yet. One request can lose to another app
+    /// activating at the same moment — the user switching apps while Nudge
+    /// starts — and nothing would ask again before the next open. Bounded so
+    /// a popup that really cannot have the focus (spec §4) stops asking.
+    fn retry_focus_until_armed(&mut self, ctx: &egui::Context) {
+        let _ = ctx;
+        // `focused == None` means no real window has reported yet (and never
+        // will, under kittest): there is nothing to activate.
+        #[cfg(target_os = "macos")]
+        if !self.armed
+            && ctx.input(|i| i.viewport().focused).is_some()
+            && self
+                .shown_at
+                .is_some_and(|t| t.elapsed() < FOCUS_RETRY_WINDOW)
+        {
+            crate::platform::focus_popup(ctx);
+            ctx.request_repaint_after(std::time::Duration::from_millis(30));
         }
     }
 
@@ -842,6 +878,7 @@ impl eframe::App for NudgeApp {
             // out.
             let focused_now = self.current_foreground_matches(ctx);
             self.latch_arming(focused_now);
+            self.retry_focus_until_armed(ctx);
             if self.armed && !focused_now {
                 self.hide_popup(ctx, Action::SwitchAway);
                 return;
