@@ -38,7 +38,7 @@ import {
 } from "../shared/nudgeFlow";
 import { applyAutostart } from "../shared/autostart";
 import { ElectronAutostartProvider } from "./autostart";
-import { TRAY_ICON_SCALE, buildTrayIcon, daisyFrame, formatTooltip, type DaisyFrame } from "./trayIcon";
+import { buildTrayIcon, daisyFrame, formatTooltip, type DaisyFrame } from "./trayIcon";
 
 // Load the dev server in development, the built files when packaged. The
 // NUDGE_FORCE_PROD escape hatch lets native e2e tests drive an unpackaged
@@ -237,8 +237,28 @@ function remainingMsForTooltip(): number {
   return timerStartMs + timerIntervalMs - Date.now();
 }
 
+// A menu bar icon on macOS is 18 pt; a notification-area icon on Windows is
+// 16 px at 100 % DPI (SM_CXSMICON) and grows with the DPI.
+const MAC_TRAY_ICON_POINTS = 18;
+const WIN_TRAY_ICON_PX = 16;
+
+// The daisy drawn once per density the host will display it at, so nothing
+// downstream resamples. macOS: a 1x and a 2x representation of an 18 pt
+// image, AppKit picks by the display's backing scale. Windows: Electron
+// turns the 1x bitmap into the HICON at its own pixel size and the shell
+// draws that at the tray's size, so the one representation is drawn at
+// exactly that size.
 function trayImage(frame: number | DaisyFrame) {
-  return nativeImage.createFromBuffer(buildTrayIcon(frame), { scaleFactor: TRAY_ICON_SCALE });
+  const img = nativeImage.createEmpty();
+  if (process.platform === "darwin") {
+    for (const scale of [1, 2]) {
+      img.addRepresentation({ scaleFactor: scale, buffer: buildTrayIcon(frame, MAC_TRAY_ICON_POINTS * scale) });
+    }
+  } else {
+    const px = Math.round(WIN_TRAY_ICON_PX * screen.getPrimaryDisplay().scaleFactor);
+    img.addRepresentation({ scaleFactor: 1, buffer: buildTrayIcon(frame, px) });
+  }
+  return img;
 }
 
 function createTray() {
@@ -532,6 +552,18 @@ if (process.env.NUDGE_E2E) {
       win?.hide();
       destroyTray();
       updateTray();
+    },
+    // The image handed to the tray, by representation: what the host picks
+    // from, before it draws anything.
+    trayImageReps: () => {
+      const img = trayImage(0);
+      // getSize() answers in points for every representation; the bitmap's
+      // own pixel count is what says whether the 2x one is really 36 px.
+      return img.getScaleFactors().map((scale) => ({
+        scale,
+        points: img.getSize(scale).width,
+        pixels: Math.round(Math.sqrt(img.toBitmap({ scaleFactor: scale }).length / 4)),
+      }));
     },
     getState: () => ({
       lastTriggerSource,

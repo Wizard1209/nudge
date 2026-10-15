@@ -21,6 +21,18 @@ describe.skipIf(process.platform !== 'darwin')('macOS status item', () => {
     app = undefined;
   });
 
+  it('the tray image carries one representation per backing scale, each drawn at 18 pt', async () => {
+    ({ app } = await launchApp());
+    const reps = await app.evaluate(() => globalThis.__nudgeTest.trayImageReps());
+    console.log('[tray image]', JSON.stringify(reps));
+    // AppKit picks the representation whose scale matches the display, and
+    // resamples when none does. Two exact ones, no resample on either kind.
+    expect(reps).toEqual([
+      { scale: 1, points: 18, pixels: 18 },
+      { scale: 2, points: 18, pixels: 36 },
+    ]);
+  });
+
   it('the daisy fits inside the menu bar', async () => {
     ({ app } = await launchApp());
     await sleep(500);

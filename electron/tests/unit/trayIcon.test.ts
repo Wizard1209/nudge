@@ -70,6 +70,17 @@ describe("trayIcon / buildTrayIcon", () => {
     expect(hasWhiteOrPink(buildTrayIcon(1))).toBe(false);
   });
 
+  // The bitmap is rendered at the size a host asks for, so each density gets
+  // its own pixels instead of a resample of one big canvas: 18 and 36 px for
+  // a macOS menu bar icon at 1x and 2x, 16 px for a Windows tray at 100%.
+  it.each([16, 18, 36])("renders the daisy at %i px with centre and petals", (px) => {
+    const { width, height } = decodeRawRGBA(buildTrayIcon(0, px));
+    expect([width, height]).toEqual([px, px]);
+    expect(hasYellow(buildTrayIcon(0, px))).toBe(true);
+    expect(hasWhiteOrPink(buildTrayIcon(0, px))).toBe(true);
+    expect(hasWhiteOrPink(buildTrayIcon(1, px))).toBe(false);
+  });
+
   it("petal area at progress 0 is roughly 12x larger than at progress 11/12", () => {
     // Sanity check that visiblePetals actually drives the rendered output —
     // fewer indices → fewer petal pixels.

@@ -4,26 +4,60 @@
  * first, then clockwise. The icon is the only place in the app with accent
  * colour (warm pink petal tips, yellow centre).
  *
- * Returns a 64×64 RGBA PNG buffer for `nativeImage.createFromBuffer`. The
- * PNG encoder at the bottom is the same minimal one that used to render the
- * old digit icon — no external image deps.
+ * Returns an RGBA PNG buffer for `nativeImage` at the pixel size the caller
+ * asks for. The geometry is designed on a 64 px canvas and scaled to the
+ * requested size, so a host gets pixels drawn for its density rather than a
+ * resample of one big bitmap: 18 and 36 px for a macOS menu bar icon at 1x
+ * and 2x, 16 px for a Windows tray at 100 %. Edges are supersampled; at 18 px
+ * a petal is a pixel and a half wide and would otherwise be a staircase.
  *
- * 64 px is the bitmap, not the icon's size on screen. A menu bar icon is
- * ~18 pt and the bar does not shrink an oversized image, so the bitmap is
- * registered as a high-density representation of an 18 pt image
- * (`TRAY_ICON_SCALE`), the way an `@2x` asset stands for a 16 pt one.
+ * The PNG encoder at the bottom is the same minimal one that used to render
+ * the old digit icon — no external image deps.
  */
 import { deflateSync } from "node:zlib";
 
-const SIZE = 64;
-const TRAY_ICON_POINTS = 18;
-export const TRAY_ICON_SCALE = SIZE / TRAY_ICON_POINTS;
-const CENTER = SIZE / 2;
-const CENTER_R = 7; // radius of the yellow disc
-const PETAL_R_IN = 8; // petal starts just outside the centre
-const PETAL_R_OUT = 28; // petal tip stops shy of the canvas edge
-const PETAL_HALF_WIDTH = 4.5;
+/** The canvas the geometry below is designed on; every size is a scale of it. */
+export const REFERENCE_SIZE = 64;
 const PETAL_COUNT = 12;
+/** Samples per axis per pixel for edge anti-aliasing. */
+const SUPERSAMPLE = 4;
+
+// Geometry on the reference canvas, in pixels.
+const REF_CENTER_R = 7; // radius of the yellow disc
+const REF_PETAL_R_IN = 8; // petal starts just outside the centre
+const REF_PETAL_R_OUT = 28; // petal tip stops shy of the canvas edge
+const REF_PETAL_HALF_WIDTH = 4.5;
+// Spec §5 fall: petal slides outward from the centre, droops slightly under
+// "gravity", and fades to transparent over the fade window. These deltas
+// stay small — even 4 px of outward motion on the reference canvas is
+// visually noticeable without crowding the next petal.
+const REF_FALL_OUTWARD = 4;
+const REF_FALL_GRAVITY = 3;
+
+interface Geometry {
+  size: number;
+  center: number;
+  centerR: number;
+  petalRIn: number;
+  petalROut: number;
+  petalHalfWidth: number;
+  fallOutward: number;
+  fallGravity: number;
+}
+
+function geometryFor(size: number): Geometry {
+  const k = size / REFERENCE_SIZE;
+  return {
+    size,
+    center: size / 2,
+    centerR: REF_CENTER_R * k,
+    petalRIn: REF_PETAL_R_IN * k,
+    petalROut: REF_PETAL_R_OUT * k,
+    petalHalfWidth: REF_PETAL_HALF_WIDTH * k,
+    fallOutward: REF_FALL_OUTWARD * k,
+    fallGravity: REF_FALL_GRAVITY * k,
+  };
+}
 
 type RGBA = [number, number, number, number];
 
@@ -119,41 +153,33 @@ function lerpRGBA(a: RGBA, b: RGBA, t: number): RGBA {
   ];
 }
 
-// Returns the RGBA contribution of a single petal at the given pixel offset
-// from the centre. Local frame is rotated to the petal's radial direction,
-// with the petal modelled as an ellipse. Returns null if the pixel is
-// outside the petal.
-function petalColorAt(dx: number, dy: number, idx: number): RGBA | null {
+// Returns the RGBA contribution of a single petal at the given offset from
+// the centre. Local frame is rotated to the petal's radial direction, with
+// the petal modelled as an ellipse. Returns null if the point is outside.
+function petalColorAt(g: Geometry, dx: number, dy: number, idx: number): RGBA | null {
   const theta = petalAngle(idx);
   const cos = Math.cos(theta);
   const sin = Math.sin(theta);
   const u = dx * cos + dy * sin;
   const v = -dx * sin + dy * cos;
-  if (u < PETAL_R_IN || u > PETAL_R_OUT) return null;
-  const cu = (PETAL_R_IN + PETAL_R_OUT) / 2;
-  const a = (PETAL_R_OUT - PETAL_R_IN) / 2;
-  const norm = ((u - cu) / a) ** 2 + (v / PETAL_HALF_WIDTH) ** 2;
+  if (u < g.petalRIn || u > g.petalROut) return null;
+  const cu = (g.petalRIn + g.petalROut) / 2;
+  const a = (g.petalROut - g.petalRIn) / 2;
+  const norm = ((u - cu) / a) ** 2 + (v / g.petalHalfWidth) ** 2;
   if (norm > 1) return null;
-  const t = (u - PETAL_R_IN) / (PETAL_R_OUT - PETAL_R_IN);
+  const t = (u - g.petalRIn) / (g.petalROut - g.petalRIn);
   return lerpRGBA(PETAL_BASE, PETAL_TIP, t);
 }
 
-// Spec §5 fall: petal slides outward from the centre, droops slightly under
-// "gravity", and fades to transparent over the fade window. These deltas
-// stay small — the daisy is only 64×64, so even 4 px of outward motion is
-// visually noticeable without crowding the next petal.
-const FALL_OUTWARD_PX = 4;
-const FALL_GRAVITY_PX = 3;
-
-function pixelColor(x: number, y: number, frame: DaisyFrame): RGBA {
-  // 0.5 puts the sample at the pixel centre — symmetric across the 64-px axis.
-  const dx = x + 0.5 - CENTER;
-  const dy = y + 0.5 - CENTER;
+// Colour of one sample point, (sx, sy) in canvas coordinates.
+function sampleColor(g: Geometry, sx: number, sy: number, frame: DaisyFrame): RGBA {
+  const dx = sx - g.center;
+  const dy = sy - g.center;
   const d2 = dx * dx + dy * dy;
-  if (d2 <= CENTER_R * CENTER_R) return CENTER_COLOR;
+  if (d2 <= g.centerR * g.centerR) return CENTER_COLOR;
 
   for (const idx of frame.stable) {
-    const c = petalColorAt(dx, dy, idx);
+    const c = petalColorAt(g, dx, dy, idx);
     if (c) return c;
   }
 
@@ -161,12 +187,12 @@ function pixelColor(x: number, y: number, frame: DaisyFrame): RGBA {
     const { index, phase } = frame.falling;
     const theta = petalAngle(index);
     // Translate the petal: drift outward along its radial axis + drop a bit
-    // under "gravity". To check "does this pixel belong to the translated
-    // petal", we subtract the translation from the pixel's offset.
-    const outwardX = Math.cos(theta) * FALL_OUTWARD_PX * phase;
-    const outwardY = Math.sin(theta) * FALL_OUTWARD_PX * phase;
-    const gravityY = FALL_GRAVITY_PX * phase;
-    const base = petalColorAt(dx - outwardX, dy - outwardY - gravityY, index);
+    // under "gravity". To check "does this point belong to the translated
+    // petal", we subtract the translation from the point's offset.
+    const outwardX = Math.cos(theta) * g.fallOutward * phase;
+    const outwardY = Math.sin(theta) * g.fallOutward * phase;
+    const gravityY = g.fallGravity * phase;
+    const base = petalColorAt(g, dx - outwardX, dy - outwardY - gravityY, index);
     if (base) {
       const opacity = 1 - phase;
       return [base[0], base[1], base[2], Math.round(base[3] * opacity)];
@@ -176,17 +202,41 @@ function pixelColor(x: number, y: number, frame: DaisyFrame): RGBA {
   return TRANSPARENT;
 }
 
+// A pixel is the premultiplied average of a SUPERSAMPLE×SUPERSAMPLE grid of
+// points across it, so an edge that crosses the pixel leaves partial alpha
+// instead of a hard in/out decision.
+function pixelColor(g: Geometry, x: number, y: number, frame: DaisyFrame): RGBA {
+  let r = 0;
+  let gr = 0;
+  let b = 0;
+  let a = 0;
+  for (let j = 0; j < SUPERSAMPLE; j++) {
+    for (let i = 0; i < SUPERSAMPLE; i++) {
+      const c = sampleColor(g, x + (i + 0.5) / SUPERSAMPLE, y + (j + 0.5) / SUPERSAMPLE, frame);
+      r += c[0] * c[3];
+      gr += c[1] * c[3];
+      b += c[2] * c[3];
+      a += c[3];
+    }
+  }
+  if (a === 0) return TRANSPARENT;
+  const n = SUPERSAMPLE * SUPERSAMPLE;
+  return [Math.round(r / a), Math.round(gr / a), Math.round(b / a), Math.round(a / n)];
+}
+
 /**
- * Render a daisy. Accepts either a static progress (0..1) for snapshots, or
- * a full DaisyFrame when the caller wants the in-flight falling petal too.
+ * Render a daisy as a `size`×`size` PNG. Accepts either a static progress
+ * (0..1) for snapshots, or a full DaisyFrame when the caller wants the
+ * in-flight falling petal too.
  */
-export function buildTrayIcon(input: number | DaisyFrame): Buffer {
+export function buildTrayIcon(input: number | DaisyFrame, size = REFERENCE_SIZE): Buffer {
   const frame: DaisyFrame =
     typeof input === "number" ? { stable: visiblePetals(input) } : input;
+  const g = geometryFor(size);
   const canvas: RGBA[][] = [];
-  for (let y = 0; y < SIZE; y++) {
+  for (let y = 0; y < size; y++) {
     const row: RGBA[] = [];
-    for (let x = 0; x < SIZE; x++) row.push(pixelColor(x, y, frame));
+    for (let x = 0; x < size; x++) row.push(pixelColor(g, x, y, frame));
     canvas.push(row);
   }
   return encodePng(canvas);
@@ -216,18 +266,19 @@ function chunk(type: string, data: Buffer): Buffer {
 }
 
 function encodePng(canvas: RGBA[][]): Buffer {
+  const size = canvas.length;
   const rows: Buffer[] = [];
-  for (let y = 0; y < SIZE; y++) {
+  for (let y = 0; y < size; y++) {
     const row = [0]; // filter: None
-    for (let x = 0; x < SIZE; x++) row.push(...canvas[y][x]);
+    for (let x = 0; x < size; x++) row.push(...canvas[y][x]);
     rows.push(Buffer.from(row));
   }
   const raw = Buffer.concat(rows);
   const compressed = deflateSync(raw);
 
   const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(SIZE, 0);
-  ihdr.writeUInt32BE(SIZE, 4);
+  ihdr.writeUInt32BE(size, 0);
+  ihdr.writeUInt32BE(size, 4);
   ihdr[8] = 8; // bit depth
   ihdr[9] = 6; // color type RGBA
 
