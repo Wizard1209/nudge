@@ -844,6 +844,82 @@ fn menu_bar_status_item_is_present() {
     );
 }
 
+/// Frames of the app's menu bar extras (status items), as the Accessibility
+/// tree reports them: `(x, y, w, h)` in screen points.
+///
+/// Through System Events rather than `menu_bar_windows`, because that list
+/// attributes the item to Control Center's pid and cannot say which of the
+/// strip's windows is ours. The process-level `menu bar 2` can: it is the
+/// extras bar of exactly this process. Geometry here is sound where it is not
+/// for windows (see `dismiss_with_escape`): a status item has no shadow or
+/// backing store to be confused about.
+fn status_item_frames() -> Vec<(f64, f64, f64, f64)> {
+    let out = Command::new("osascript")
+        .arg("-e")
+        .arg(
+            r#"tell application "System Events" to tell process "nudge" to get {position, size} of menu bar items of menu bar 2"#,
+        )
+        .output()
+        .expect("osascript not runnable");
+    assert!(
+        out.status.success(),
+        "osascript could not read the menu bar extras — is Accessibility granted to the \
+         terminal running cargo?\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let numbers: Vec<f64> = String::from_utf8_lossy(&out.stdout)
+        .split(',')
+        .filter_map(|t| t.trim().parse().ok())
+        .collect();
+    // `{position, size}` of N items prints as x1, y1, …, xN, yN, w1, h1, …, wN, hN.
+    let n = numbers.len() / 4;
+    (0..n)
+        .map(|i| {
+            (
+                numbers[2 * i],
+                numbers[2 * i + 1],
+                numbers[2 * n + 2 * i],
+                numbers[2 * n + 2 * i + 1],
+            )
+        })
+        .collect()
+}
+
+/// The daisy fits the menu bar it lives in.
+///
+/// The bar does not shrink an oversized image: an `NSImage` whose logical
+/// size is the bitmap's pixel size (64 pt for `daisy::ICON_SIZE`) overflows
+/// a 24 pt bar above and below and is drawn pixelated. `tray_icon` sizes the
+/// image to 18 pt before handing it to the status item, which is what this
+/// test pins: a crate upgrade or a hand-rolled `NSImage` that drops that
+/// step shows up here as a 60-odd-point item, as it did in the Electron
+/// prototype.
+#[test]
+#[ignore = "needs a GUI session; run via --ignored"]
+fn status_item_fits_the_menu_bar() {
+    let _app = SandboxedApp::launch();
+    let items = status_item_frames();
+    eprintln!("[status-item] frames {items:?}");
+    assert_eq!(
+        items.len(),
+        1,
+        "expected exactly one status item, got {items:?}"
+    );
+    let (_, y, w, h) = items[0];
+    assert!(
+        y >= 0.0,
+        "the status item starts above the menu bar: {items:?}"
+    );
+    assert!(
+        h <= 24.0,
+        "the status item is taller than a menu bar: {items:?}"
+    );
+    assert!(
+        w <= 48.0,
+        "the status item is wider than a menu bar icon: {items:?}"
+    );
+}
+
 /// The last one to become reachable: it needs synthetic keyboard input, which
 /// requires the *PostEvent* grant on top of the two in the module header.
 ///

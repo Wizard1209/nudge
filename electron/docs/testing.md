@@ -69,6 +69,10 @@ Notes:
   be using the machine. The wallpaper test checks its own precondition with a
   probe window: if a click moves no window it fails saying the host is not in
   reveal-desktop mode, rather than passing on a desktop that never swept.
+  A third test (`tests/native/macosTray.test.js`) reads the status item's frame
+  from the Accessibility tree (`extras PID` in the same helper) and asserts it
+  fits inside the menu bar: the bar does not shrink an oversized image, so a
+  bitmap handed over at its pixel size overflows it on both sides.
 - Native loads the **built** renderer (`NUDGE_FORCE_PROD`), so run
   `pnpm build && pnpm build:electron` first — it validates the exact assets the
   portable `.exe` ships.

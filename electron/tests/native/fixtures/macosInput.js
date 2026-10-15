@@ -19,6 +19,8 @@ export function macosInput() {
     frontPid: () => Number(run('front').trim()),
     locked: () => run('locked').trim() === '1',
     windows: () => run('windows').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)),
+    /** Frames of the process's menu bar extras (status items), in screen points. */
+    extras: (pid) => run('extras', pid).trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)),
     /** Re-activate `bundleId` every `ms` until the returned stop() is called. */
     contend(bundleId, ms) {
       const child = spawn(bin, ['activate', bundleId, String(ms)], { stdio: 'ignore' });

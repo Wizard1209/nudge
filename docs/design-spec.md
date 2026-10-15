@@ -170,6 +170,9 @@ app is running and "ripens" instead of a numeric countdown.
   any text inside the icon.
 - The palette is the only place in the app with an accent color (pink tip +
   yellow center). The card and pill stay monochrome.
+- Drawn at the size the host gives a menu bar / tray icon (about 18 pt on
+  macOS), whatever the bitmap's pixel size: the bitmap is a high-density
+  representation of that icon, never its on-screen size.
 
 ### Link to the timer
 

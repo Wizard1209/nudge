@@ -7,10 +7,17 @@
  * Returns a 64×64 RGBA PNG buffer for `nativeImage.createFromBuffer`. The
  * PNG encoder at the bottom is the same minimal one that used to render the
  * old digit icon — no external image deps.
+ *
+ * 64 px is the bitmap, not the icon's size on screen. A menu bar icon is
+ * ~18 pt and the bar does not shrink an oversized image, so the bitmap is
+ * registered as a high-density representation of an 18 pt image
+ * (`TRAY_ICON_SCALE`), the way an `@2x` asset stands for a 16 pt one.
  */
 import { deflateSync } from "node:zlib";
 
 const SIZE = 64;
+const TRAY_ICON_POINTS = 18;
+export const TRAY_ICON_SCALE = SIZE / TRAY_ICON_POINTS;
 const CENTER = SIZE / 2;
 const CENTER_R = 7; // radius of the yellow disc
 const PETAL_R_IN = 8; // petal starts just outside the centre

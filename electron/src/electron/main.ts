@@ -38,7 +38,7 @@ import {
 } from "../shared/nudgeFlow";
 import { applyAutostart } from "../shared/autostart";
 import { ElectronAutostartProvider } from "./autostart";
-import { buildTrayIcon, daisyFrame, formatTooltip } from "./trayIcon";
+import { TRAY_ICON_SCALE, buildTrayIcon, daisyFrame, formatTooltip, type DaisyFrame } from "./trayIcon";
 
 // Load the dev server in development, the built files when packaged. The
 // NUDGE_FORCE_PROD escape hatch lets native e2e tests drive an unpackaged
@@ -237,9 +237,12 @@ function remainingMsForTooltip(): number {
   return timerStartMs + timerIntervalMs - Date.now();
 }
 
+function trayImage(frame: number | DaisyFrame) {
+  return nativeImage.createFromBuffer(buildTrayIcon(frame), { scaleFactor: TRAY_ICON_SCALE });
+}
+
 function createTray() {
-  const icon = nativeImage.createFromBuffer(buildTrayIcon(0));
-  tray = new Tray(icon);
+  tray = new Tray(trayImage(0));
   tray.setToolTip(formatTooltip(configuredMinutes() * 60_000));
   tray.setContextMenu(
     Menu.buildFromTemplate([
@@ -316,7 +319,7 @@ function updateTray() {
   // resumes when the popup closes (startTimer triggers a fresh updateTray).
   if (win?.isVisible()) return;
   const frame = daisyFrame(elapsedSinceTimerStart(), timerIntervalMs, PETAL_FADE_MS);
-  tray.setImage(nativeImage.createFromBuffer(buildTrayIcon(frame)));
+  tray.setImage(trayImage(frame));
   tray.setToolTip(formatTooltip(remainingMsForTooltip()));
 }
 

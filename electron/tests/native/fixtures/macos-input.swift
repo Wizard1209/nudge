@@ -7,6 +7,8 @@
 //   front                      pid of the frontmost application
 //   windows                    on-screen windows, one JSON object per line
 //   locked                     1 if the session's screen is locked, else 0
+//   extras PID                 the process's menu bar extras (status items),
+//                              one JSON frame per line in screen points
 import AppKit
 import CoreGraphics
 
@@ -60,6 +62,27 @@ func windows() {
   }
 }
 
+// A status item's window is not attributed to the app that made it (on macOS
+// 26 Control Center hosts the menu bar strip), so a CGWindowList lookup by pid
+// finds nothing. The Accessibility tree keeps the ownership: the app's
+// AXExtrasMenuBar lists its items with position and size in screen points.
+func extras(_ pid: pid_t) {
+  let app = AXUIElementCreateApplication(pid)
+  var bar: CFTypeRef?
+  guard AXUIElementCopyAttributeValue(app, "AXExtrasMenuBar" as CFString, &bar) == .success, let bar = bar else { return }
+  var kids: CFTypeRef?
+  AXUIElementCopyAttributeValue(bar as! AXUIElement, kAXChildrenAttribute as CFString, &kids)
+  for k in (kids as? [AXUIElement]) ?? [] {
+    var pos: CFTypeRef?; var size: CFTypeRef?
+    AXUIElementCopyAttributeValue(k, kAXPositionAttribute as CFString, &pos)
+    AXUIElementCopyAttributeValue(k, kAXSizeAttribute as CFString, &size)
+    var p = CGPoint.zero; var s = CGSize.zero
+    if let pos = pos { AXValueGetValue(pos as! AXValue, .cgPoint, &p) }
+    if let size = size { AXValueGetValue(size as! AXValue, .cgSize, &s) }
+    print("{\"x\":\(p.x),\"y\":\(p.y),\"width\":\(s.width),\"height\":\(s.height)}")
+  }
+}
+
 switch args.first {
 case "click": click(CGPoint(x: Double(args[1])!, y: Double(args[2])!))
 case "key": key(CGKeyCode(args[1])!, Array(args.dropFirst(2)))
@@ -69,8 +92,9 @@ case "activate" where args.count > 2:
 case "activate": activate(args[1])
 case "front": print(NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1)
 case "windows": windows()
+case "extras": extras(pid_t(args[1])!)
 case "locked":
   let d = CGSessionCopyCurrentDictionary() as? [String: Any]
   print((d?["CGSSessionScreenIsLocked"] as? Bool ?? false) ? 1 : 0)
-default: fatalError("usage: click X Y | key CODE [mods] | activate BUNDLE [MS] | front | windows | locked")
+default: fatalError("usage: click X Y | key CODE [mods] | activate BUNDLE [MS] | front | windows | extras PID | locked")
 }
