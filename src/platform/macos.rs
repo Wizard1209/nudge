@@ -23,9 +23,10 @@
 //!
 //! # Why the event handlers wake the context instead of feeding a channel
 //!
-//! `tray_icon` and `muda` each offer a receiver *or* a global handler, not
-//! both, and the Carbon hotkey handler ([`hotkey_carbon`]) is a callback with
-//! no receiver at all. A receiver is only readable from a tick, and a tick
+//! `muda` offers a receiver *or* a global handler, not both, and the status
+//! item's click action ([`status_item`]) and the Carbon hotkey handler
+//! ([`hotkey_carbon`]) are callbacks with no receiver at all. A receiver is
+//! only readable from a tick, and a tick
 //! only happens when something wakes the event loop — which a status-item click
 //! or a Carbon hotkey does not do on its own: winit services the AppKit event,
 //! eframe sees no pending repaint and goes straight back to sleep. Polling a
@@ -59,6 +60,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use eframe::egui;
+use muda::{Menu, MenuEvent, MenuId, MenuItem};
 use objc2::rc::Retained;
 use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameVibrantDark, NSApplication, NSView,
@@ -67,8 +69,6 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem};
-use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 use crate::config;
 use crate::config_watcher::{self, ConfigChange};
@@ -80,8 +80,10 @@ pub mod hotkey_carbon;
 pub mod key_monitor;
 pub mod keycode;
 pub mod settings_lock;
+pub mod status_item;
 pub mod symbolic;
 pub use settings_lock::acquire_settings_singleton;
+use status_item::StatusItem;
 
 // ---------- shared state ---------------------------------------------------
 
@@ -147,7 +149,7 @@ static WAKE_CTX: Mutex<Option<egui::Context>> = Mutex::new(None);
 thread_local! {
     /// The status item, the hotkey manager and their bookkeeping.
     ///
-    /// Thread-local because `tray_icon::TrayIcon` is `!Send` (it wraps AppKit
+    /// Thread-local because [`StatusItem`] is `!Send` (it wraps AppKit
     /// objects behind `Retained`), and it must be *this* thread's — the main
     /// one — for its `NSStatusItem` to exist at all. Everything that touches
     /// it ([`start_on_event_loop`], [`tick`]) is called by eframe on the main
@@ -160,10 +162,13 @@ struct UiState {
     /// this state that is optional-because-it-failed, and nothing else depends
     /// on it: the hotkey and the live reload below are what keep working when
     /// the menu bar refuses us.
-    tray: Option<TrayIcon>,
-    /// The menu keeps only weak references to its items, so we own them.
+    tray: Option<StatusItem>,
+    /// The status item retains the `NSMenu`, not the muda `Menu` that routes
+    /// its clicks to `MenuEvent`; and the menu keeps only weak references to
+    /// its items. So we own both.
+    _menu: Menu,
     _menu_items: [MenuItem; 3],
-    /// Dedupe keys, so `set_icon` / `set_tooltip` are only called when what
+    /// Dedupe keys, so `set_frame` / `set_tooltip` are only called when what
     /// they would display actually changes. The icon key is
     /// `(petals attached, drifting petal + its progress in percent)`.
     last_icon_key: Option<(u8, Option<(u8, u16)>)>,
@@ -175,7 +180,7 @@ struct UiState {
 /// purpose.
 ///
 /// These four fields used to sit in `UiState` next to a non-optional
-/// `TrayIcon`, which made them hostage to it: a status item that failed to
+/// status item, which made them hostage to it: a status item that failed to
 /// build took the whole struct with it, and `apply_config_reload` — which
 /// early-returns on an absent `UiState` — then dropped every later edit to
 /// `config.json` for the lifetime of the process. Nothing here touches AppKit
@@ -214,23 +219,13 @@ pub fn start_on_event_loop(ctx: &egui::Context) {
     let (menu, menu_items) = build_menu();
     install_event_handlers(menu_items.each_ref().map(|item| item.id().clone()));
 
-    let initial_rgba = daisy::render(daisy::PETAL_COUNT, None);
-    let tray = match tray_icon::Icon::from_rgba(initial_rgba, daisy::ICON_SIZE, daisy::ICON_SIZE)
-        .map_err(|e| e.to_string())
-        .and_then(|icon| {
-            TrayIconBuilder::new()
-                .with_menu(Box::new(menu))
-                // Left click summons the popup (the `TrayIconEvent` handler
-                // below); the menu is the right-click gesture. Matches the
-                // Windows tray exactly.
-                .with_menu_on_left_click(false)
-                // Refreshed by `tick` as soon as a timer is armed. Until then
-                // the launch popup is up, so nobody reads this placeholder.
-                .with_tooltip("Nudge")
-                .with_icon(icon)
-                .build()
-                .map_err(|e| e.to_string())
-        }) {
+    // Left click summons the popup, right click drops `menu` — the status
+    // item's own action routes the two (`status_item`), matching the Windows
+    // tray exactly.
+    let tray = match MainThreadMarker::new()
+        .ok_or_else(|| "not on the main thread".to_string())
+        .and_then(|mtm| StatusItem::new(mtm, &menu))
+    {
         Ok(t) => Some(t),
         Err(e) => {
             // Non-fatal, deliberately: without a status item the app is still
@@ -253,6 +248,7 @@ pub fn start_on_event_loop(ctx: &egui::Context) {
     UI.with_borrow_mut(|slot| {
         *slot = Some(UiState {
             tray,
+            _menu: menu,
             _menu_items: menu_items,
             last_icon_key: None,
             last_tooltip_minutes: None,
@@ -278,22 +274,11 @@ fn build_menu() -> (Menu, [MenuItem; 3]) {
     (menu, items)
 }
 
-/// Wire the three event sources. Each handler raises a flag and wakes the
+/// Wire the menu's event source. Each handler raises a flag and wakes the
 /// event loop; `tick` decides what any of it means (see the module docs).
+/// The status item's left click goes the same way, straight from its action
+/// in [`status_item`].
 fn install_event_handlers([show_id, settings_id, quit_id]: [MenuId; 3]) {
-    TrayIconEvent::set_event_handler(Some(|event| {
-        if matches!(
-            event,
-            TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            }
-        ) {
-            request_manual_open();
-        }
-    }));
-
     MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
         if event.id == show_id {
             request_manual_open();
@@ -562,7 +547,8 @@ fn apply_window_position(ctx: &egui::Context) {
 /// Redraw the petal countdown and re-word the tooltip, both only when what
 /// they would show has changed — spec §5's "updated once per minute" for the
 /// tooltip, and for the icon the whole cost of a status-item repaint, which
-/// runs from a 64x64 re-render through to a menu-bar composite.
+/// runs from one daisy render per display density through to a menu-bar
+/// composite.
 fn refresh_status_item(frame: &daisy::DaisyFrame, remaining: Duration) {
     let minutes = nudge_state::displayed_minutes(remaining);
     let drift_key = frame
@@ -590,15 +576,12 @@ fn refresh_status_item(frame: &daisy::DaisyFrame, remaining: Duration) {
         };
 
         if *last_icon_key != Some(icon_key) {
-            let rgba = daisy::render(frame.petals_remaining, frame.drift);
-            if let Ok(icon) = tray_icon::Icon::from_rgba(rgba, daisy::ICON_SIZE, daisy::ICON_SIZE) {
-                let _ = tray.set_icon(Some(icon));
-            }
+            tray.set_frame(frame.petals_remaining, frame.drift);
             *last_icon_key = Some(icon_key);
         }
 
         if *last_tooltip_minutes != Some(minutes) {
-            let _ = tray.set_tooltip(Some(nudge_state::tooltip_for_remaining(remaining)));
+            tray.set_tooltip(&nudge_state::tooltip_for_remaining(remaining));
             *last_tooltip_minutes = Some(minutes);
         }
     });
@@ -819,7 +802,7 @@ fn reload_config(state: &mut ReloadState) {
 
 thread_local! {
     /// The one backdrop panel, kept across frames. `Retained` is `!Send`, and
-    /// AppKit views are main-thread-only anyway — the same reason `TRAY` above
+    /// AppKit views are main-thread-only anyway — the same reason `UI` above
     /// is thread-local.
     static CARD_BACKDROP: RefCell<Option<Retained<NSVisualEffectView>>> =
         const { RefCell::new(None) };

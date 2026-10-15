@@ -20,12 +20,13 @@
 //! are all differential against what is behind it and the developer's desktop
 //! is not a control.
 //!
-//! What they do NOT cover, because it needs synthetic *mouse* input against
-//! a window the process does not own: clicking the status item to summon the
-//! popup, and its right-click Show / Settings / Quit menu. The item is hosted
-//! by Control Center, so `AXPress` on it does nothing — `tray-icon` overrides
-//! `mouseDown:`/`mouseUp:` on a custom `NSView` and only real `CGEvent` mouse
-//! events reach it.
+//! The status item's two gestures — a left click to summon the popup, a
+//! right click for its Show / Settings / Quit menu — are covered by
+//! `left_clicking_the_status_item_opens_the_popup` and
+//! `right_clicking_the_status_item_shows_the_menu`, with real `CGEvent` mouse
+//! input: the item is hosted by Control Center, a window this process does
+//! not own, and its action is sent on mouse-up events, so a synthetic click
+//! is what reaches it.
 //!
 //! One environmental precondition they do not check for themselves: no other
 //! `nudge` may be running. Each test launches its own, and a leftover instance
@@ -888,12 +889,13 @@ fn status_item_frames() -> Vec<(f64, f64, f64, f64)> {
 /// The daisy fits the menu bar it lives in.
 ///
 /// The bar does not shrink an oversized image: an `NSImage` whose logical
-/// size is the bitmap's pixel size (64 pt for `daisy::ICON_SIZE`) overflows
-/// a 24 pt bar above and below and is drawn pixelated. `tray_icon` sizes the
-/// image to 18 pt before handing it to the status item, which is what this
-/// test pins: a crate upgrade or a hand-rolled `NSImage` that drops that
-/// step shows up here as a 60-odd-point item, as it did in the Electron
-/// prototype.
+/// size is a bitmap's pixel size (36 pt for the 2x rep) overflows a 24 pt
+/// bar above and below and is drawn pixelated. `status_item::status_image`
+/// declares the image and each of its reps 18 pt
+/// (`STATUS_ICON_POINTS`), which is what this test pins from the outside: a
+/// rep added without its `setSize` shows up here as a 30-odd-point item, as
+/// an unsized bitmap did in the Electron prototype. Measured: 36x24 at y=3,
+/// the 18 pt image plus the bar's own padding.
 #[test]
 #[ignore = "needs a GUI session; run via --ignored"]
 fn status_item_fits_the_menu_bar() {
@@ -917,6 +919,273 @@ fn status_item_fits_the_menu_bar() {
     assert!(
         w <= 48.0,
         "the status item is wider than a menu bar icon: {items:?}"
+    );
+}
+
+/// The status item's menu, as System Events sees it — its item labels, or
+/// `None` when the item has no menu. `menu 1 of menu bar item 1 of menu bar 2`
+/// is the extras-bar item's menu. This is NOT a readout of "the menu is
+/// showing": a menu the item exposes through AX is listed whether or not it
+/// is up. [`open_menu_window`] is the showing signal; this one says what the
+/// menu holds.
+fn status_item_menu_labels() -> Option<Vec<String>> {
+    let out = Command::new("osascript")
+        .arg("-e")
+        .arg(
+            r#"tell application "System Events" to tell process "nudge"
+                if exists menu 1 of menu bar item 1 of menu bar 2 then
+                    get name of menu items of menu 1 of menu bar item 1 of menu bar 2
+                else
+                    return "<none>"
+                end if
+            end tell"#,
+        )
+        .output()
+        .expect("osascript not runnable");
+    assert!(
+        out.status.success(),
+        "osascript could not read the status item's menu:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if text == "<none>" {
+        return None;
+    }
+    Some(text.split(", ").map(str::to_string).collect())
+}
+
+/// The status item's menu while it is up: an on-screen window of nudge's own
+/// pid in the menu-bar layers, standing *below* the bar and taller than it.
+/// A pulled-down menu is a window the process owns, unlike the item itself
+/// (which `menu_bar_windows` attributes to Control Center), so this is the
+/// one observation that separates "showing" from "configured".
+fn open_menu_window(pid: u32) -> Option<Rect> {
+    menu_bar_windows()
+        .into_iter()
+        .filter(|w| w.owner_pid == pid)
+        .map(|w| w.rect)
+        .find(|r| r.y >= 20.0 && r.h > 24.0)
+}
+
+/// The centre of the one status item, in the top-left-origin screen space
+/// `click_at` posts into — the same space System Events reports it in.
+fn status_item_centre() -> (f64, f64) {
+    let items = status_item_frames();
+    assert_eq!(
+        items.len(),
+        1,
+        "expected exactly one status item, got {items:?}"
+    );
+    let (x, y, w, h) = items[0];
+    (x + w / 2.0, y + h / 2.0)
+}
+
+/// Left click on the daisy summons the popup — the Windows tray gesture and
+/// the spec's, unchanged by who owns the status item.
+#[test]
+#[ignore = "needs a GUI session + PostEvent grant; run via --ignored"]
+fn left_clicking_the_status_item_opens_the_popup() {
+    let app = SandboxedApp::launch();
+    assert!(
+        popup_visible(app.pid()),
+        "the launch popup never appeared — harness problem, not a status-item problem"
+    );
+    press_escape();
+    assert!(
+        wait_until(Duration::from_secs(3), || !popup_visible(app.pid())),
+        "Esc did not dismiss the launch popup — synthetic input is not reaching the app"
+    );
+
+    let centre = status_item_centre();
+    eprintln!("[status-item] left click at {centre:?}");
+    click_at(centre);
+    assert!(
+        wait_until(Duration::from_secs(3), || popup_visible(app.pid())),
+        "a left click on the status item did not bring the popup back"
+    );
+
+    // Cleanup, not the assertion. A bare Esc posted the instant the window
+    // is on screen is lost — the reveal's activation has not landed yet — so
+    // this goes the way `popup_reappears_after_the_interval` does, nudge made
+    // frontmost first.
+    std::thread::sleep(Duration::from_millis(500));
+    dismiss_with_escape();
+    assert!(
+        wait_until(Duration::from_secs(3), || !popup_visible(app.pid())),
+        "the popup the click opened did not take Esc"
+    );
+}
+
+/// Right click on the daisy drops the menu below it, with the three items
+/// `nudge_state::TRAY_MENU_LABELS` promises.
+#[test]
+#[ignore = "needs a GUI session + PostEvent grant; run via --ignored"]
+fn right_clicking_the_status_item_shows_the_menu() {
+    let app = SandboxedApp::launch();
+    assert!(
+        popup_visible(app.pid()),
+        "the launch popup never appeared — harness problem, not a status-item problem"
+    );
+    press_escape();
+    assert!(
+        wait_until(Duration::from_secs(3), || !popup_visible(app.pid())),
+        "Esc did not dismiss the launch popup — synthetic input is not reaching the app"
+    );
+
+    assert!(
+        open_menu_window(app.pid()).is_none(),
+        "a menu is already up before anything was clicked"
+    );
+    let centre = status_item_centre();
+    eprintln!("[status-item] right click at {centre:?}");
+    right_click_at(centre);
+
+    let mut menu = None;
+    assert!(
+        wait_until(Duration::from_secs(3), || {
+            menu = open_menu_window(app.pid());
+            menu.is_some()
+        }),
+        "a right click on the status item did not open its menu"
+    );
+    let labels = status_item_menu_labels();
+    eprintln!("[status-item] menu window {menu:?}, items {labels:?}");
+    let expected: Vec<String> = nudge_web::nudge_state::TRAY_MENU_LABELS
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    assert_eq!(
+        labels.as_ref(),
+        Some(&expected),
+        "the menu is not the spec's three items"
+    );
+    assert!(
+        !popup_visible(app.pid()),
+        "a right click must show the menu, not open the popup"
+    );
+
+    press_escape();
+    assert!(
+        wait_until(Duration::from_secs(3), || open_menu_window(app.pid())
+            .is_none()),
+        "Esc did not close the status item's menu"
+    );
+
+    // The menu is attached to the item only for as long as it is up. Were it
+    // left attached after closing, every later left click would drop the menu
+    // again instead of reaching the item's action, and the popup could never
+    // be summoned from the daisy — so the left click is checked here, after
+    // a menu has come and gone, not only on a fresh item.
+    let centre = status_item_centre();
+    eprintln!("[status-item] left click after the menu closed, at {centre:?}");
+    click_at(centre);
+    assert!(
+        wait_until(Duration::from_secs(3), || popup_visible(app.pid())),
+        "after the menu closed, a left click on the status item no longer opens the popup — \
+         the menu stayed attached to the item"
+    );
+
+    // Cleanup, as `left_clicking_the_status_item_opens_the_popup` does it.
+    std::thread::sleep(Duration::from_millis(500));
+    dismiss_with_escape();
+    assert!(
+        wait_until(Duration::from_secs(3), || !popup_visible(app.pid())),
+        "the popup the click opened did not take Esc"
+    );
+}
+
+/// The frame of one row of the status item's menu while it is up, in the
+/// same top-left-origin screen space as `status_item_frames` — System Events
+/// reports a menu row's own geometry, so the click lands on the row rather
+/// than on a guessed row height below the menu's top edge.
+fn status_item_menu_row_frame(label: &str) -> (f64, f64, f64, f64) {
+    let script = format!(
+        r#"tell application "System Events" to tell process "nudge" to get {{position, size}} of menu item "{label}" of menu 1 of menu bar item 1 of menu bar 2"#
+    );
+    let out = Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()
+        .expect("osascript not runnable");
+    assert!(
+        out.status.success(),
+        "osascript could not read the frame of menu row {label:?}:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let numbers: Vec<f64> = String::from_utf8_lossy(&out.stdout)
+        .split(',')
+        .filter_map(|t| t.trim().parse().ok())
+        .collect();
+    let [x, y, w, h] = numbers[..] else {
+        panic!(
+            "expected x, y, w, h for menu row {label:?}, got {:?}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    };
+    (x, y, w, h)
+}
+
+/// Picking `Show Nudge` from the right-click menu opens the popup — the menu
+/// item's action reaches the app end to end when the menu is shown this way,
+/// and the menu is down again afterwards.
+#[test]
+#[ignore = "needs a GUI session + PostEvent grant; run via --ignored"]
+fn choosing_show_nudge_from_the_status_item_menu_opens_the_popup() {
+    let app = SandboxedApp::launch();
+    assert!(
+        popup_visible(app.pid()),
+        "the launch popup never appeared — harness problem, not a status-item problem"
+    );
+    press_escape();
+    assert!(
+        wait_until(Duration::from_secs(3), || !popup_visible(app.pid())),
+        "Esc did not dismiss the launch popup — synthetic input is not reaching the app"
+    );
+
+    let centre = status_item_centre();
+    eprintln!("[status-item] right click at {centre:?}");
+    right_click_at(centre);
+    let mut menu = None;
+    assert!(
+        wait_until(Duration::from_secs(3), || {
+            menu = open_menu_window(app.pid());
+            menu.is_some()
+        }),
+        "a right click on the status item did not open its menu"
+    );
+
+    let show_label = nudge_web::nudge_state::TRAY_MENU_LABELS[0];
+    let (x, y, w, h) = status_item_menu_row_frame(show_label);
+    let row_centre = (x + w / 2.0, y + h / 2.0);
+    eprintln!(
+        "[status-item] menu window {menu:?}, row {show_label:?} at ({x}, {y}, {w}, {h}), \
+         clicking {row_centre:?}"
+    );
+    let menu = menu.expect("the menu rect was just observed");
+    assert!(
+        x >= menu.x
+            && y >= menu.y
+            && x + w <= menu.x + menu.w + 1.0
+            && y + h <= menu.y + menu.h + 1.0,
+        "the row {show_label:?} at ({x}, {y}, {w}, {h}) lies outside the menu window {menu:?}"
+    );
+    click_at(row_centre);
+
+    assert!(
+        wait_until(Duration::from_secs(3), || popup_visible(app.pid())),
+        "choosing {show_label:?} from the status item's menu did not open the popup"
+    );
+    assert!(
+        open_menu_window(app.pid()).is_none(),
+        "the menu is still up after one of its rows was chosen"
+    );
+
+    // Cleanup, as `left_clicking_the_status_item_opens_the_popup` does it.
+    std::thread::sleep(Duration::from_millis(500));
+    dismiss_with_escape();
+    assert!(
+        wait_until(Duration::from_secs(3), || !popup_visible(app.pid())),
+        "the popup the menu opened did not take Esc"
     );
 }
 
@@ -2114,6 +2383,25 @@ fn click_at((x, y): (f64, f64)) {
         (CGEventType::LeftMouseUp, 60),
     ] {
         CGEvent::new_mouse_event(event_source(), kind, p, CGMouseButton::Left)
+            .expect("CGEventCreateMouseEvent failed")
+            .post(CGEventTapLocation::HID);
+        std::thread::sleep(Duration::from_millis(pause));
+    }
+}
+
+/// `click_at` with the right button: the gesture that drops a status item's
+/// menu.
+fn right_click_at((x, y): (f64, f64)) {
+    use core_graphics::event::{CGEvent, CGEventTapLocation, CGEventType, CGMouseButton};
+    use core_graphics::geometry::CGPoint;
+
+    let p = CGPoint::new(x, y);
+    for (kind, pause) in [
+        (CGEventType::MouseMoved, 100),
+        (CGEventType::RightMouseDown, 60),
+        (CGEventType::RightMouseUp, 60),
+    ] {
+        CGEvent::new_mouse_event(event_source(), kind, p, CGMouseButton::Right)
             .expect("CGEventCreateMouseEvent failed")
             .post(CGEventTapLocation::HID);
         std::thread::sleep(Duration::from_millis(pause));

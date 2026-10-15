@@ -1,4 +1,4 @@
-//! 64×64 RGBA marguerite icon renderer for the system tray.
+//! RGBA marguerite icon renderer for the system tray / menu bar.
 //!
 //! A Bellis perennis ("marguerite"): 12 plump elliptical petals around a
 //! bright yellow center, white at the base fading to a soft pink at the
@@ -8,9 +8,18 @@
 //! `DriftState` animates the just-fallen petal radially outward + slightly
 //! downward (gravity) while fading.
 //!
-//! At 64×64 the icon is provided at the largest size the Windows shell
-//! normally requests for a notification-area icon. Windows will downscale
-//! for lower-DPI trays.
+//! Two entry points draw the same flower:
+//!
+//! - [`render`] is the Windows path: a fixed 64×64 bitmap, the largest size
+//!   the Windows shell normally requests for a notification-area icon.
+//!   Windows downscales it itself for lower-DPI trays.
+//! - [`render_at`] draws the flower at any pixel size, for hosts that take
+//!   one bitmap per display density and show each as-is (the macOS status
+//!   item: 18 px at 1x, 36 px at 2x). Spec §5, "Drawn at the size the host
+//!   gives…": nothing between the renderer and the screen resamples the
+//!   daisy. Every length is the 64 px design scaled by `size / 64`, and each
+//!   pixel is supersampled so a petal a pixel and a half wide still has a
+//!   graded edge rather than a staircase.
 
 use std::f32::consts::PI;
 use std::time::Duration;
@@ -18,7 +27,11 @@ use std::time::Duration;
 pub const ICON_SIZE: u32 = 64;
 pub const PETAL_COUNT: u8 = 12;
 
-const CENTER: f32 = (ICON_SIZE as f32 - 1.0) * 0.5;
+/// Sub-samples per axis per pixel in [`render_at`]. 4×4 is what the Electron
+/// twin uses; 16 coverage levels are plenty for an 18 px edge.
+const SUPERSAMPLE: u32 = 4;
+
+// The flower is designed on a 64 px canvas; `Geometry::at` scales it.
 
 /// Distance from flower center to the center of each petal ellipse.
 const PETAL_ORBIT: f32 = 20.0;
@@ -30,6 +43,80 @@ const PETAL_LEN: f32 = 11.0;
 const PETAL_WIDTH: f32 = 4.6;
 /// Radius of the central yellow disk.
 const CENTER_RADIUS: f32 = 6.5;
+/// How far a falling petal travels outward over the whole drift.
+const DRIFT_OUTWARD: f32 = 8.0;
+/// How far a falling petal sags under "gravity" over the whole drift.
+const DRIFT_GRAVITY: f32 = 6.0;
+/// Width of the centre disk's edge ramp.
+const DISK_RAMP: f32 = 0.5;
+
+/// The 64 px design scaled to one output size. All lengths in output pixels.
+#[derive(Clone, Copy, Debug)]
+struct Geometry {
+    /// Flower centre, in whichever pixel coordinate convention the caller
+    /// samples with (see [`render`] vs [`render_at`]).
+    center: f32,
+    orbit: f32,
+    petal_len: f32,
+    petal_width: f32,
+    center_radius: f32,
+    drift_outward: f32,
+    drift_gravity: f32,
+    disk_ramp: f32,
+}
+
+impl Geometry {
+    /// Geometry for a `size`-px bitmap sampled in continuous coordinates
+    /// (pixel `x` spans `x..x+1`, so the flower centre sits at `size / 2`).
+    fn at(size: u32) -> Self {
+        let k = size as f32 / ICON_SIZE as f32;
+        Self {
+            center: size as f32 * 0.5,
+            orbit: PETAL_ORBIT * k,
+            petal_len: PETAL_LEN * k,
+            petal_width: PETAL_WIDTH * k,
+            center_radius: CENTER_RADIUS * k,
+            drift_outward: DRIFT_OUTWARD * k,
+            drift_gravity: DRIFT_GRAVITY * k,
+            disk_ramp: DISK_RAMP * k,
+        }
+    }
+
+    /// The Windows 64 px bitmap samples each pixel at its integer coordinate,
+    /// so its centre is `(64 - 1) / 2`. Scale factor 1, hence every length
+    /// is the design constant itself.
+    #[cfg_attr(target_os = "macos", allow(dead_code))] // the Windows tray's bitmap; macOS draws per density
+    fn windows() -> Self {
+        Self {
+            center: (ICON_SIZE as f32 - 1.0) * 0.5,
+            ..Self::at(ICON_SIZE)
+        }
+    }
+
+    /// Where petal `i` (offset by a drift) sits and how it is oriented.
+    fn petal_frame(&self, i: u8, radial_off: f32, gravity_off: f32) -> PetalFrame {
+        let theta = petal_angle(i);
+        // Radial outward direction; y+ is down on screen.
+        let dir_x = theta.sin();
+        let dir_y = -theta.cos();
+        PetalFrame {
+            cx: self.center + dir_x * (self.orbit + radial_off),
+            cy: self.center + dir_y * (self.orbit + radial_off) + gravity_off,
+            dir_x,
+            dir_y,
+        }
+    }
+}
+
+/// One petal's position and radial direction, resolved once per petal rather
+/// than once per sample.
+#[derive(Clone, Copy, Debug)]
+struct PetalFrame {
+    cx: f32,
+    cy: f32,
+    dir_x: f32,
+    dir_y: f32,
+}
 
 const COLOR_PETAL_BASE: [u8; 3] = [248, 248, 252];
 /// Soft warm pink at the petal tip — the marguerite signature.
@@ -119,112 +206,197 @@ pub fn frame_at(duration: Duration, elapsed: Duration) -> DaisyFrame {
     }
 }
 
-/// Render one frame of the daisy as a 64×64 RGBA buffer.
+/// Render one frame of the daisy as a 64×64 RGBA buffer — the Windows path.
 ///
 /// `petals_remaining` counts petals still attached (0..=12); does NOT
 /// include any petal currently animating in `drift`.
+///
+/// One sample per pixel at the pixel's integer coordinate, with the edge
+/// softness coming from the analytic falloff in [`petal_sample`] alone. Kept
+/// as its own loop rather than `render_at(64, ..)`: supersampling changes
+/// the edge bytes, and this bitmap is pinned byte-for-byte by its tests.
+#[cfg_attr(target_os = "macos", allow(dead_code))] // the Windows tray's bitmap; macOS draws per density
 pub fn render(petals_remaining: u8, drift: Option<DriftState>) -> Vec<u8> {
-    let petals_remaining = petals_remaining.min(PETAL_COUNT);
+    let g = Geometry::windows();
+    let scene = Scene::new(&g, petals_remaining, drift);
     let mut buf = vec![0u8; (ICON_SIZE * ICON_SIZE * 4) as usize];
-
-    // Petals fall in order starting from index 0 → with N remaining,
-    // indices [PETAL_COUNT - N .. PETAL_COUNT) are still on the flower.
-    let first_static = PETAL_COUNT - petals_remaining;
 
     for y in 0..ICON_SIZE {
         for x in 0..ICON_SIZE {
-            let px = x as f32;
-            let py = y as f32;
-
-            // Pick the petal covering this pixel most strongly so the tip
-            // colour comes from the *correct* petal (their bounding boxes
-            // overlap slightly near the inner ring).
-            let mut best_alpha: f32 = 0.0;
-            let mut best_color: [u8; 3] = COLOR_PETAL_BASE;
-            for i in first_static..PETAL_COUNT {
-                let (a, c) = petal_sample(i, 0.0, 0.0, 1.0, px, py);
-                if a > best_alpha {
-                    best_alpha = a;
-                    best_color = c;
-                }
-            }
-            if let Some(d) = drift
-                && d.petal_index < PETAL_COUNT
-            {
-                let radial_off = d.progress * 8.0;
-                // Slight gravity arc — petals drift outward + downward.
-                let gravity_y = d.progress * d.progress * 6.0;
-                let fade = (1.0 - d.progress).clamp(0.0, 1.0);
-                let (a, c) = petal_sample(d.petal_index, radial_off, gravity_y, fade, px, py);
-                if a > best_alpha {
-                    best_alpha = a;
-                    best_color = c;
-                }
-            }
-
-            // Yellow center disk sits on top of the petals.
-            let dx = px - CENTER;
-            let dy = py - CENTER;
-            let r = (dx * dx + dy * dy).sqrt();
-            let center_a = soft_disk(r, CENTER_RADIUS);
-
-            let (rr, gg, bb, aa) = composite(best_color, best_alpha, COLOR_CENTER, center_a);
+            let (r, gg, b, a) = scene.sample(&g, x as f32, y as f32);
             let idx = ((y * ICON_SIZE + x) * 4) as usize;
-            buf[idx] = rr;
-            buf[idx + 1] = gg;
-            buf[idx + 2] = bb;
-            buf[idx + 3] = aa;
+            buf[idx] = r as u8;
+            buf[idx + 1] = gg as u8;
+            buf[idx + 2] = b as u8;
+            buf[idx + 3] = a as u8;
         }
     }
 
     buf
 }
 
+/// Render one frame of the daisy as a `size`×`size` straight-alpha RGBA
+/// buffer, for hosts that draw one bitmap per display density (spec §5).
+///
+/// Same flower as [`render`] with every length scaled by `size / 64`. Each
+/// pixel is the premultiplied average of a [`SUPERSAMPLE`]² grid of samples
+/// across it, so an edge crossing the pixel leaves partial alpha instead of
+/// an in/out decision — at 18 px a petal is about a pixel and a half wide
+/// and would otherwise be a staircase.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // only the macOS status item draws per density
+pub fn render_at(size: u32, petals_remaining: u8, drift: Option<DriftState>) -> Vec<u8> {
+    let g = Geometry::at(size);
+    let scene = Scene::new(&g, petals_remaining, drift);
+    let mut buf = vec![0u8; (size * size * 4) as usize];
+
+    for y in 0..size {
+        for x in 0..size {
+            let (r, gg, b, a) = scene.pixel_supersampled(&g, x, y);
+            let idx = ((y * size + x) * 4) as usize;
+            buf[idx] = r as u8;
+            buf[idx + 1] = gg as u8;
+            buf[idx + 2] = b as u8;
+            buf[idx + 3] = a as u8;
+        }
+    }
+
+    buf
+}
+
+/// Everything about one frame that does not depend on the sample point:
+/// which petals are attached, where the drifting one is, how faded it is.
+struct Scene {
+    /// Attached petals: indices `[first_static, PETAL_COUNT)`.
+    first_static: u8,
+    /// The drifting petal, resolved to its frame and alpha scale.
+    drift: Option<(PetalFrame, f32)>,
+}
+
+impl Scene {
+    fn new(g: &Geometry, petals_remaining: u8, drift: Option<DriftState>) -> Self {
+        let petals_remaining = petals_remaining.min(PETAL_COUNT);
+        // Petals fall in order starting from index 0 → with N remaining,
+        // indices [PETAL_COUNT - N .. PETAL_COUNT) are still on the flower.
+        let first_static = PETAL_COUNT - petals_remaining;
+        let drift = drift.filter(|d| d.petal_index < PETAL_COUNT).map(|d| {
+            let radial_off = d.progress * g.drift_outward;
+            // Slight gravity arc — petals drift outward + downward.
+            let gravity_y = d.progress * d.progress * g.drift_gravity;
+            let fade = (1.0 - d.progress).clamp(0.0, 1.0);
+            (g.petal_frame(d.petal_index, radial_off, gravity_y), fade)
+        });
+        Self {
+            first_static,
+            drift,
+        }
+    }
+
+    /// Colour and alpha of the composited flower at one point:
+    /// `(r, g, b)` in `0..=255`, `a` in `0..=255`, all already clamped so a
+    /// bare `as u8` quantizes them.
+    fn sample(&self, g: &Geometry, px: f32, py: f32) -> (f32, f32, f32, f32) {
+        // Pick the petal covering this point most strongly so the tip
+        // colour comes from the *correct* petal (their bounding boxes
+        // overlap slightly near the inner ring).
+        let mut best_alpha: f32 = 0.0;
+        let mut best_color: [u8; 3] = COLOR_PETAL_BASE;
+        for i in self.first_static..PETAL_COUNT {
+            let frame = g.petal_frame(i, 0.0, 0.0);
+            let (a, c) = petal_sample(g, &frame, 1.0, px, py);
+            if a > best_alpha {
+                best_alpha = a;
+                best_color = c;
+            }
+        }
+        if let Some((frame, fade)) = &self.drift {
+            let (a, c) = petal_sample(g, frame, *fade, px, py);
+            if a > best_alpha {
+                best_alpha = a;
+                best_color = c;
+            }
+        }
+
+        // Yellow center disk sits on top of the petals.
+        let dx = px - g.center;
+        let dy = py - g.center;
+        let r = (dx * dx + dy * dy).sqrt();
+        let center_a = soft_disk(r, g.center_radius, g.disk_ramp);
+
+        composite(best_color, best_alpha, COLOR_CENTER, center_a)
+    }
+
+    /// Pixel `(x, y)` as the premultiplied average of a `SUPERSAMPLE`²
+    /// grid of samples across it, so an edge that crosses the pixel leaves
+    /// partial alpha. Same `(r, g, b, a)` convention as [`Scene::sample`].
+    fn pixel_supersampled(&self, g: &Geometry, x: u32, y: u32) -> (f32, f32, f32, f32) {
+        let (mut r, mut gg, mut b, mut a) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+        let step = 1.0 / SUPERSAMPLE as f32;
+        for j in 0..SUPERSAMPLE {
+            for i in 0..SUPERSAMPLE {
+                let sx = x as f32 + (i as f32 + 0.5) * step;
+                let sy = y as f32 + (j as f32 + 0.5) * step;
+                let (sr, sg, sb, sa) = self.sample(g, sx, sy);
+                // Weight colour by alpha: a transparent sample has no colour
+                // to contribute, and an edge pixel should take the colour of
+                // whatever actually covers it.
+                r += sr * sa;
+                gg += sg * sa;
+                b += sb * sa;
+                a += sa;
+            }
+        }
+        if a <= 0.0 {
+            return (0.0, 0.0, 0.0, 0.0);
+        }
+        let n = (SUPERSAMPLE * SUPERSAMPLE) as f32;
+        (r / a, gg / a, b / a, (a / n).clamp(0.0, 255.0))
+    }
+}
+
 fn petal_angle(i: u8) -> f32 {
     (i as f32) * (2.0 * PI / PETAL_COUNT as f32)
 }
 
-/// Returns (alpha, color) at pixel (px, py) for petal `i`. Tip colour
-/// blends white→pink along the outward half of the petal.
+/// Returns (alpha, color) at point (px, py) for the petal at `frame`. Tip
+/// colour blends white→pink along the outward half of the petal.
 fn petal_sample(
-    i: u8,
-    radial_off: f32,
-    gravity_off: f32,
+    g: &Geometry,
+    frame: &PetalFrame,
     alpha_scale: f32,
     px: f32,
     py: f32,
 ) -> (f32, [u8; 3]) {
-    let theta = petal_angle(i);
-    // Radial outward direction; y+ is down on screen.
-    let dir_x = theta.sin();
-    let dir_y = -theta.cos();
+    let PetalFrame {
+        cx,
+        cy,
+        dir_x,
+        dir_y,
+    } = *frame;
     let perp_x = -dir_y;
     let perp_y = dir_x;
-
-    let cx = CENTER + dir_x * (PETAL_ORBIT + radial_off);
-    let cy = CENTER + dir_y * (PETAL_ORBIT + radial_off) + gravity_off;
 
     let vx = px - cx;
     let vy = py - cy;
     let r_par = vx * dir_x + vy * dir_y;
     let r_per = vx * perp_x + vy * perp_y;
 
-    // Ellipse SDF with a soft 1px falloff at the edge for anti-aliasing.
-    let n = (r_par / PETAL_LEN).powi(2) + (r_per / PETAL_WIDTH).powi(2);
+    // Ellipse SDF with a soft falloff at the edge. `inside` is in normalised
+    // ellipse units, so the ramp's pixel width scales with the petal.
+    let n = (r_par / g.petal_len).powi(2) + (r_per / g.petal_width).powi(2);
     let inside = 1.0 - n;
     let a = (inside * 4.0 + 0.4).clamp(0.0, 1.0) * alpha_scale;
 
     // Tip colouring: blend toward pink along the outward half. r_par > 0
     // means "this pixel is on the side of the petal pointing away from the
     // flower center". Squaring concentrates the pink near the very tip.
-    let tip_factor = (r_par / PETAL_LEN).max(0.0).powi(2);
+    let tip_factor = (r_par / g.petal_len).max(0.0).powi(2);
     let color = lerp_rgb(COLOR_PETAL_BASE, COLOR_PETAL_TIP, tip_factor);
 
     (a, color)
 }
 
-fn soft_disk(r: f32, radius: f32) -> f32 {
-    (radius - r + 0.5).clamp(0.0, 1.0)
+fn soft_disk(r: f32, radius: f32, ramp: f32) -> f32 {
+    (radius - r + ramp).clamp(0.0, 1.0)
 }
 
 fn lerp_rgb(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
@@ -237,20 +409,21 @@ fn lerp_rgb(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
 }
 
 /// "Above over below" alpha compositing (yellow center over white petals).
-fn composite(below: [u8; 3], a_below: f32, above: [u8; 3], a_above: f32) -> (u8, u8, u8, u8) {
+/// Returns straight colour and alpha, each clamped to `0..=255`.
+fn composite(below: [u8; 3], a_below: f32, above: [u8; 3], a_above: f32) -> (f32, f32, f32, f32) {
     let a_out = a_above + a_below * (1.0 - a_above);
     if a_out <= 0.001 {
-        return (0, 0, 0, 0);
+        return (0.0, 0.0, 0.0, 0.0);
     }
-    let mix = |c_b: u8, c_a: u8| -> u8 {
+    let mix = |c_b: u8, c_a: u8| -> f32 {
         let v = (c_a as f32 * a_above + c_b as f32 * a_below * (1.0 - a_above)) / a_out;
-        v.clamp(0.0, 255.0) as u8
+        v.clamp(0.0, 255.0)
     };
     (
         mix(below[0], above[0]),
         mix(below[1], above[1]),
         mix(below[2], above[2]),
-        (a_out * 255.0).clamp(0.0, 255.0) as u8,
+        (a_out * 255.0).clamp(0.0, 255.0),
     )
 }
 
@@ -340,9 +513,52 @@ mod tests {
         assert_eq!(after.petal_duration, Duration::from_millis(100));
     }
 
-    fn alpha_at(buf: &[u8], x: u32, y: u32) -> u8 {
-        let i = ((y * ICON_SIZE + x) * 4 + 3) as usize;
+    fn alpha_at(buf: &[u8], size: u32, x: u32, y: u32) -> u8 {
+        let i = ((y * size + x) * 4 + 3) as usize;
         buf[i]
+    }
+
+    fn rgba_at(buf: &[u8], size: u32, x: u32, y: u32) -> [u8; 4] {
+        let i = ((y * size + x) * 4) as usize;
+        [buf[i], buf[i + 1], buf[i + 2], buf[i + 3]]
+    }
+
+    // ---- render: pin the Windows bitmap byte-for-byte ----------------------
+    //
+    // `render` feeds the Windows notification-area icon. These hashes were
+    // taken from its output before `render_at` existed; a change here means
+    // the Windows daisy changed, which is never a side effect of macOS work.
+
+    fn fnv1a64(bytes: &[u8]) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for &b in bytes {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        h
+    }
+
+    const DRIFT_MID: DriftState = DriftState {
+        petal_index: 5,
+        progress: 0.5,
+    };
+
+    #[test]
+    fn render_output_is_pinned() {
+        let cases: [(u8, Option<DriftState>, u64); 3] = [
+            (PETAL_COUNT, None, 0x64fa_db5f_f031_ae26),
+            (6, Some(DRIFT_MID), 0x51fb_5d5d_0d98_d697),
+            (0, None, 0x847a_9d62_4196_f5c5),
+        ];
+        for (petals, drift, expected) in cases {
+            let buf = render(petals, drift);
+            assert_eq!(buf.len(), (ICON_SIZE * ICON_SIZE * 4) as usize);
+            let got = fnv1a64(&buf);
+            assert_eq!(
+                got, expected,
+                "render({petals}, {drift:?}) changed: fnv1a64 = {got:#018x}"
+            );
+        }
     }
 
     #[test]
@@ -350,14 +566,17 @@ mod tests {
         let buf = render(PETAL_COUNT, None);
         // Top petal centered around y ≈ 31.5 - 20 = 11.5.
         // Vertical centerline at x = 32.
-        assert!(alpha_at(&buf, 32, 8) > 100, "top petal should be opaque");
+        assert!(
+            alpha_at(&buf, ICON_SIZE, 32, 8) > 100,
+            "top petal should be opaque"
+        );
     }
 
     #[test]
     fn top_petal_tip_is_pink() {
         let buf = render(PETAL_COUNT, None);
         // Near the outer tip of the top petal (y ≈ 11.5 - PETAL_LEN ≈ 0.5)
-        let i = ((3 * ICON_SIZE + (CENTER as u32)) * 4) as usize;
+        let i = ((3 * ICON_SIZE + (Geometry::windows().center as u32)) * 4) as usize;
         let r = buf[i];
         let g = buf[i + 1];
         let _b = buf[i + 2];
@@ -371,9 +590,10 @@ mod tests {
     fn empty_daisy_has_only_center() {
         let buf = render(0, None);
         // Outer region — transparent.
-        assert_eq!(alpha_at(&buf, 32, 2), 0);
+        assert_eq!(alpha_at(&buf, ICON_SIZE, 32, 2), 0);
         // Dead center — opaque yellow.
-        let i = ((CENTER as u32 * ICON_SIZE + CENTER as u32) * 4) as usize;
+        let c = Geometry::windows().center as u32;
+        let i = ((c * ICON_SIZE + c) * 4) as usize;
         assert!(buf[i + 3] > 200);
         assert!(buf[i] > 200);
         assert!(buf[i + 1] > 150);
@@ -412,7 +632,146 @@ mod tests {
                 progress: 1.0,
             }),
         );
-        assert!(alpha_at(&buf, 32, 8) < 10);
+        assert!(alpha_at(&buf, ICON_SIZE, 32, 8) < 10);
+    }
+
+    // ---- render_at: one bitmap per host density --------------------------
+
+    /// The sizes the macOS status item asks for: 18 px at 1x, 36 px at 2x.
+    const HOST_SIZES: [u32; 2] = [18, 36];
+
+    /// Pixel on the vertical centreline, through the middle of the top petal
+    /// (petal 0, 12 o'clock) at `size`.
+    fn top_petal_pixel(size: u32) -> (u32, u32) {
+        let g = Geometry::at(size);
+        (size / 2, (g.center - g.orbit) as u32)
+    }
+
+    #[test]
+    fn render_at_buffer_is_size_squared_rgba() {
+        for size in HOST_SIZES {
+            assert_eq!(
+                render_at(size, PETAL_COUNT, None).len(),
+                (size * size * 4) as usize
+            );
+        }
+    }
+
+    #[test]
+    fn render_at_centre_pixel_is_opaque_yellow() {
+        for size in HOST_SIZES {
+            for petals in [PETAL_COUNT, 0] {
+                let buf = render_at(size, petals, None);
+                let [r, g, b, a] = rgba_at(&buf, size, size / 2, size / 2);
+                assert!(a > 200, "size {size}, {petals} petals: centre alpha {a}");
+                assert!(
+                    r > 200 && g > 150 && b < 120,
+                    "size {size}: not yellow ({r},{g},{b})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn render_at_top_petal_present_when_attached_absent_when_not() {
+        for size in HOST_SIZES {
+            let (x, y) = top_petal_pixel(size);
+            let full = render_at(size, PETAL_COUNT, None);
+            assert!(
+                alpha_at(&full, size, x, y) > 100,
+                "size {size}: top petal missing at ({x},{y})"
+            );
+            let bare = render_at(size, 0, None);
+            assert_eq!(
+                alpha_at(&bare, size, x, y),
+                0,
+                "size {size}: something at ({x},{y}) with no petals"
+            );
+        }
+    }
+
+    /// At 18 px the top petal is about 2.6 px wide. A single sample per
+    /// pixel leaves its cross-section as `0,255,255,0`; supersampling has to
+    /// put graded alpha on the edge pixels instead.
+    #[test]
+    fn render_at_petal_edges_are_antialiased() {
+        for size in HOST_SIZES {
+            let g = Geometry::at(size);
+            let (_, y) = top_petal_pixel(size);
+            // Only the top petal's own columns: the 1 o'clock and 11 o'clock
+            // petals reach into this row further out and would otherwise
+            // supply graded pixels of their own.
+            let span =
+                (g.center - g.petal_width - 0.5) as u32..=(g.center + g.petal_width + 0.5) as u32;
+            let buf = render_at(size, PETAL_COUNT, None);
+            let row: Vec<u8> = span.map(|x| alpha_at(&buf, size, x, y)).collect();
+            let intermediate = row.iter().filter(|&&a| a > 24 && a < 232).count();
+            assert!(
+                intermediate >= 2,
+                "size {size}: no graded edge pixels across the top petal, row {y}: {row:?}"
+            );
+            let staircase = row
+                .windows(2)
+                .any(|w| w.iter().min().unwrap() < &24 && w.iter().max().unwrap() > &232);
+            assert!(
+                !staircase,
+                "size {size}: hard 0→255 jump across the top petal, row {y}: {row:?}"
+            );
+        }
+    }
+
+    /// At progress 0 the drifting petal is exactly the attached one, at every
+    /// size — the drift travel scales with the geometry.
+    #[test]
+    fn render_at_drift_at_progress_zero_matches_attached_petal() {
+        for size in HOST_SIZES {
+            let a = render_at(size, PETAL_COUNT, None);
+            let b = render_at(
+                size,
+                PETAL_COUNT - 1,
+                Some(DriftState {
+                    petal_index: 0,
+                    progress: 0.0,
+                }),
+            );
+            assert_eq!(a, b, "size {size}");
+        }
+    }
+
+    /// Writes `daisy-rust-18.png` and `daisy-rust-36.png` (full daisy) plus a
+    /// mid-drift pair into `$NUDGE_DAISY_PNG_DIR` (default: the OS temp dir).
+    /// Run with `--ignored` to eyeball the host-density bitmaps.
+    #[test]
+    #[ignore]
+    fn png_dump_host_sizes() {
+        let dir = std::env::var_os("NUDGE_DAISY_PNG_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        for size in HOST_SIZES {
+            let save = |name: String, buf: Vec<u8>| {
+                let path = dir.join(name);
+                image::RgbaImage::from_raw(size, size, buf)
+                    .expect("buffer is size*size*4")
+                    .save(&path)
+                    .expect("write png");
+                println!("wrote {}", path.display());
+            };
+            save(
+                format!("daisy-rust-{size}.png"),
+                render_at(size, PETAL_COUNT, None),
+            );
+            save(
+                format!("daisy-rust-{size}-drift.png"),
+                render_at(
+                    size,
+                    PETAL_COUNT - 1,
+                    Some(DriftState {
+                        petal_index: 0,
+                        progress: 0.5,
+                    }),
+                ),
+            );
+        }
     }
 
     /// Eyeball helper. Run with `--ignored --nocapture` to print all 13
@@ -422,23 +781,26 @@ mod tests {
     fn ascii_dump_all_states() {
         for petals in (0..=PETAL_COUNT).rev() {
             println!("\n=== {} petals remaining ===", petals);
-            dump_ascii(&render(petals, None));
+            dump_ascii(&render(petals, None), ICON_SIZE);
         }
         println!("\n=== drift (petal 0, progress=0.5) ===");
-        dump_ascii(&render(
-            PETAL_COUNT - 1,
-            Some(DriftState {
-                petal_index: 0,
-                progress: 0.5,
-            }),
-        ));
+        dump_ascii(
+            &render(
+                PETAL_COUNT - 1,
+                Some(DriftState {
+                    petal_index: 0,
+                    progress: 0.5,
+                }),
+            ),
+            ICON_SIZE,
+        );
     }
 
-    fn dump_ascii(buf: &[u8]) {
-        for y in 0..ICON_SIZE {
+    fn dump_ascii(buf: &[u8], size: u32) {
+        for y in 0..size {
             let mut row = String::new();
-            for x in 0..ICON_SIZE {
-                let i = ((y * ICON_SIZE + x) * 4) as usize;
+            for x in 0..size {
+                let i = ((y * size + x) * 4) as usize;
                 let a = buf[i + 3];
                 let r = buf[i];
                 let g = buf[i + 1];

@@ -156,7 +156,7 @@ answered.
 
 `Leave` has no failure path: it never writes and never validates.
 
-## 5. Tray (native Windows build only)
+## 5. Tray (native builds only)
 
 The tray icon is a live indicator of time-to-next-nudge: it both shows the
 app is running and "ripens" instead of a numeric countdown.
@@ -170,10 +170,12 @@ app is running and "ripens" instead of a numeric countdown.
   any text inside the icon.
 - The palette is the only place in the app with an accent color (pink tip +
   yellow center). The card and pill stay monochrome.
-- Drawn at the size the host gives a menu bar / tray icon (about 18 pt on
-  macOS, 16 px at 100 % DPI on Windows), with one bitmap per display density
-  the host will show it at, each drawn at that density's pixel size. Nothing
-  between the renderer and the screen resamples the daisy.
+- On macOS the daisy is drawn at the menu bar's icon size, 18 pt, with one
+  bitmap per display density the bar comes in (18 px for 1x, 36 px for 2x),
+  each drawn at that density's pixel size and declared 18 pt in one image, so
+  nothing between the renderer and the screen resamples it. On Windows it is
+  a single 64 px bitmap that the notification area scales to the icon size
+  (16 px at 100 % DPI).
 
 ### Link to the timer
 

@@ -32,21 +32,27 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ulid = "1"
 
-# The menu-bar / notification-area status item, on both shipping platforms.
-# One version for both so the icon, the menu and the tooltip are literally the
-# same code path; `platform::{windows,macos}` differ only in which thread owns
-# the item and what wakes the app.
-[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
-tray-icon = "0.19"
 # How both backends reach their native window handle out of `eframe::Frame`:
 # the HWND the tray thread posts to on Windows, the NSView the card's
 # frosted-glass backdrop is inserted next to on macOS.
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 raw-window-handle = "0.6"
 
 [target.'cfg(target_os = "windows")'.dependencies]
+# The notification-area icon. Windows-only: the menu it builds is `muda`'s,
+# which macOS takes directly (below), while the item itself — the thing that
+# holds the bitmap — is this crate's here and ours there
+# (`platform::macos::status_item`), because this crate sizes a single bitmap
+# to the bar and the macOS daisy is drawn once per display density.
+tray-icon = "0.19"
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_System_Registry", "Win32_Security"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# The status item's menu — the same crate `tray-icon` re-exports as
+# `tray_icon::menu` on Windows, so `build_menu` and the `MenuEvent` handler
+# are one code path on both platforms. The 0.15 line is what tray-icon 0.19
+# already locks, so this adds no crate to the build.
+muda = "0.15"
 # Revealing a hidden window needs an AppKit activation call: with
 # `ViewportCommand::Focus` alone the popup appears but never becomes key, so
 # `viewport().focused` stays false and every keystroke — Esc included — is
@@ -70,8 +76,18 @@ objc2-app-kit = { version = "0.2", features = [
     "NSWindow",
     "NSAppearance",       # pin the material dark — the card is dark in every theme
     "objc2-quartz-core",  # NSView::layer(), to clip the blur to the card's radius
-    "NSEvent",            # the app-local key-down monitor the recorder reads
+    "NSEvent",            # the app-local key-down monitor the recorder reads, and the click the status item's action tells apart
     "block2",             # the monitor's handler is an Objective-C block
+    "NSStatusBar",        # the system status bar the daisy's item is added to and removed from
+    "NSStatusItem",       # the item: its button, and the menu attached while it is shown
+    "NSStatusBarButton",  # the item's button, where the image, tooltip and click action live
+    "NSButton",           # NSStatusBarButton's superclass chain: setImage
+    "NSControl",          # ... setTarget / setAction / sendActionOn / performClick
+    "NSImage",            # the 18 pt image the button shows
+    "NSImageRep",         # setSize on each representation, and reading them back in tests
+    "NSBitmapImageRep",   # one rep per display density, built from the daisy's RGBA
+    "NSMenu",             # the muda NSMenu handed to the item while it is tracked
+    "NSApplication",      # currentEvent, to tell a right-up from a left-up in the action
 ] }
 # The handler an `NSEvent` monitor takes is an Objective-C block, and this is
 # the crate that builds one. Already in the tree via winit 0.30's objc2 0.5
