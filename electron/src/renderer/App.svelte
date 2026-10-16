@@ -5,6 +5,12 @@
     INITIAL_TRIGGER_SOURCE,
     type TriggerSource,
   } from "../shared/nudgeFlow";
+  import {
+    CARD_WIDTH,
+    CARD_HEIGHT,
+    spriteLayout,
+    type SpriteView,
+  } from "../shared/sprite";
 
   let doing = $state("");
   let bullshit = $state("");
@@ -34,8 +40,46 @@
 
   const isElectron = typeof window !== "undefined" && !!window.nudge?.save;
 
+  // Optional sprite drawn 1:1 in front of the card. Electron: the main
+  // process validates config.sprite and pushes the layout. Browser (tests):
+  // `?sprite=<url>&x=<px>&y=<px>&cardWidth=<px>`.
+  let sprite: SpriteView | null = $state(null);
+
+  async function browserSprite(): Promise<SpriteView | null> {
+    const query = new URLSearchParams(location.search);
+    const url = query.get("sprite");
+    if (!url) return null;
+    const int = (key: string, fallback: number) => {
+      const n = Number(query.get(key));
+      return query.has(key) && Number.isInteger(n) ? n : fallback;
+    };
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    return {
+      url,
+      layout: spriteLayout(
+        { width: int("cardWidth", CARD_WIDTH), height: CARD_HEIGHT },
+        { x: int("x", 0), y: int("y", 0), width: img.naturalWidth, height: img.naturalHeight },
+      ),
+    };
+  }
+
+  // Where the window box sits on the page. Electron: the window is the box.
+  // Browser: offset so the card lands at its spec spot (centred, top 25vh).
+  const stageLeft = (s: SpriteView) =>
+    isElectron ? "0px" : `calc(50% - ${s.layout.card.width / 2 + s.layout.card.x}px)`;
+  const stageTop = (s: SpriteView) =>
+    isElectron ? "0px" : `calc(25vh - ${s.layout.card.y}px)`;
+
   onMount(() => {
     doingInput?.focus();
+    const unsubSprite = isElectron
+      ? window.nudge!.onSprite?.((s) => (sprite = s))
+      : undefined;
+    (isElectron ? window.nudge!.getSprite?.() : browserSprite())?.then(
+      (s) => (sprite = s ?? null),
+    );
 
     // Electron mode: re-focus the first field on show, and record whether the
     // window took focus. doing/bullshit are not cleared here — Enter/Esc clear
@@ -70,6 +114,7 @@
 
     return () => {
       unsub?.();
+      unsubSprite?.();
       window.removeEventListener("focus", onFocus);
       window.removeEventListener("blur", switchAway);
       if (countdownId) clearInterval(countdownId);
@@ -187,10 +232,35 @@
     ></div>
   {/if}
   {#if visible}
+    <!-- Stage = the window box (card ∪ sprite); sprite and card are placed
+         inside it at their layout rects. -->
+    {#if sprite}
+      <div
+        class="absolute pointer-events-none"
+        style:left={stageLeft(sprite)}
+        style:top={stageTop(sprite)}
+        style:width="{sprite.layout.window.width}px"
+        style:height="{sprite.layout.window.height}px"
+      >
+        <img
+          src={sprite.url}
+          alt=""
+          data-testid="sprite"
+          class="absolute z-20 select-none max-w-none"
+          style:left="{sprite.layout.sprite.x}px"
+          style:top="{sprite.layout.sprite.y}px"
+          style:width="{sprite.layout.sprite.width}px"
+          style:height="{sprite.layout.sprite.height}px"
+        />
+      </div>
+    {/if}
     <form
       onkeydown={handleKeydown}
       onsubmit={(e) => e.preventDefault()}
-      class="absolute z-10 left-1/2 -translate-x-1/2 {isElectron ? 'top-0' : 'top-[25vh]'} bg-zinc-900/80 backdrop-blur-md text-white rounded-lg shadow-2xl w-[480px] overflow-hidden"
+      class="absolute z-10 {sprite ? '' : `left-1/2 -translate-x-1/2 w-[480px] ${isElectron ? 'top-0' : 'top-[25vh]'}`} bg-zinc-900/80 backdrop-blur-md text-white rounded-lg shadow-2xl overflow-hidden"
+      style:left={sprite ? `calc(${stageLeft(sprite)} + ${sprite.layout.card.x}px)` : undefined}
+      style:top={sprite ? `calc(${stageTop(sprite)} + ${sprite.layout.card.y}px)` : undefined}
+      style:width={sprite ? `${sprite.layout.card.width}px` : undefined}
       data-testid="nudge"
     >
       <div class="row border-b border-zinc-700">

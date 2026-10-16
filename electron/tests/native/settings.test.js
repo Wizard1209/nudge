@@ -59,6 +59,12 @@ describe('settings window — no gray flash, content fully painted', () => {
       'settings-hotkey-record',
       'settings-interval',
       'settings-autostart',
+      'settings-sprite-enabled',
+      'settings-sprite-path',
+      'settings-sprite-browse',
+      'settings-sprite-x',
+      'settings-sprite-y',
+      'settings-card-width',
       'settings-save',
       'settings-cancel',
     ]) {

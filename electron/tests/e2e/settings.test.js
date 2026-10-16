@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { launchBrowser, createPage } from './fixtures/browser.js';
+import { SPRITE_FIXTURE_PATH } from './fixtures/sprite.js';
+import { opaqueRgbaPng, rgbPng } from '../fixtures/png.js';
+import { SPRITE_ERROR } from '../../src/shared/sprite.ts';
 
 const STORAGE_KEY = 'nudge-config';
 
@@ -92,6 +95,7 @@ describe('settings sub-app', () => {
             hotkey: spell('⌃⇧Space', 'Ctrl+Shift+Space'),
             default_interval_minutes: 10,
             autostart: false,
+            sprite: { enabled: false, path: '', x: 0, y: 0, card_width: 480 },
         });
     });
 
@@ -264,5 +268,107 @@ describe('settings sub-app', () => {
         await page.click('[data-testid="settings-autostart"]');
         const stored = await readStored(page);
         expect(stored.autostart).toBe(true);
+    });
+
+    describe('sprite section', () => {
+        const IDS = [
+            'settings-sprite-enabled',
+            'settings-sprite-path',
+            'settings-sprite-x',
+            'settings-sprite-y',
+            'settings-card-width',
+        ];
+        const dataUrl = (buf) => `data:image/png;base64,${buf.toString('base64')}`;
+
+        // Svelte's bind:value listens for `input`; set long values in one go.
+        async function setField(id, value) {
+            await page.$eval(`[data-testid="${id}"]`, (el, v) => {
+                el.value = v;
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+            }, value);
+        }
+
+        async function spriteError() {
+            const el = await page.$('[data-testid="settings-sprite-error"]');
+            return el ? el.evaluate((e) => e.textContent.trim()) : null;
+        }
+
+        it('shows enabled, path, X, Y, card width — in that order, after autostart', async () => {
+            const order = await page.evaluate((ids) => {
+                const els = ['settings-autostart', ...ids].map((id) => document.querySelector(`[data-testid="${id}"]`));
+                if (els.some((e) => !e)) return null;
+                return els.slice(1).every((el, i) =>
+                    els[i].compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING);
+            }, IDS);
+            expect(order).toBe(true);
+        });
+
+        it('starts off, with an empty path, at (0, 0) and a 480px card', async () => {
+            const values = await page.evaluate((ids) => ids.map((id) => {
+                const el = document.querySelector(`[data-testid="${id}"]`);
+                return el.type === 'checkbox' ? el.checked : el.value;
+            }), IDS);
+            expect(values).toEqual([false, '', '0', '0', '480']);
+        });
+
+        it('has no Browse button in the browser sub-app', async () => {
+            expect(await page.$('[data-testid="settings-sprite-browse"]')).toBeNull();
+        });
+
+        it('saves a valid sprite', async () => {
+            await page.click('[data-testid="settings-sprite-enabled"]');
+            await setField('settings-sprite-path', SPRITE_FIXTURE_PATH);
+            await setField('settings-sprite-x', '-41');
+            await setField('settings-sprite-y', '-277');
+            await setField('settings-card-width', '679');
+            await page.click('[data-testid="settings-save"]');
+            await page.waitForFunction(() => localStorage.getItem('nudge-config'));
+            expect((await readStored(page)).sprite).toEqual({
+                enabled: true, path: SPRITE_FIXTURE_PATH, x: -41, y: -277, card_width: 679,
+            });
+            expect(await spriteError()).toBeNull();
+        });
+
+        for (const [name, path, error] of [
+            ['an empty path', '', SPRITE_ERROR.noPath],
+            ['a non-PNG', '/index.html', SPRITE_ERROR.notPng],
+            ['a PNG without alpha', dataUrl(rgbPng()), SPRITE_ERROR.noAlpha],
+            ['a fully opaque PNG', dataUrl(opaqueRgbaPng()), SPRITE_ERROR.opaque],
+        ]) {
+            it(`blocks Save for an enabled sprite with ${name}, showing why`, async () => {
+                await page.click('[data-testid="settings-sprite-enabled"]');
+                await setField('settings-sprite-path', path);
+                await page.click('[data-testid="settings-save"]');
+                await page.waitForSelector('[data-testid="settings-sprite-error"]');
+                expect(await spriteError()).toBe(error);
+                expect(await readStored(page)).toBeNull();
+            });
+        }
+
+        it('saves a disabled sprite whatever its path', async () => {
+            await setField('settings-sprite-path', '/nope.png');
+            await page.click('[data-testid="settings-save"]');
+            await page.waitForFunction(() => localStorage.getItem('nudge-config'));
+            expect((await readStored(page)).sprite).toMatchObject({ enabled: false, path: '/nope.png' });
+            expect(await spriteError()).toBeNull();
+        });
+
+        it('blocks Save on a non-integer X, inline', async () => {
+            await setField('settings-sprite-x', '1.5');
+            await page.click('[data-testid="settings-save"]');
+            await page.waitForSelector('[data-testid="settings-sprite-error"]');
+            expect(await spriteError()).toMatch(/X/);
+            expect(await readStored(page)).toBeNull();
+        });
+
+        it('clears the error once a fixed form saves', async () => {
+            await page.click('[data-testid="settings-sprite-enabled"]');
+            await page.click('[data-testid="settings-save"]');
+            await page.waitForSelector('[data-testid="settings-sprite-error"]');
+            await setField('settings-sprite-path', SPRITE_FIXTURE_PATH);
+            await page.click('[data-testid="settings-save"]');
+            await page.waitForFunction(() => localStorage.getItem('nudge-config'));
+            expect(await spriteError()).toBeNull();
+        });
     });
 });

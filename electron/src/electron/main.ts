@@ -10,7 +10,7 @@ import {
   nativeImage,
 } from "electron";
 import path from "node:path";
-import { watch, type FSWatcher } from "node:fs";
+import { watch, readFileSync, type FSWatcher } from "node:fs";
 import { dirname, basename } from "node:path";
 import { ulid } from "ulid";
 import {
@@ -28,7 +28,9 @@ import {
   diffConfig,
   DEFAULT_CONFIG,
   type Config,
+  type SpriteConfig,
 } from "./config";
+import { normalizeSprite } from "../shared/config";
 import { parseHotkey, hotkeyToAccelerator } from "../shared/hotkey";
 import {
   restartsTimer,
@@ -37,6 +39,16 @@ import {
   type CloseAction,
 } from "../shared/nudgeFlow";
 import { applyAutostart } from "../shared/autostart";
+import {
+  CARD_WIDTH,
+  CARD_HEIGHT,
+  SPRITE_ERROR,
+  checkSpritePng,
+  spriteLayout,
+  type Rect,
+  type Size,
+  type SpriteView,
+} from "../shared/sprite";
 import { ElectronAutostartProvider } from "./autostart";
 import { buildTrayIcon, daisyFrame, formatTooltip, type DaisyFrame } from "./trayIcon";
 
@@ -53,6 +65,10 @@ const PETAL_FADE_MS = 250;
 
 let win: BrowserWindow | null = null;
 let settingsWin: BrowserWindow | null = null;
+// The sprite the popup window is laid out for; null = plain card.
+let sprite: SpriteView | null = null;
+// A saved sprite config not yet applied: it waits until the popup is hidden.
+let pendingSprite: SpriteConfig | null = null;
 let tray: Tray | null = null;
 let timerId: ReturnType<typeof setTimeout> | null = null;
 let timerStartMs = 0;
@@ -119,6 +135,10 @@ function applyConfig(next: Config): void {
   const changed = diffConfig(currentConfig, next);
   currentConfig = next;
   if (changed.hotkey) registerHotkey(next);
+  if (changed.sprite) {
+    pendingSprite = next.sprite;
+    applyPendingSprite();
+  }
 }
 
 // Watch the PARENT dir, not the file: an atomic save (tmp + rename) swaps the
@@ -205,15 +225,18 @@ function positionCard() {
   if (!win) return;
   const cursor = screen.getCursorScreenPoint();
   const { workArea } = screen.getDisplayNearestPoint(cursor);
-  const [w] = win.getSize();
-  const x = Math.round(workArea.x + (workArea.width - w) / 2);
-  const y = Math.round(workArea.y + workArea.height * 0.25);
+  // With a sprite the window spans card ∪ sprite and the card sits inside it
+  // at its layout offset; the card keeps its screen spot either way.
+  const card = cardRect();
+  const x = Math.round(workArea.x + (workArea.width - card.width) / 2) - card.x;
+  const y = Math.round(workArea.y + workArea.height * 0.25) - card.y;
   win.setPosition(x, y);
 }
 
 function hideNudge() {
   if (!win) return;
   win.hide();
+  applyPendingSprite();
 }
 
 function parseMinutes(value: unknown): number {
@@ -285,13 +308,14 @@ function openSettings() {
     return;
   }
   settingsWin = new BrowserWindow({
-    // useContentSize: the 460×440 is the *client* area, so the OS title bar
+    // useContentSize: the 460×640 is the *client* area, so the OS title bar
     // doesn't eat into it and clip the form (the bug was the title bar
     // shrinking a frame-inclusive height on Windows).
     width: 460,
     // Tall enough for the vocabulary line under the hotkey field (§9): it is
-    // standing information, so it must fit without scrolling.
-    height: 540,
+    // standing information, so it must fit without scrolling — and for the
+    // sprite section below "Launch at login".
+    height: 740,
     useContentSize: true,
     title: "Nudge — Settings",
     resizable: false,
@@ -372,22 +396,28 @@ function createWindow() {
   // there.
   const isWindows = process.platform === "win32";
   const isMac = process.platform === "darwin";
+  // A sprite needs a see-through window around the card, which Acrylic rules
+  // out (see above): with a sprite the window is transparent everywhere.
+  // TODO: the transparent area around the card still eats clicks — toggle
+  // setIgnoreMouseEvents(…, { forward: true }) on card hover.
+  const acrylic = isWindows && !sprite;
+  const size = windowSize();
   win = new BrowserWindow({
     // macOS: a non-activating panel — it takes the keyboard without
     // activating the app, so another app grabbing activation cannot leave the
     // card visible but deaf (spec §1).
     type: isMac ? "panel" : undefined,
-    width: 480,
-    height: 170,
+    width: size.width,
+    height: size.height,
     useContentSize: true,
     frame: false,
-    transparent: !isWindows,
+    transparent: !acrylic,
     alwaysOnTop: true,
     resizable: false,
     skipTaskbar: true,
     show: false,
     backgroundColor: "#00000000",
-    backgroundMaterial: isWindows ? "acrylic" : undefined,
+    backgroundMaterial: acrylic ? "acrylic" : undefined,
     roundedCorners: true,
     hasShadow: false,
     paintWhenInitiallyHidden: true,
@@ -410,6 +440,87 @@ function createWindow() {
     win.loadFile(path.join(__dirname, "../renderer/index.html"));
   }
 }
+
+// --- Sprite ---
+
+function cardRect(): Rect {
+  return sprite?.layout.card ?? { x: 0, y: 0, width: CARD_WIDTH, height: CARD_HEIGHT };
+}
+
+function windowSize(): Size {
+  return sprite?.layout.window ?? { width: CARD_WIDTH, height: CARD_HEIGHT };
+}
+
+type SpriteFile =
+  | { ok: true; bytes: Buffer; width: number; height: number }
+  | { ok: false; error: string };
+
+/** Read and validate a sprite PNG ("a PNG without a background"). */
+async function readSpriteFile(file: string): Promise<SpriteFile> {
+  if (file === "") return { ok: false, error: SPRITE_ERROR.noPath };
+  let bytes: Buffer;
+  try {
+    bytes = readFileSync(file);
+  } catch {
+    return { ok: false, error: `${SPRITE_ERROR.notFound}: ${file}` };
+  }
+  const check = await checkSpritePng(bytes, (png) => {
+    const image = nativeImage.createFromBuffer(Buffer.from(png));
+    return image.isEmpty() ? null : image.toBitmap();
+  });
+  return check.ok ? { ...check, bytes } : check;
+}
+
+/** The sprite to draw for a config, or null when it is off or unusable. */
+async function spriteView(cfg: SpriteConfig): Promise<SpriteView | null> {
+  if (!cfg.enabled) return null;
+  const file = await readSpriteFile(cfg.path);
+  if (!file.ok) {
+    console.error(`Nudge: sprite not shown: ${file.error}`);
+    return null;
+  }
+  return {
+    url: "data:image/png;base64," + file.bytes.toString("base64"),
+    layout: spriteLayout(
+      { width: cfg.card_width, height: CARD_HEIGHT },
+      { x: cfg.x, y: cfg.y, width: file.width, height: file.height },
+    ),
+  };
+}
+
+// Applies run one at a time, so a slow read can't overwrite a newer config.
+let spriteApply = Promise.resolve();
+
+/**
+ * Apply a saved sprite change once the popup is hidden, so it never reshapes
+ * under the user. Turning the sprite on or off recreates the window, because
+ * `transparent` (and with it Acrylic) is fixed at creation; any other change
+ * resizes the window and pushes the new layout to the renderer.
+ */
+function applyPendingSprite(): void {
+  spriteApply = spriteApply.then(async () => {
+    if (!pendingSprite || !win || win.isVisible()) return;
+    const cfg = pendingSprite;
+    pendingSprite = null;
+    const next = await spriteView(cfg);
+    if (win.isVisible()) {
+      pendingSprite ??= cfg; // shown meanwhile: retry on the next hide
+      return;
+    }
+    const recreate = !!sprite !== !!next;
+    sprite = next;
+    if (recreate) {
+      win.destroy();
+      createWindow();
+    } else {
+      const size = windowSize();
+      win.setContentSize(size.width, size.height);
+      win.webContents.send("nudge:sprite", sprite);
+    }
+  });
+}
+
+ipcMain.handle("nudge:sprite", () => sprite);
 
 // --- IPC ---
 
@@ -472,7 +583,7 @@ ipcMain.handle("nudge:switch", (_event, data) => dismissOrSwitch("switch", data)
 
 ipcMain.handle("settings:get-config", () => currentConfig);
 
-ipcMain.handle("settings:save", (_event, raw) => {
+ipcMain.handle("settings:save", async (_event, raw) => {
   // The renderer's SettingsForm already validated; we stay defensive against a
   // malformed payload by coercing each field.
   const r = (raw ?? {}) as Partial<Config>;
@@ -480,11 +591,30 @@ ipcMain.handle("settings:save", (_event, raw) => {
     hotkey: String(r.hotkey ?? currentConfig.hotkey),
     default_interval_minutes: parseMinutes(r.default_interval_minutes),
     autostart: Boolean(r.autostart),
+    sprite: normalizeSprite(r.sprite),
   };
+  // Only the file check lives here: an enabled sprite must be a usable PNG.
+  if (config.sprite.enabled) {
+    const file = await readSpriteFile(config.sprite.path);
+    if (!file.ok) return { ok: false as const, error: file.error };
+  }
   saveConfig(getConfigPath(), config);
   // Apply immediately so the live hotkey updates without waiting for the
   // watcher (which will also fire, but diff against currentConfig → no-op).
   applyConfig(config);
+  return { ok: true as const };
+});
+
+ipcMain.handle("settings:browse-sprite", async () => {
+  const options: Electron.OpenDialogOptions = {
+    title: "Choose a sprite",
+    filters: [{ name: "PNG image", extensions: ["png"] }],
+    properties: ["openFile"],
+  };
+  const result = settingsWin
+    ? await dialog.showOpenDialog(settingsWin, options)
+    : await dialog.showOpenDialog(options);
+  return result.canceled ? null : (result.filePaths[0] ?? null);
 });
 
 ipcMain.handle("settings:toggle-autostart", (_event, desired: boolean) => {
@@ -509,7 +639,7 @@ ipcMain.on("settings:close", () => settingsWin?.close());
 
 // --- App lifecycle ---
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // macOS: a menu-bar agent — no Dock icon, no Cmd-Tab entry (spec §1).
   if (process.platform === "darwin") {
     app.setActivationPolicy("accessory");
@@ -523,6 +653,7 @@ app.whenReady().then(() => {
   }
   currentConfig = config;
 
+  sprite = await spriteView(currentConfig.sprite);
   createWindow();
   createTray();
   registerHotkey(currentConfig);
@@ -546,6 +677,7 @@ app.on("will-quit", () => {
 if (process.env.NUDGE_E2E) {
   (globalThis as Record<string, unknown>).__nudgeTest = {
     openSettings: () => openSettings(),
+    show: () => showNudge("manual"),
     // Hide the popup (so the refresh does not early-out), take the tray down
     // the way quit does, then tick the refresh once: it must be a no-op.
     tickTrayAfterDestroy: () => {

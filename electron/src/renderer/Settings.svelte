@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { SettingsForm, respell } from "../shared/settingsForm";
+  import { SettingsForm, respell, type FormError } from "../shared/settingsForm";
+  import { checkSpriteUrl } from "./browserSprite";
   import {
     describeParseError,
     formatHotkeyNative,
@@ -52,13 +53,19 @@
   const initial = loadStored();
   let persisted = $state<Config>(initial);
   const provider = new FakeProvider(initial.autostart);
-  const form = SettingsForm.fromConfig(initial, platform);
+  let form = SettingsForm.fromConfig(initial, platform);
 
   // Reactive mirrors of the form fields (Svelte 5 runes can't bind to a class
   // field directly, so we mirror and push changes back into the form).
   let hotkey = $state(form.hotkey);
   let intervalText = $state(form.intervalText);
   let autostart = $state(form.autostart);
+  let spriteEnabled = $state(form.spriteEnabled);
+  let spritePath = $state(form.spritePath);
+  let spriteXText = $state(form.spriteXText);
+  let spriteYText = $state(form.spriteYText);
+  let cardWidthText = $state(form.cardWidthText);
+  let spriteError = $state("");
 
   let recorder = $state<RecorderState>("idle");
   let banner = $state("");
@@ -75,19 +82,44 @@
 
   function reseed(cfg: Config) {
     persisted = cfg;
-    // §9: a stored value that parses is re-spelled for this platform on load.
-    form.hotkey = respell(cfg.hotkey, platform);
-    form.intervalText = SettingsForm.fromConfig(cfg, platform).intervalText;
-    form.autostart = cfg.autostart;
-    hotkey = form.hotkey;
-    intervalText = form.intervalText;
-    autostart = form.autostart;
+    // §9: a stored value that parses is re-spelled for this platform on load
+    // (the form does that as it seeds).
+    form = SettingsForm.fromConfig(cfg, platform);
+    syncFromForm();
   }
 
   function syncToForm() {
     form.hotkey = hotkey;
     form.intervalText = intervalText;
     form.autostart = autostart;
+    form.spriteEnabled = spriteEnabled;
+    form.spritePath = spritePath;
+    form.spriteXText = spriteXText;
+    form.spriteYText = spriteYText;
+    form.cardWidthText = cardWidthText;
+  }
+
+  function syncFromForm() {
+    hotkey = form.hotkey;
+    intervalText = form.intervalText;
+    autostart = form.autostart;
+    spriteEnabled = form.spriteEnabled;
+    spritePath = form.spritePath;
+    spriteXText = form.spriteXText;
+    spriteYText = form.spriteYText;
+    cardWidthText = form.cardWidthText;
+  }
+
+  const FIELD_ERROR: Record<Exclude<FormError["field"], "hotkey">, string> = {
+    interval: "Interval must be a positive number of minutes",
+    sprite_x: "Sprite X must be a whole number of pixels",
+    sprite_y: "Sprite Y must be a whole number of pixels",
+    card_width: "Card width must be a positive whole number of pixels",
+  };
+
+  async function browseSprite() {
+    const picked = await settingsApi?.browseSprite();
+    if (picked) spritePath = picked;
   }
 
   // --- The recorder (docs/TASK-hotkey-native.md) ---
@@ -189,24 +221,42 @@
     syncToForm();
     const result = form.toConfig();
     if (!result.ok) {
-      // §9: if either field fails the file is not touched at all, and the
+      // §9: if any field fails the file is not touched at all, and the
       // hotkey's banner also states the accepted vocabulary — the banner is
-      // the only place that list appears at the moment it is needed.
-      banner =
-        result.error.field === "interval"
-          ? "Interval must be a positive number of minutes"
-          : `${describeParseError(result.error.error)}. ${vocabulary(platform)}`;
+      // the only place that list appears at the moment it is needed. A sprite
+      // field reports inline, under its own section.
+      const err = result.error;
+      if (err.field === "hotkey") {
+        banner = `${describeParseError(err.error)}. ${vocabulary(platform)}`;
+      } else if (err.field === "interval") {
+        banner = FIELD_ERROR.interval;
+      } else {
+        spriteError = FIELD_ERROR[err.field];
+        banner = "";
+      }
       return;
     }
+    // An enabled sprite must be a usable PNG; a disabled one saves as typed.
+    // Electron checks the file in the main process on save; the browser
+    // sub-app checks the path as a URL before persisting.
+    const { sprite } = result.config;
+    let error: string | null = null;
     if (settingsApi) {
-      await settingsApi.save(result.config);
+      const saved = await settingsApi.save(result.config);
+      if (!saved.ok) error = saved.error;
     } else {
-      persistConfig(result.config);
+      error = sprite.enabled ? await checkSpriteUrl(sprite.path) : null;
+      if (!error) persistConfig(result.config);
+    }
+    if (error) {
+      spriteError = error;
+      banner = "";
+      return;
     }
     persisted = result.config;
     form.markClean();
-    hotkey = form.hotkey;
-    intervalText = form.intervalText;
+    syncFromForm();
+    spriteError = "";
     banner = "Saved";
   }
 
@@ -223,6 +273,7 @@
     await step({ kind: "cancel" });
     reseed(cfg);
     banner = "";
+    spriteError = "";
     settingsApi?.close();
   }
 </script>
@@ -293,6 +344,71 @@
       />
       Launch at login
     </label>
+
+    <div class="space-y-3">
+      <label class="flex items-center gap-3 text-sm">
+        <input
+          data-testid="settings-sprite-enabled"
+          type="checkbox"
+          bind:checked={spriteEnabled}
+        />
+        Sprite
+      </label>
+      <div class="flex gap-2">
+        <input
+          data-testid="settings-sprite-path"
+          type="text"
+          aria-label="Sprite PNG path"
+          bind:value={spritePath}
+          placeholder="Path to a PNG with a transparent background"
+          class="flex-1 min-w-0 bg-zinc-900 rounded px-3 py-2 outline-none border border-zinc-700"
+        />
+        {#if settingsApi}
+          <button
+            data-testid="settings-sprite-browse"
+            onclick={browseSprite}
+            class="px-3 py-2 rounded bg-zinc-800 hover:bg-zinc-700 text-sm"
+          >
+            Browse…
+          </button>
+        {/if}
+      </div>
+      <div class="grid grid-cols-3 gap-2">
+        <label class="space-y-1 text-sm text-zinc-400">
+          <span class="block">X (px)</span>
+          <input
+            data-testid="settings-sprite-x"
+            type="text"
+            inputmode="numeric"
+            bind:value={spriteXText}
+            class="w-full bg-zinc-900 text-white rounded px-3 py-2 outline-none border border-zinc-700"
+          />
+        </label>
+        <label class="space-y-1 text-sm text-zinc-400">
+          <span class="block">Y (px)</span>
+          <input
+            data-testid="settings-sprite-y"
+            type="text"
+            inputmode="numeric"
+            bind:value={spriteYText}
+            class="w-full bg-zinc-900 text-white rounded px-3 py-2 outline-none border border-zinc-700"
+          />
+        </label>
+        <label class="space-y-1 text-sm text-zinc-400">
+          <span class="block">Card width (px)</span>
+          <input
+            data-testid="settings-card-width"
+            type="text"
+            inputmode="numeric"
+            bind:value={cardWidthText}
+            class="w-full bg-zinc-900 text-white rounded px-3 py-2 outline-none border border-zinc-700"
+          />
+        </label>
+      </div>
+      {#if spriteError}
+        <p data-testid="settings-sprite-error" class="text-sm text-red-400">{spriteError}</p>
+      {/if}
+    </div>
 
     {#if banner}
       <p data-testid="settings-banner" class="text-sm text-amber-400">{banner}</p>

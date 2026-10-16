@@ -12,6 +12,16 @@ contextBridge.exposeInMainWorld("nudge", {
   switch: (data: { nextMinutes: number }) =>
     ipcRenderer.invoke("nudge:switch", data),
 
+  getSprite: () => ipcRenderer.invoke("nudge:sprite"),
+
+  onSprite: (callback: (sprite: unknown) => void) => {
+    const handler = (_event: unknown, sprite: unknown) => callback(sprite);
+    ipcRenderer.on("nudge:sprite", handler);
+    return () => {
+      ipcRenderer.removeListener("nudge:sprite", handler);
+    };
+  },
+
   onShow: (callback: (payload?: { gotFocus: boolean }) => void) => {
     const handler = (_event: unknown, payload?: { gotFocus: boolean }) =>
       callback(payload);
@@ -28,6 +38,7 @@ contextBridge.exposeInMainWorld("nudge", {
 contextBridge.exposeInMainWorld("nudgeSettings", {
   getConfig: () => ipcRenderer.invoke("settings:get-config"),
   save: (config: unknown) => ipcRenderer.invoke("settings:save", config),
+  browseSprite: () => ipcRenderer.invoke("settings:browse-sprite"),
   toggleAutostart: (desired: boolean) =>
     ipcRenderer.invoke("settings:toggle-autostart", desired),
   close: () => ipcRenderer.send("settings:close"),

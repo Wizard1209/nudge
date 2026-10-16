@@ -1,4 +1,4 @@
-import type { Config } from "./config";
+import type { Config, SpriteConfig } from "./config";
 import {
   formatHotkeyNative,
   parseHotkey,
@@ -15,11 +15,12 @@ export type HotkeyResult =
   | { ok: true; hotkey: Hotkey }
   | { ok: false; error: ParseError };
 
-/** Which field refused to be saved. §9: if either fails the file is not
+/** Which field refused to be saved. §9: if any fails the file is not
  * touched at all, so a save reports one field, not a partial write. */
 export type FormError =
   | { field: "interval"; input: string }
-  | { field: "hotkey"; error: ParseError };
+  | { field: "hotkey"; error: ParseError }
+  | { field: "sprite_x" | "sprite_y" | "card_width"; input: string };
 
 export type ToConfigResult =
   | { ok: true; config: Config }
@@ -45,6 +46,12 @@ export function parseIntervalMinutes(text: string): IntervalResult {
   return { ok: true, value: n };
 }
 
+/** A whole number of pixels, optionally signed. Strict, like the interval. */
+function parseInteger(text: string): number | null {
+  const trimmed = text.trim();
+  return /^-?\d+$/.test(trimmed) ? Number(trimmed) + 0 : null;
+}
+
 /**
  * Pure settings-form state. The render shell (Svelte) binds to the public
  * fields and asks the form questions; the form never touches disk or the OS.
@@ -54,6 +61,11 @@ export class SettingsForm {
   hotkey: string;
   intervalText: string;
   autostart: boolean;
+  spriteEnabled: boolean;
+  spritePath: string;
+  spriteXText: string;
+  spriteYText: string;
+  cardWidthText: string;
   private original: Config;
   private platform: Platform;
 
@@ -67,11 +79,16 @@ export class SettingsForm {
     this.hotkey = respell(cfg.hotkey, platform);
     this.intervalText = formatInterval(cfg.default_interval_minutes);
     this.autostart = cfg.autostart;
+    this.spriteEnabled = cfg.sprite.enabled;
+    this.spritePath = cfg.sprite.path;
+    this.spriteXText = String(cfg.sprite.x);
+    this.spriteYText = String(cfg.sprite.y);
+    this.cardWidthText = String(cfg.sprite.card_width);
     this.original = { ...cfg, hotkey: this.hotkey };
   }
 
   static fromConfig(cfg: Config, platform: Platform = detectPlatform()): SettingsForm {
-    return new SettingsForm({ ...cfg }, platform);
+    return new SettingsForm({ ...cfg, sprite: { ...cfg.sprite } }, platform);
   }
 
   parsedInterval(): IntervalResult {
@@ -86,11 +103,16 @@ export class SettingsForm {
   }
 
   isDirty(): boolean {
+    const o = this.original;
     return (
-      this.hotkey !== this.original.hotkey ||
-      this.intervalText !==
-        formatInterval(this.original.default_interval_minutes) ||
-      this.autostart !== this.original.autostart
+      this.hotkey !== o.hotkey ||
+      this.intervalText !== formatInterval(o.default_interval_minutes) ||
+      this.autostart !== o.autostart ||
+      this.spriteEnabled !== o.sprite.enabled ||
+      this.spritePath !== o.sprite.path ||
+      this.spriteXText !== String(o.sprite.x) ||
+      this.spriteYText !== String(o.sprite.y) ||
+      this.cardWidthText !== String(o.sprite.card_width)
     );
   }
 
@@ -107,32 +129,68 @@ export class SettingsForm {
     if (!interval.ok) {
       return { ok: false, error: { field: "interval", input: interval.input } };
     }
+    const x = parseInteger(this.spriteXText);
+    if (x === null) {
+      return { ok: false, error: { field: "sprite_x", input: this.spriteXText.trim() } };
+    }
+    const y = parseInteger(this.spriteYText);
+    if (y === null) {
+      return { ok: false, error: { field: "sprite_y", input: this.spriteYText.trim() } };
+    }
+    const cardWidth = parseInteger(this.cardWidthText);
+    if (cardWidth === null || cardWidth <= 0) {
+      return { ok: false, error: { field: "card_width", input: this.cardWidthText.trim() } };
+    }
+    const sprite: SpriteConfig = {
+      enabled: this.spriteEnabled,
+      path: this.spritePath.trim(),
+      x,
+      y,
+      card_width: cardWidth,
+    };
     return {
       ok: true,
       config: {
         hotkey: formatHotkeyNative(hotkey.hotkey, this.platform),
         default_interval_minutes: interval.value,
         autostart: this.autostart,
+        sprite,
       },
     };
   }
 
-  /** Rebaseline to the current (normalized) state after a successful Save. */
+  /**
+   * Rebaseline to the current (normalized) state after a successful Save. A
+   * form that doesn't parse can't have been saved and is left untouched.
+   */
   markClean(): void {
     const result = this.toConfig();
     if (result.ok) {
       this.original = result.config;
     } else {
+      // The fields that cannot fail to parse keep their edits; the number
+      // fields fall back to what is stored.
       this.original = {
         ...this.original,
         hotkey: this.hotkey.trim(),
         autostart: this.autostart,
+        sprite: {
+          ...this.original.sprite,
+          enabled: this.spriteEnabled,
+          path: this.spritePath.trim(),
+        },
       };
     }
     // Rehydrate the fields so the canonical spelling sticks visibly: what the
     // user reads back is what is stored, and a just-saved form is not dirty.
-    this.hotkey = this.original.hotkey;
-    this.intervalText = formatInterval(this.original.default_interval_minutes);
+    const o = this.original;
+    this.hotkey = o.hotkey;
+    this.intervalText = formatInterval(o.default_interval_minutes);
+    this.spriteEnabled = o.sprite.enabled;
+    this.spritePath = o.sprite.path;
+    this.spriteXText = String(o.sprite.x);
+    this.spriteYText = String(o.sprite.y);
+    this.cardWidthText = String(o.sprite.card_width);
   }
 }
 

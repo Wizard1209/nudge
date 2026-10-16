@@ -10,6 +10,7 @@ import { resolveNudgeDir } from "./journal";
 export {
   type Config,
   type ConfigDiff,
+  type SpriteConfig,
   DEFAULT_CONFIG,
   normalize,
   diffConfig,
