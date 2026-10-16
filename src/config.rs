@@ -1,6 +1,8 @@
 //! On-disk user configuration: hotkey, default interval, autostart.
 //!
-//! Lives next to the journal: `<Documents>/Nudge/config.json`. We chose JSON
+//! Where it lives is per-platform, see [`resolve_default_config_path`]:
+//! `~/Library/Application Support/Nudge/` on macOS, next to the journal in
+//! `<Documents>/Nudge/` everywhere else. We chose JSON
 //! over TOML so we don't add a parser dependency (serde_json is already in
 //! the tree for the journal). The file is the **source of truth** shared by
 //! the main process and the settings UI (`src/settings_app.rs`, spec §9):
@@ -105,25 +107,119 @@ impl std::fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-/// Default config path: `<Documents>/Nudge/config.json`. Same root as the
-/// journal so users have one folder to look in.
+/// `<root>/Nudge/config.json`. The root differs per platform — see
+/// [`resolve_default_config_path`], which is what production calls; this one
+/// takes the root as an argument so it is testable without a real HOME.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn config_path(documents_dir: &std::path::Path) -> std::path::PathBuf {
-    documents_dir.join("Nudge").join("config.json")
+pub fn config_path(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("Nudge").join("config.json")
 }
 
+/// Where the config lives when `--config` is not given.
+///
+/// macOS pins it to `~/Library/Application Support/Nudge/config.json`. Two
+/// reasons it is not under Documents like the journal:
+///
+/// - Documents is one of the folders macOS puts behind TCC, so the first
+///   read prompts for consent — from a *menu-bar agent with no window up*,
+///   which is the worst possible moment to ask. Application Support is not
+///   gated.
+/// - Documents is iCloud-synced on most machines. A config file that syncs
+///   means two Macs fight over one hotkey, and the file watcher sees edits
+///   the user did not make.
+///
+/// The journal stays in Documents deliberately: it is the user's own data,
+/// they are meant to find and read it, and syncing it is a feature.
+///
+/// Windows keeps `<Documents>\Nudge\config.json` — there is no TCC there, the
+/// folder is not synced by default, and moving it would strand existing
+/// installs for no gain.
+///
+/// Neither root depends on where the binary was launched from, so a build in
+/// `target/`, a copy in `/Applications` and a DMG mount all read and write
+/// the same file.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn resolve_default_config_path() -> std::path::PathBuf {
-    let docs = dirs::document_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-    config_path(&docs)
+    config_path(&config_root())
 }
+
+/// The platform's config root, or `.` if the OS will not name a home
+/// directory (no HOME, or a service account) — the same last-ditch fallback
+/// the journal uses, so the app still starts with a file it can write.
+#[cfg(not(target_arch = "wasm32"))]
+fn config_root() -> std::path::PathBuf {
+    #[cfg(target_os = "macos")]
+    let root = dirs::data_dir(); // ~/Library/Application Support
+    #[cfg(not(target_os = "macos"))]
+    let root = dirs::document_dir();
+    root.unwrap_or_else(|| std::path::PathBuf::from("."))
+}
+
+/// The pre-move location on macOS, `~/Documents/Nudge/config.json`.
+#[cfg(target_os = "macos")]
+fn legacy_config_path() -> Option<std::path::PathBuf> {
+    dirs::document_dir().map(|d| config_path(&d))
+}
+
+/// Move a config left behind in `~/Documents/Nudge/` to the Application
+/// Support location, once, before anything reads it.
+///
+/// A copy would be worse than either doing nothing or moving: the settings
+/// window would write one file while a hand-editing user kept the other, and
+/// nothing on screen would say which one lost. So the old file is *renamed*,
+/// and the log line names both paths.
+///
+/// Everything here is best-effort and idempotent. Losing the race to another
+/// nudge process leaves the file at the destination either way, which is the
+/// outcome we wanted; on any other failure the caller carries on with an
+/// empty destination and gets a fresh default, which is recoverable by hand.
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+pub fn migrate_legacy_config(destination: &std::path::Path) {
+    let Some(legacy) = legacy_config_path() else {
+        return;
+    };
+    move_config_file(&legacy, destination);
+}
+
+/// The body of [`migrate_legacy_config`], with both paths passed in so it can
+/// be tested without a synthetic HOME.
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+fn move_config_file(legacy: &std::path::Path, destination: &std::path::Path) {
+    if legacy == destination || destination.exists() || !legacy.exists() {
+        return;
+    }
+    if let Some(parent) = destination.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        eprintln!("[nudge] cannot create {}: {e}", parent.display());
+        return;
+    }
+    match std::fs::rename(legacy, destination) {
+        Ok(()) => eprintln!(
+            "[nudge] moved config {} → {}",
+            legacy.display(),
+            destination.display()
+        ),
+        Err(e) => eprintln!(
+            "[nudge] could not move config {} → {}: {e}",
+            legacy.display(),
+            destination.display()
+        ),
+    }
+}
+
+/// No-op off macOS: nothing moved, so there is nothing to migrate.
+#[cfg(all(not(target_os = "macos"), not(target_arch = "wasm32")))]
+pub fn migrate_legacy_config(_destination: &std::path::Path) {}
 
 /// Pull a `--config <path>` or `--config=<path>` override out of CLI args.
 /// Used by the perf test (and any future tooling) to point a launched
-/// nudge.exe at a throwaway config without clobbering the user's real
-/// `~/Documents/Nudge/config.json`. Returns `None` if the flag is absent
-/// or trailing without a value — silent, since this is a power-user lever
-/// rather than a documented contract.
+/// nudge.exe at a throwaway config without clobbering the user's real one.
+/// An explicit path also suppresses first-run seeding and the legacy move,
+/// so a throwaway config is exactly the file that was named and nothing
+/// appears beside it. Returns `None` if the flag is absent or trailing
+/// without a value — silent, since this is a power-user lever rather than a
+/// documented contract.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn parse_config_arg<I, S>(args: I) -> Option<std::path::PathBuf>
 where
@@ -414,10 +510,99 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn config_path_under_documents_nudge() {
+    fn config_path_is_nudge_slash_config_under_its_root() {
         use std::path::{Path, PathBuf};
-        let docs = Path::new("/d");
-        assert_eq!(config_path(docs), PathBuf::from("/d/Nudge/config.json"));
+        let root = Path::new("/d");
+        assert_eq!(config_path(root), PathBuf::from("/d/Nudge/config.json"));
+    }
+
+    /// The point of the macOS root is that it is *not* Documents: that folder
+    /// is TCC-gated and iCloud-synced. Asserting the tail alone would pass on
+    /// `~/Documents/Nudge/config.json` too, so this pins the parent.
+    #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+    #[test]
+    fn macos_config_lives_in_application_support() {
+        let path = resolve_default_config_path();
+        assert!(
+            path.ends_with("Nudge/config.json"),
+            "unexpected tail: {}",
+            path.display()
+        );
+        let root = path.parent().unwrap().parent().unwrap();
+        assert!(
+            root.ends_with("Library/Application Support"),
+            "config root must be Application Support, got {}",
+            root.display()
+        );
+        assert_eq!(
+            path,
+            resolve_default_config_path(),
+            "the path must not depend on anything that varies between calls"
+        );
+    }
+
+    #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+    mod migration_tests {
+        use super::*;
+
+        /// `dir/Nudge/config.json`, with the file written iff `body` is Some.
+        fn seed(dir: &std::path::Path, body: Option<&str>) -> std::path::PathBuf {
+            let path = config_path(dir);
+            if let Some(body) = body {
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(&path, body).unwrap();
+            }
+            path
+        }
+
+        #[test]
+        fn a_legacy_config_moves_and_leaves_nothing_behind() {
+            let docs = tempfile::tempdir().unwrap();
+            let support = tempfile::tempdir().unwrap();
+            let legacy = seed(docs.path(), Some(r#"{"hotkey":"Alt+J"}"#));
+            let destination = seed(support.path(), None);
+
+            move_config_file(&legacy, &destination);
+
+            assert!(!legacy.exists(), "the old file must not survive the move");
+            let (cfg, err) = load_or_default(&destination);
+            assert!(err.is_none(), "{err:?}");
+            assert_eq!(cfg.hotkey, "Alt+J", "the user's settings must survive");
+        }
+
+        #[test]
+        fn an_existing_destination_wins_and_the_legacy_file_is_untouched() {
+            // Both files exist — the app has already run since the move. The
+            // destination is the live one; overwriting it would silently
+            // revert every change made since.
+            let docs = tempfile::tempdir().unwrap();
+            let support = tempfile::tempdir().unwrap();
+            let legacy = seed(docs.path(), Some(r#"{"hotkey":"Alt+J"}"#));
+            let destination = seed(support.path(), Some(r#"{"hotkey":"Ctrl+F9"}"#));
+
+            move_config_file(&legacy, &destination);
+
+            assert_eq!(load_or_default(&destination).0.hotkey, "Ctrl+F9");
+            assert!(
+                legacy.exists(),
+                "nothing was migrated, so nothing was moved"
+            );
+        }
+
+        #[test]
+        fn no_legacy_file_is_not_an_error_and_creates_nothing() {
+            let docs = tempfile::tempdir().unwrap();
+            let support = tempfile::tempdir().unwrap();
+            let legacy = seed(docs.path(), None);
+            let destination = seed(support.path(), None);
+
+            move_config_file(&legacy, &destination);
+
+            assert!(
+                !destination.exists(),
+                "a fresh install must reach first-run seeding, not a migrated empty file"
+            );
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]

@@ -25,6 +25,8 @@ interface NudgeSettingsAPI {
   ) => Promise<{ ok: true } | { ok: false; error: string }>;
   /** Close the Settings window (Cancel / Save done). */
   close: () => void;
+  /** Subscribe to the native window's focus loss; returns an unsubscribe. */
+  onWindowBlur: (callback: () => void) => () => void;
 }
 
 declare global {

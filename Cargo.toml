@@ -32,10 +32,96 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ulid = "1"
 
+# How both backends reach their native window handle out of `eframe::Frame`:
+# the HWND the tray thread posts to on Windows, the NSView the card's
+# frosted-glass backdrop is inserted next to on macOS.
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+raw-window-handle = "0.6"
+
 [target.'cfg(target_os = "windows")'.dependencies]
+# The notification-area icon. Windows-only: the menu it builds is `muda`'s,
+# which macOS takes directly (below), while the item itself — the thing that
+# holds the bitmap — is this crate's here and ours there
+# (`platform::macos::status_item`), because this crate sizes a single bitmap
+# to the bar and the macOS daisy is drawn once per display density.
 tray-icon = "0.19"
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_System_Registry", "Win32_Security"] }
-raw-window-handle = "0.6"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# The status item's menu — the same crate `tray-icon` re-exports as
+# `tray_icon::menu` on Windows, so `build_menu` and the `MenuEvent` handler
+# are one code path on both platforms. The 0.15 line is what tray-icon 0.19
+# already locks, so this adds no crate to the build.
+muda = "0.15"
+# Revealing a hidden window needs an AppKit activation call: with
+# `ViewportCommand::Focus` alone the popup appears but never becomes key, so
+# `viewport().focused` stays false and every keystroke — Esc included — is
+# swallowed. `platform::macos::focus_popup` is the only user.
+#
+# Pinned to the 0.2 line on purpose: that is what winit 0.30 and
+# accesskit_macos already link, so this adds no crate to the build. Bump both
+# together when winit moves to objc2 0.6, not before — two objc2 trees in one
+# binary is a cost with no benefit.
+#
+# Features are declared rather than inherited. winit already turns on all of
+# these except `NSVisualEffectView` and `objc2-quartz-core`, but cargo's
+# feature unification is a build-graph accident, not a contract — a future
+# winit that stops needing `NSGraphics` would break this crate's build with an
+# error pointing at code that never changed.
+objc2-app-kit = { version = "0.2", features = [
+    "NSVisualEffectView", # the frosted-glass panel behind the card, and its enums
+    "NSView",             # the class's superclass chain, plus window()/frame()
+    "NSResponder",
+    "NSGraphics",         # NSWindowOrderingMode, for inserting below the GL view
+    "NSWindow",
+    "NSAppearance",       # pin the material dark — the card is dark in every theme
+    "objc2-quartz-core",  # NSView::layer(), to clip the blur to the card's radius
+    "NSEvent",            # the app-local key-down monitor the recorder reads, and the click the status item's action tells apart
+    "block2",             # the monitor's handler is an Objective-C block
+    "NSStatusBar",        # the system status bar the daisy's item is added to and removed from
+    "NSStatusItem",       # the item: its button, and the menu attached while it is shown
+    "NSStatusBarButton",  # the item's button, where the image, tooltip and click action live
+    "NSButton",           # NSStatusBarButton's superclass chain: setImage
+    "NSControl",          # ... setTarget / setAction / sendActionOn / performClick
+    "NSImage",            # the 18 pt image the button shows
+    "NSImageRep",         # setSize on each representation, and reading them back in tests
+    "NSBitmapImageRep",   # one rep per display density, built from the daisy's RGBA
+    "NSMenu",             # the muda NSMenu handed to the item while it is tracked
+    "NSApplication",      # currentEvent, to tell a right-up from a left-up in the action
+] }
+# The handler an `NSEvent` monitor takes is an Objective-C block, and this is
+# the crate that builds one. Already in the tree via winit 0.30's objc2 0.5
+# line, so it adds no crate to the build — same rule as `objc2` itself below.
+block2 = "0.5"
+objc2-foundation = "0.2"
+# `Retained`, the smart pointer every AppKit object above comes back in.
+# Pinned to the 0.5 line for the same reason as objc2-app-kit 0.2: that is the
+# tree winit 0.30 already links.
+objc2 = "0.5"
+# Reading the system's own shortcut table (`CopySymbolicHotKeys`), which is
+# the only source that can say ⌘Space is taken — the registration call reports
+# nothing about it. CFArray/CFDictionary/CFNumber wrappers with the Create/Get
+# rules encoded in the types; doing it by hand would put a retain-count bug
+# between us and a warning line. Was a dev-dependency for the native tests
+# already, so no crate joins the build graph.
+#
+# `global-hotkey` used to sit here. It is gone: it cannot reach the exclusive
+# registration mode, and on macOS its error type never reports a conflict for
+# a real key, so a check written against it works on Windows and silently
+# never fires here. `platform::macos::hotkey_carbon` calls Carbon directly.
+core-foundation = "0.9"
+# `flock` for the settings-window single-instance lockfile — the macOS
+# counterpart of the named Win32 mutex. Already in the tree via winit, so this
+# adds no crate to the build.
+libc = "0.2"
+# `EventLoopBuilderExtMacOS::with_activation_policy`, the only way to ask for
+# `NSApplicationActivationPolicy::Accessory` *before* the app finishes
+# launching. eframe does not re-export `egui_winit` (and therefore not
+# `winit`), so it has to be named here. `default-features = false` adds no
+# feature of our own — cargo unifies with what eframe already turns on — and
+# the version tracks eframe 0.34's winit 0.30 exactly, so this adds no crate
+# to the build. Bump it in lockstep with eframe.
+winit = { version = "0.30", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 dirs = "6"
@@ -55,6 +141,18 @@ tempfile = "3"
 image = { version = "0.25", default-features = false, features = ["png"] }
 ureq = { version = "2", features = ["json"] }
 base64 = "0.22"
+# Headless AccessKit-driven tests against the real eframe apps (tests/kittest_card.rs).
+# Deliberately NOT the `snapshot` or `wgpu` features: snapshot rendering is only
+# implemented for egui_kittest's wgpu backend, and this project deliberately ships
+# glow (see the comment above the `eframe` dependency). Turning `wgpu` on here would
+# unify it back into every `cargo test`, and its rendered pixels would not be the
+# pixels the app actually ships anyway — the WASM e2e tier already asserts on real
+# glow output, so pixel assertions belong there, not in this tier.
+egui_kittest = { version = "0.34", features = ["eframe"] }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+core-graphics = "0.23"
+core-foundation = "0.9"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"

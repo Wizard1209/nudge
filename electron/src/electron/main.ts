@@ -38,7 +38,7 @@ import {
 } from "../shared/nudgeFlow";
 import { applyAutostart } from "../shared/autostart";
 import { ElectronAutostartProvider } from "./autostart";
-import { buildTrayIcon, daisyFrame, formatTooltip } from "./trayIcon";
+import { buildTrayIcon, daisyFrame, formatTooltip, type DaisyFrame } from "./trayIcon";
 
 // Load the dev server in development, the built files when packaged. The
 // NUDGE_FORCE_PROD escape hatch lets native e2e tests drive an unpackaged
@@ -72,9 +72,18 @@ function configuredMinutes(): number {
   return parseMinutes(currentConfig.default_interval_minutes);
 }
 
-// Register the global hotkey from a config. Non-fatal per spec §5: a bad or
-// already-taken combo logs to stderr and leaves the app running with no
-// hotkey (the tray still works).
+// Register the global hotkey from a config. Non-fatal per spec §5: a
+// combination the toolkit refuses logs to stderr and leaves the app running
+// with no hotkey (the tray still works), and never falls back to the default.
+//
+// What this cannot do is report a combination another application holds. §5
+// measured that on macOS registration succeeds anyway and the keystroke simply
+// goes to the other holder; Electron adds nothing here — `globalShortcut`
+// wraps the same call, so a `false` return means "the toolkit would not take
+// this string", not "someone else has it". Detecting a conflict needs the
+// system's own shortcut table (`CopySymbolicHotKeys`), which Electron does not
+// expose. The Rust app does that work; the prototype states the gap instead of
+// faking a check.
 function registerHotkey(config: Config): void {
   unregisterHotkey();
   const parsed = parseHotkey(config.hotkey);
@@ -88,7 +97,7 @@ function registerHotkey(config: Config): void {
   try {
     const ok = globalShortcut.register(accel, () => showNudge("manual"));
     if (!ok) {
-      console.error(`Nudge: hotkey "${accel}" is unavailable (already taken)`);
+      console.error(`Nudge: hotkey "${accel}" was refused by the toolkit`);
       return;
     }
     registeredAccelerator = accel;
@@ -158,7 +167,35 @@ function showNudge(source: TriggerSource) {
   // Spec §4: Switch-on-blur must only fire if the popup actually took focus
   // when it opened — over a fullscreen app the OS may keep us in the
   // background. Tell the renderer whether we got focus; it gates blur on this.
-  win.webContents.send("nudge:show", { gotFocus: win.isFocused() });
+  // Key status arrives asynchronously after focus(), so wait for it; if it
+  // does not come, ask once more with the app's activation behind it.
+  const shown = win;
+  void (async () => {
+    let gotFocus = await becameFocused(shown);
+    if (!gotFocus && !shown.isDestroyed()) {
+      app.focus({ steal: true });
+      shown.focus();
+      gotFocus = await becameFocused(shown);
+    }
+    if (!shown.isDestroyed()) shown.webContents.send("nudge:show", { gotFocus });
+  })();
+}
+
+const FOCUS_WAIT_MS = 300;
+
+function becameFocused(w: BrowserWindow): Promise<boolean> {
+  if (w.isDestroyed()) return Promise.resolve(false);
+  if (w.isFocused()) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const done = (v: boolean) => {
+      clearTimeout(timer);
+      w.removeListener("focus", onFocus);
+      resolve(v);
+    };
+    const onFocus = () => done(true);
+    const timer = setTimeout(() => done(!w.isDestroyed() && w.isFocused()), FOCUS_WAIT_MS);
+    w.on("focus", onFocus);
+  });
 }
 
 // Spec §1: horizontally centered, top edge at 25% of screen height — card
@@ -200,9 +237,32 @@ function remainingMsForTooltip(): number {
   return timerStartMs + timerIntervalMs - Date.now();
 }
 
+// A menu bar icon on macOS is 18 pt; a notification-area icon on Windows is
+// 16 px at 100 % DPI (SM_CXSMICON) and grows with the DPI.
+const MAC_TRAY_ICON_POINTS = 18;
+const WIN_TRAY_ICON_PX = 16;
+
+// The daisy drawn once per density the host will display it at, so nothing
+// downstream resamples. macOS: a 1x and a 2x representation of an 18 pt
+// image, AppKit picks by the display's backing scale. Windows: Electron
+// turns the 1x bitmap into the HICON at its own pixel size and the shell
+// draws that at the tray's size, so the one representation is drawn at
+// exactly that size.
+function trayImage(frame: number | DaisyFrame) {
+  const img = nativeImage.createEmpty();
+  if (process.platform === "darwin") {
+    for (const scale of [1, 2]) {
+      img.addRepresentation({ scaleFactor: scale, buffer: buildTrayIcon(frame, MAC_TRAY_ICON_POINTS * scale) });
+    }
+  } else {
+    const px = Math.round(WIN_TRAY_ICON_PX * screen.getPrimaryDisplay().scaleFactor);
+    img.addRepresentation({ scaleFactor: 1, buffer: buildTrayIcon(frame, px) });
+  }
+  return img;
+}
+
 function createTray() {
-  const icon = nativeImage.createFromBuffer(buildTrayIcon(0));
-  tray = new Tray(icon);
+  tray = new Tray(trayImage(0));
   tray.setToolTip(formatTooltip(configuredMinutes() * 60_000));
   tray.setContextMenu(
     Menu.buildFromTemplate([
@@ -229,7 +289,9 @@ function openSettings() {
     // doesn't eat into it and clip the form (the bug was the title bar
     // shrinking a frame-inclusive height on Windows).
     width: 460,
-    height: 440,
+    // Tall enough for the vocabulary line under the hotkey field (§9): it is
+    // standing information, so it must fit without scrolling.
+    height: 540,
     useContentSize: true,
     title: "Nudge — Settings",
     resizable: false,
@@ -256,30 +318,44 @@ function openSettings() {
     settingsWin.loadFile(path.join(__dirname, "../renderer/settings.html"));
   }
 
+  // The window's own focus loss, from the OS. The renderer also listens for a
+  // `blur` on its `window` (the browser sub-app has nothing else), but that
+  // event is suppressed whenever a test harness pins the page as focused —
+  // and the recorder's focus-lost cell has to hold in the real app, where the
+  // shortcut that stole the focus is exactly what cannot be observed.
+  settingsWin.on("blur", () => {
+    settingsWin?.webContents.send("settings:blur");
+  });
+
   settingsWin.on("closed", () => {
     settingsWin = null;
   });
 }
 
 function updateTray() {
-  // The 50ms refresh loop keeps firing during shutdown, after Electron has
-  // destroyed the Tray — touching a destroyed Tray throws "Object has been
-  // destroyed" and surfaces as a crash on quit. Bail if it's gone.
-  if (!tray || tray.isDestroyed()) return;
+  if (!tray) return;
   // Spec §5: "While the popup is open the icon stays in whatever state it
   // was at the moment of opening" — freeze the icon while the popup is up; it
   // resumes when the popup closes (startTimer triggers a fresh updateTray).
   if (win?.isVisible()) return;
   const frame = daisyFrame(elapsedSinceTimerStart(), timerIntervalMs, PETAL_FADE_MS);
-  tray.setImage(nativeImage.createFromBuffer(buildTrayIcon(frame)));
+  tray.setImage(trayImage(frame));
   tray.setToolTip(formatTooltip(remainingMsForTooltip()));
 }
 
 // Refresh at 50ms (~20fps) so the petal-fade animation is smooth. The
 // daisy is a tiny 64×64 PNG — encoding cost per frame is negligible, and
-// the loop bails out instantly while the popup is open. Cleared on will-quit
-// so it can't fire against a destroyed tray during shutdown.
+// the loop bails out instantly while the popup is open.
 const trayRefreshId = setInterval(updateTray, 50);
+
+// The only way the tray goes away. Stopping the refresh first matters: a
+// Tray being torn down can still answer isDestroyed() false while its
+// setImage() already throws, so a tick that lands mid-destroy would crash.
+function destroyTray() {
+  clearInterval(trayRefreshId);
+  tray?.destroy();
+  tray = null;
+}
 
 // --- Window ---
 
@@ -295,7 +371,12 @@ function createWindow() {
   // transparent window. Acrylic is a no-op off-Windows, so this changes nothing
   // there.
   const isWindows = process.platform === "win32";
+  const isMac = process.platform === "darwin";
   win = new BrowserWindow({
+    // macOS: a non-activating panel — it takes the keyboard without
+    // activating the app, so another app grabbing activation cannot leave the
+    // card visible but deaf (spec §1).
+    type: isMac ? "panel" : undefined,
     width: 480,
     height: 170,
     useContentSize: true,
@@ -316,6 +397,12 @@ function createWindow() {
       nodeIntegration: false,
     },
   });
+  if (isMac) {
+    win.setVisibleOnAllWorkspaces(true, {
+      visibleOnFullScreen: true,
+      skipTransformProcessType: true,
+    });
+  }
 
   if (isDev) {
     win.loadURL("http://localhost:5173");
@@ -423,6 +510,11 @@ ipcMain.on("settings:close", () => settingsWin?.close());
 // --- App lifecycle ---
 
 app.whenReady().then(() => {
+  // macOS: a menu-bar agent — no Dock icon, no Cmd-Tab entry (spec §1).
+  if (process.platform === "darwin") {
+    app.setActivationPolicy("accessory");
+    app.dock?.hide();
+  }
   // Load persisted config first so the timer interval and global hotkey
   // reflect the user's settings from the very first launch.
   const { config, error } = loadConfig(getConfigPath());
@@ -442,7 +534,7 @@ app.whenReady().then(() => {
 });
 
 app.on("will-quit", () => {
-  clearInterval(trayRefreshId);
+  destroyTray();
   globalShortcut.unregisterAll();
   configWatcher?.close();
 });
@@ -454,14 +546,24 @@ app.on("will-quit", () => {
 if (process.env.NUDGE_E2E) {
   (globalThis as Record<string, unknown>).__nudgeTest = {
     openSettings: () => openSettings(),
-    // Reproduce the quit-time crash deterministically: hide the popup (so the
-    // updateTray loop doesn't early-out), destroy the tray, then tick the
-    // refresh loop once. With the guard in updateTray this is a no-op; without
-    // it, `tray.setImage` on a destroyed Tray throws "Object has been destroyed".
+    // Hide the popup (so the refresh does not early-out), take the tray down
+    // the way quit does, then tick the refresh once: it must be a no-op.
     tickTrayAfterDestroy: () => {
       win?.hide();
-      tray?.destroy();
+      destroyTray();
       updateTray();
+    },
+    // The image handed to the tray, by representation: what the host picks
+    // from, before it draws anything.
+    trayImageReps: () => {
+      const img = trayImage(0);
+      // getSize() answers in points for every representation; the bitmap's
+      // own pixel count is what says whether the 2x one is really 36 px.
+      return img.getScaleFactors().map((scale) => ({
+        scale,
+        points: img.getSize(scale).width,
+        pixels: Math.round(Math.sqrt(img.toBitmap({ scaleFactor: scale }).length / 4)),
+      }));
     },
     getState: () => ({
       lastTriggerSource,

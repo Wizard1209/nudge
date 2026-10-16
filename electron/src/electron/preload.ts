@@ -31,4 +31,13 @@ contextBridge.exposeInMainWorld("nudgeSettings", {
   toggleAutostart: (desired: boolean) =>
     ipcRenderer.invoke("settings:toggle-autostart", desired),
   close: () => ipcRenderer.send("settings:close"),
+
+  // The native window lost focus. The hotkey recorder cancels on it.
+  onWindowBlur: (callback: () => void) => {
+    const handler = () => callback();
+    ipcRenderer.on("settings:blur", handler);
+    return () => {
+      ipcRenderer.removeListener("settings:blur", handler);
+    };
+  },
 });

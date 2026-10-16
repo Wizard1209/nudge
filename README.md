@@ -1,7 +1,8 @@
 # Nudge — interval journaling for focus
 
-A periodic spotlight popup for Windows that asks you "what are you doing?"
-and "is it bullshit?". Answers are written to an append-only NDJSON journal.
+A periodic spotlight popup for Windows and macOS that asks you "what are you
+doing?" and "is it bullshit?". Answers are written to an append-only NDJSON
+journal.
 
 ![Nudge popup](assets/popup.png)
 
@@ -27,7 +28,13 @@ Opens focused on the first field.
 | 3 | Следующий nudge через | number (min) | Pre-filled with the current interval (default 10 min) |
 
 - **Enter** — save and close
-- **Esc** — close without saving (the timer still restarts)
+- **Esc** — close without saving (whether the timer restarts depends on how
+  the popup was opened — see below)
+
+Everything the popup does is one state machine: three states, four events,
+no rules outside the transition table. It is specified in
+[docs/design-spec.md](docs/design-spec.md) §4 and there is a clickable model
+of it in [docs/state-machine.html](docs/state-machine.html).
 
 ## Journal
 
@@ -59,20 +66,70 @@ Full contract: [docs/journal-spec.md](docs/journal-spec.md)
 
 - Interval: **10 minutes** — field `default_interval_minutes` in
   `config.json`, any positive number (integer or decimal).
-- Journal: `%USERPROFILE%\Documents\Nudge\journal-rust.ndjson`
-- Hotkey: **Ctrl+Shift+Space** — opens the popup manually from any focused
-  window. Field `hotkey` in `%USERPROFILE%\Documents\Nudge\config.json`.
-  Format: modifiers (`Ctrl`, `Alt`, `Shift`, `Win`) + one key joined by `+`,
-  e.g. `Alt+J` or `Ctrl+F12`.
-- Launch with Windows: field `autostart` (bool) — kept in sync with
-  `HKCU\…\Run\Nudge`; see `docs/design-spec.md` §9.
+- Journal: `<Documents>/Nudge/journal-rust.ndjson` — `%USERPROFILE%\Documents`
+  on Windows, `~/Documents` on macOS.
+- Config: `%USERPROFILE%\Documents\Nudge\config.json` on Windows,
+  `~/Library/Application Support/Nudge/config.json` on macOS. Not next to
+  the journal there: Documents is TCC-gated and iCloud-synced, and a
+  menu-bar agent should not have to ask for consent to read its own
+  settings. A file left in `~/Documents/Nudge/` by an earlier version is
+  moved on first launch.
+- Hotkey: **Ctrl+Shift+Space** (`⌃⇧Space`) — opens the popup manually from
+  any focused window. Field `hotkey` in `config.json`: any modifiers plus
+  one key. `Ctrl`/`⌃`, `Alt`/`Option`/`⌥`, `Shift`/`⇧`,
+  `Cmd`/`Win`/`⌘`, plus a letter, digit, `F1`–`F24`, `Space`, `Enter`,
+  `Tab`, `Esc`, `Backspace`, an arrow, `Home`/`End`/`PageUp`/`PageDown`/
+  `Insert`/`Delete`, or a symbol cap (`- = [ ] \ ; ' , . / ``) — e.g.
+  `⌥⌘J`, `Alt+J`, `Ctrl+F12`, `⌃⇧←`. Case, spacing and the choice of
+  spelling do not matter. A symbol cap is named by its unshifted legend, so
+  `⇧/` and `?` are one combination. At least one modifier is required,
+  except for `F1`–`F24`. `fn` cannot be part of a hotkey on macOS; see
+  `docs/design-spec.md` §5 for why.
+- Launch at login: field `autostart` (bool) — kept in sync with
+  `HKCU\…\Run\Nudge` on Windows and with a LaunchAgent plist at
+  `~/Library/LaunchAgents/com.wizard1209.nudge.plist` on macOS; see
+  `docs/design-spec.md` §9.
+
+## Installing on macOS
+
+Download the DMG from the Releases page, drag `Nudge.app` to Applications,
+then clear the download quarantine:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Nudge.app
+```
+
+That step is needed because the app carries an ad-hoc signature rather than a
+Developer ID, and macOS 15 removed the Control-click override that used to get
+past Gatekeeper. The alternative is one trip through System Settings › Privacy
+& Security › Open Anyway after the first launch is refused.
+
+Nudge runs as a menu-bar agent: no Dock icon, no Cmd-Tab entry, and the daisy
+in the menu bar is where Settings and Quit live.
 
 ## Settings
 
 The settings window opens from the tray menu (`Settings`) and edits the same
 `config.json` (hotkey, interval, autostart). Edits are picked up by the
-running app immediately via a file watcher. Full contract:
-`docs/design-spec.md` §9.
+running app immediately via a file watcher.
+
+The hotkey is typed in, in any of the spellings above — `⌥⌘J`, `Alt+Cmd+J`
+and `alt+cmd+j` are one combination. Full grammar: `docs/design-spec.md` §5.
+`Save` refuses a combination the OS cannot bind rather than writing it.
+
+On macOS it can also be pressed instead of typed: `Record`, then the
+combination. The keys are read from the OS rather than from the window
+toolkit, so `⌘C` records as `⌘C` instead of copying, the keypad is its own key
+rather than a fold onto the digit row, and a shortcut follows the physical cap
+— with a Russian layout active, the cap that types `о` still records `⌥⌘J`.
+`Esc`, `Cancel` and clicking away all put the saved value back. Windows has no
+`Record` button: its platform facts are unmeasured, and
+`docs/TASK-hotkey-native.md` is where that work is specified. Behaviour in
+full: `docs/design-spec.md` §9.
+
+If another application or macOS itself already holds the combination, `Save`
+says so and saves it anyway — it is the shortcut the user asked for, and a
+taken one binds normally, it just never fires.
 
 ## Development: the Electron prototype
 

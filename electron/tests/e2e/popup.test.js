@@ -365,19 +365,21 @@ describe('popup visual', () => {
     });
 
     it('focused row has a visible background tint distinct from unfocused rows', async () => {
-        // First field is auto-focused on mount.
+        // First field is auto-focused on mount. The tint is the row's
+        // `::before` field (spec §3), not the input's own background.
         const bgs = await page.$$eval('[data-testid="nudge"] input', (els) =>
             els.map((el) => ({
                 testid: el.getAttribute('data-testid'),
-                bg: getComputedStyle(el).backgroundColor,
+                bg: getComputedStyle(el.parentElement, '::before').backgroundColor,
             }))
         );
         const focused = bgs.find((b) => b.testid === 'field-doing');
         const others = bgs.filter((b) => b.testid !== 'field-doing');
         expect(focused.bg).not.toBe(others[0].bg);
         expect(others[0].bg).toBe(others[1].bg);
-        // Focused row should have nonzero alpha (i.e. a tint, not transparent)
-        const m = focused.bg.match(/\/\s*([\d.]+)\)?\s*$/);
+        // Focused row should have nonzero alpha (i.e. a tint, not transparent).
+        // Computed colours come back as `rgb(r g b / a)` or `rgba(r, g, b, a)`.
+        const m = focused.bg.match(/(?:\/|,)\s*([\d.]+)\)?\s*$/);
         expect(m, `focused bg = ${focused.bg}`).not.toBeNull();
         expect(parseFloat(m[1])).toBeGreaterThan(0);
     });

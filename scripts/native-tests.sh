@@ -34,8 +34,8 @@ if [ -z "${OPENAI_API_KEY:-}" ]; then
 fi
 
 # Forward to the Windows test process via WSLENV (WSL won't otherwise). Each
-# var is appended only when set: OPENAI_JUDGE_MODEL (default gpt-5.4-mini; e.g.
-# gpt-5.5 / gpt-5.4 / gpt-5.4-nano / gpt-4o), OPENAI_JUDGE_EFFORT (5.x reasoning
+# var is appended only when set: OPENAI_JUDGE_MODEL (default gpt-6-luna; e.g.
+# gpt-6-sol / gpt-5.4-mini / gpt-4o), OPENAI_JUDGE_EFFORT (reasoning
 # effort: low|medium|high), OPENAI_JUDGE_SCALE/DETAIL, and NUDGE_DUMP_PNG (a
 # Windows path, e.g. C:\...\cap.png, to dump the judged image).
 WSLENV="OPENAI_API_KEY"

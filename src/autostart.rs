@@ -89,13 +89,17 @@ where
     persist(config).map_err(AutostartError::Persist)
 }
 
-/// In-memory provider. Used by tests, by the WASM build (no real registry
-/// in the browser), and as the non-Windows-native fallback so the linux
-/// dev build compiles. It is never used in the Windows release binary —
-/// Windows always goes through `WindowsRegistryProvider`, and if that
-/// can't be constructed we refuse to open the settings window rather than
-/// silently lie about the registry state.
-#[cfg(any(test, not(target_os = "windows")))]
+/// In-memory provider. Used by tests, by the WASM build (no registry and no
+/// launchd in the browser), and as the fallback on platforms with no real
+/// backend yet, so the linux dev build compiles.
+///
+/// It is never used in a shipped desktop binary. Windows always goes through
+/// `WindowsRegistryProvider` and macOS through `MacLaunchAgentProvider`; if
+/// either can't be constructed we refuse to open the settings window rather
+/// than silently lie about the OS state. The cfg excludes both of those
+/// targets for exactly that reason — a fake that cannot be reached is better
+/// than one that can.
+#[cfg(any(test, not(any(target_os = "windows", target_os = "macos"))))]
 pub struct FakeProvider {
     enabled: std::cell::Cell<bool>,
     fail_enable: bool,
@@ -105,7 +109,7 @@ pub struct FakeProvider {
     lie_on_confirm: bool,
 }
 
-#[cfg(any(test, not(target_os = "windows")))]
+#[cfg(any(test, not(any(target_os = "windows", target_os = "macos"))))]
 impl FakeProvider {
     pub fn new(enabled: bool) -> Self {
         Self {
@@ -134,7 +138,7 @@ impl FakeProvider {
     }
 }
 
-#[cfg(any(test, not(target_os = "windows")))]
+#[cfg(any(test, not(any(target_os = "windows", target_os = "macos"))))]
 impl AutostartProvider for FakeProvider {
     fn enable(&self) -> Result<(), String> {
         if self.fail_enable {
@@ -302,6 +306,367 @@ impl AutostartProvider for WindowsRegistryProvider {
     }
 }
 
+// ---------------------------------------------------------------------------
+// macOS: LaunchAgent plist
+// ---------------------------------------------------------------------------
+
+/// launchd job label. Same reverse-DNS identity as `CFBundleIdentifier` in
+/// `scripts/build-macos-app.sh`, and it doubles as the plist filename — so
+/// enable/disable/is_enabled all address one file and one job.
+#[cfg(target_os = "macos")]
+pub const LAUNCH_AGENT_LABEL: &str = "com.wizard1209.nudge";
+
+/// macOS autostart via a per-user LaunchAgent: a plist in
+/// `~/Library/LaunchAgents/` that launchd loads at login.
+///
+/// # Why not `SMAppService`
+///
+/// `SMAppService.mainApp` is the modern API and it is the wrong one here. It
+/// registers a *bundle identity* — the OS remembers the app by its code
+/// signature, and a registration made by one build is not honoured for the
+/// next one unless the signing identity is stable. This project ships an
+/// ad-hoc signature (`codesign -s -`, see `scripts/build-macos-app.sh`); there
+/// is no Developer ID, so the code identity changes from build to build and
+/// registrations go stale in ways that look exactly like "autostart silently
+/// stopped working". A LaunchAgent is *path*-based: it names an executable on
+/// disk and launchd does not care who signed it. That is what makes it work
+/// under ad-hoc signing. Do not "modernise" this to SMAppService before a
+/// Developer ID cert exists.
+#[cfg(target_os = "macos")]
+pub struct MacLaunchAgentProvider {
+    /// Absolute path launchd will exec. See [`Self::for_current_exe`].
+    program: std::path::PathBuf,
+    /// `~/Library/LaunchAgents/<label>.plist`.
+    plist_path: std::path::PathBuf,
+}
+
+#[cfg(target_os = "macos")]
+impl MacLaunchAgentProvider {
+    /// Provider targeting the currently running executable.
+    ///
+    /// Inside a bundle this resolves to `Nudge.app/Contents/MacOS/nudge`,
+    /// which is exactly the path launchd must exec — launching the inner
+    /// binary directly still gives the app its bundle (`NSBundle.mainBundle`
+    /// walks up from the executable), so there is no need to shell out to
+    /// `open -a`. A *bare* binary works just as well, since the plist only
+    /// ever names a path; that is what makes this provider exercisable in
+    /// tests and from `cargo run` without building a bundle first.
+    ///
+    /// The path is canonicalised so a symlinked launch (`/usr/local/bin/nudge`
+    /// pointing into a bundle, a `target/debug` symlink) records the real file
+    /// rather than a link that may be repointed later.
+    pub fn for_current_exe() -> Result<Self, String> {
+        let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+        // canonicalize can fail on an exotic filesystem; the un-resolved path
+        // is still a usable ProgramArguments entry, so degrade rather than
+        // refuse to construct.
+        let program = std::fs::canonicalize(&exe).unwrap_or(exe);
+
+        let home = dirs::home_dir().ok_or_else(|| "cannot resolve home directory".to_string())?;
+        Ok(Self {
+            plist_path: launch_agent_plist_path(&home, LAUNCH_AGENT_LABEL),
+            program,
+        })
+    }
+
+    /// Where this provider writes its plist.
+    pub fn plist_path(&self) -> &std::path::Path {
+        &self.plist_path
+    }
+
+    /// The executable path this provider records in the plist.
+    pub fn program(&self) -> &std::path::Path {
+        &self.program
+    }
+
+    /// Write `~/Library/LaunchAgents/<label>.plist`, creating the directory if
+    /// needed. Split out from [`AutostartProvider::enable`] because it is the
+    /// only half that can be sandboxed: the plist lands under `$HOME`, while
+    /// `launchctl` always talks to the live per-user launchd domain (see
+    /// `tests/macos_autostart.rs`).
+    pub fn write_plist(&self) -> Result<(), String> {
+        if let Some(dir) = self.plist_path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+        }
+        std::fs::write(
+            &self.plist_path,
+            launch_agent_plist_xml(LAUNCH_AGENT_LABEL, &self.program),
+        )
+        .map_err(|e| format!("write {}: {e}", self.plist_path.display()))
+    }
+
+    /// Delete the plist. Returns `Ok(false)` when there was nothing to delete —
+    /// that is success, not an error: the post-condition "no launch agent" holds.
+    pub fn remove_plist(&self) -> Result<bool, String> {
+        match std::fs::remove_file(&self.plist_path) {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(format!("remove {}: {e}", self.plist_path.display())),
+        }
+    }
+
+    /// `launchctl bootstrap gui/<uid> <plist>`, falling back to the pre-10.11
+    /// `launchctl load -w <plist>` when the running launchctl has no
+    /// `bootstrap` subcommand.
+    ///
+    /// # Why it boots the label out first
+    ///
+    /// Bootstrapping a label the domain already holds is an error, and — this
+    /// was measured, not assumed — launchctl on macOS 26 reports it as a bare
+    /// `Bootstrap failed: 5: Input/output error`, with no distinguishing text.
+    /// Exit 5 is also what a genuinely broken plist yields, so the reply cannot
+    /// be classified after the fact: tolerating 5 would swallow real failures,
+    /// and rejecting it would make a second `enable()` fail. Removing the
+    /// precondition is the only way out — after a best-effort `bootout`, the
+    /// domain is known not to hold the label, so any bootstrap error left is a
+    /// real one.
+    ///
+    /// It is also the correct behaviour independent of that: bootstrap ignores
+    /// a plist whose label is already loaded, so re-enabling after the app
+    /// moved (`~/Downloads/Nudge.app` → `/Applications`) would otherwise leave
+    /// launchd pointed at the old path.
+    fn register(&self) -> Result<(), String> {
+        let _ = self.unregister();
+
+        let domain = format!("gui/{}", current_uid());
+        let out = run_launchctl(&["bootstrap", &domain, &self.plist_path.to_string_lossy()])?;
+        if out.ok || launchctl_says_already_registered(out.code, &out.text) {
+            return Ok(());
+        }
+        if launchctl_says_unknown_subcommand(&out.text) {
+            let legacy = run_launchctl(&["load", "-w", &self.plist_path.to_string_lossy()])?;
+            if legacy.ok || launchctl_says_already_registered(legacy.code, &legacy.text) {
+                return Ok(());
+            }
+            return Err(format!("launchctl load: {}", legacy.text));
+        }
+        Err(format!("launchctl bootstrap: {}", out.text))
+    }
+
+    /// `launchctl bootout gui/<uid>/<label>`, with the pre-10.11 `unload`
+    /// fallback. "No such process" is success: the post-condition "not in the
+    /// domain" already holds.
+    fn unregister(&self) -> Result<(), String> {
+        let target = format!("gui/{}/{}", current_uid(), LAUNCH_AGENT_LABEL);
+        let out = run_launchctl(&["bootout", &target])?;
+        if out.ok || launchctl_says_not_registered(out.code, &out.text) {
+            return Ok(());
+        }
+        if launchctl_says_unknown_subcommand(&out.text) {
+            let legacy = run_launchctl(&["unload", "-w", &self.plist_path.to_string_lossy()])?;
+            if legacy.ok || launchctl_says_not_registered(legacy.code, &legacy.text) {
+                return Ok(());
+            }
+            return Err(format!("launchctl unload: {}", legacy.text));
+        }
+        Err(format!("launchctl bootout: {}", out.text))
+    }
+}
+
+/// `~/Library/LaunchAgents/<label>.plist` — the directory launchd scans for
+/// per-user agents at login. Pure so the path derivation is testable without
+/// touching a real home directory.
+#[cfg(target_os = "macos")]
+pub fn launch_agent_plist_path(home: &std::path::Path, label: &str) -> std::path::PathBuf {
+    home.join("Library/LaunchAgents")
+        .join(format!("{label}.plist"))
+}
+
+/// The three keys that make a launch-at-login agent: `Label` (job identity),
+/// `ProgramArguments` (what to exec), `RunAtLoad` (do it when launchd loads
+/// the job, which at login is immediately).
+#[cfg(target_os = "macos")]
+pub fn launch_agent_plist_xml(label: &str, program: &std::path::Path) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>{label}</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>{program}</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+</dict>
+</plist>
+"#,
+        label = xml_escape(label),
+        program = xml_escape(&program.to_string_lossy()),
+    )
+}
+
+/// Escape the five XML metacharacters. Paths legitimately contain `&` and
+/// `<` (a directory may be named anything), and an unescaped one produces a
+/// plist launchd refuses to parse — which surfaces as a bootstrap failure far
+/// from its cause.
+#[cfg(target_os = "macos")]
+fn xml_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Extract the `Label` value from plist XML. Deliberately a scan for the
+/// `<key>Label</key>` / `<string>…</string>` pair rather than a real plist
+/// parser: the only file this ever reads is one we wrote ourselves, and the
+/// question being asked is narrow — "is this our agent, or did something else
+/// take the filename?".
+#[cfg(target_os = "macos")]
+pub fn parse_plist_label(xml: &str) -> Option<String> {
+    let after_key = xml.split_once("<key>Label</key>")?.1;
+    let open = after_key.find("<string>")? + "<string>".len();
+    let close = after_key[open..].find("</string>")? + open;
+    Some(after_key[open..close].trim().to_string())
+}
+
+/// Captured result of one `launchctl` invocation. `text` merges stdout and
+/// stderr because launchctl is inconsistent about which one carries the
+/// diagnostic.
+#[cfg(target_os = "macos")]
+struct LaunchctlOutput {
+    ok: bool,
+    code: Option<i32>,
+    text: String,
+}
+
+#[cfg(target_os = "macos")]
+fn run_launchctl(args: &[&str]) -> Result<LaunchctlOutput, String> {
+    let out = std::process::Command::new("launchctl")
+        .args(args)
+        .output()
+        .map_err(|e| format!("launchctl {}: {e}", args.join(" ")))?;
+    let mut text = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stdout = stdout.trim();
+    if !stdout.is_empty() {
+        if !text.is_empty() {
+            text.push(' ');
+        }
+        text.push_str(stdout);
+    }
+    if text.is_empty() {
+        text = format!("exit {:?}", out.status.code());
+    }
+    Ok(LaunchctlOutput {
+        ok: out.status.success(),
+        code: out.status.code(),
+        text,
+    })
+}
+
+/// The job is already in the domain, on the launchctl versions that say so
+/// distinctly: `EEXIST` (17), `EINPROGRESS` (37) while a previous bootstrap of
+/// the same label settles, or an explicit "already loaded" from the legacy
+/// `load` path.
+///
+/// Belt and braces rather than the mechanism — `register` boots the label out
+/// first precisely because macOS 26's launchctl does *not* say so distinctly
+/// (measured: a bare `Bootstrap failed: 5: Input/output error`). Exit 5 is
+/// deliberately absent from this list: it is equally what a malformed plist
+/// returns, so accepting it would turn a broken agent into a reported success.
+#[cfg(target_os = "macos")]
+fn launchctl_says_already_registered(code: Option<i32>, text: &str) -> bool {
+    matches!(code, Some(17) | Some(37))
+        || text.contains("already bootstrapped")
+        || text.contains("already loaded")
+        || text.contains("Already loaded")
+}
+
+/// Nothing to unregister — `ESRCH` (3) / "Could not find specified service".
+/// Disabling something already disabled must succeed.
+#[cfg(target_os = "macos")]
+fn launchctl_says_not_registered(code: Option<i32>, text: &str) -> bool {
+    matches!(code, Some(3) | Some(113))
+        || text.contains("Could not find specified service")
+        || text.contains("No such process")
+        || text.contains("not find service")
+}
+
+/// This launchctl predates `bootstrap`/`bootout` (macOS < 10.11).
+#[cfg(target_os = "macos")]
+fn launchctl_says_unknown_subcommand(text: &str) -> bool {
+    text.contains("Unrecognized subcommand") || text.contains("Unknown subcommand")
+}
+
+/// Real uid of this process. launchd domain targets are `gui/<uid>`; `$UID` is
+/// a shell variable and is not in a spawned process's environment, so ask the
+/// kernel. `getuid` cannot fail and needs no libc dependency for one symbol.
+#[cfg(target_os = "macos")]
+fn current_uid() -> u32 {
+    unsafe extern "C" {
+        fn getuid() -> u32;
+    }
+    unsafe { getuid() }
+}
+
+#[cfg(target_os = "macos")]
+impl AutostartProvider for MacLaunchAgentProvider {
+    fn enable(&self) -> Result<(), String> {
+        self.write_plist()?;
+        if let Err(e) = self.register() {
+            // Roll the file back. launchd validates the plist at bootstrap
+            // time, so a failure here usually means the file we just wrote is
+            // unusable — leaving it behind would make `is_enabled` report
+            // `true` for an agent that cannot actually run, and
+            // `apply_autostart` would then persist that lie.
+            let _ = self.remove_plist();
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    fn disable(&self) -> Result<(), String> {
+        // A bootout failure is deliberately non-fatal, unlike the bootstrap
+        // failure above. Unregistering only affects the *current* login
+        // session; what decides whether the app comes back at the next login
+        // is the file, and removing it below is the step that must succeed.
+        // Hard-failing here would leave the plist on disk with the caller told
+        // "disable failed" — the worse of the two states, and the one that
+        // makes `is_enabled` and the config disagree.
+        let _ = self.unregister();
+        self.remove_plist()?;
+        Ok(())
+    }
+
+    /// Reports whether *our* plist is present in `~/Library/LaunchAgents`.
+    ///
+    /// This is read from the file rather than from `launchctl print` on
+    /// purpose, and the choice matters because `apply_autostart` uses this
+    /// call to *confirm* a write. The two sources answer different questions:
+    /// the plist is the durable record launchd scans at every login — it is
+    /// precisely the thing that decides "will Nudge start next time I log
+    /// in?" — while `launchctl print gui/<uid>/<label>` describes the current
+    /// boot session's domain, which drifts from that answer in both
+    /// directions. A job can be loaded now from a plist that has since been
+    /// deleted (stays until logout), and a plist can be on disk without ever
+    /// being bootstrapped (no GUI session, e.g. over ssh), which would make
+    /// `is_enabled` report `false` for an app that will in fact autostart.
+    /// Confirming against the file means `enable` is confirmed against the
+    /// exact artifact `enable` wrote.
+    ///
+    /// The label is checked, not just the filename, so a foreign file that
+    /// happens to occupy the path isn't reported as our registration.
+    fn is_enabled(&self) -> Result<bool, String> {
+        match std::fs::read_to_string(&self.plist_path) {
+            Ok(xml) => Ok(parse_plist_label(&xml).as_deref() == Some(LAUNCH_AGENT_LABEL)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(format!("read {}: {e}", self.plist_path.display())),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,5 +776,138 @@ mod tests {
 
         assert!(config.autostart);
         assert_eq!(saved.borrow().as_ref().map(|c| c.autostart), Some(true));
+    }
+
+    // -----------------------------------------------------------------
+    // macOS LaunchAgent: the pure halves (XML, paths, launchctl replies)
+    // -----------------------------------------------------------------
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn plist_path_is_under_library_launchagents() {
+        let path = launch_agent_plist_path(
+            std::path::Path::new("/Users/someone"),
+            "com.wizard1209.nudge",
+        );
+        assert_eq!(
+            path,
+            std::path::PathBuf::from(
+                "/Users/someone/Library/LaunchAgents/com.wizard1209.nudge.plist"
+            )
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn plist_xml_carries_label_program_and_runatload() {
+        let xml = launch_agent_plist_xml(
+            "com.wizard1209.nudge",
+            std::path::Path::new("/Applications/Nudge.app/Contents/MacOS/nudge"),
+        );
+
+        assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
+        assert!(xml.contains("<key>Label</key>\n\t<string>com.wizard1209.nudge</string>"));
+        assert!(xml.contains("<string>/Applications/Nudge.app/Contents/MacOS/nudge</string>"));
+        assert!(xml.contains("<key>RunAtLoad</key>\n\t<true/>"));
+        assert!(xml.trim_end().ends_with("</plist>"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn plist_xml_escapes_metacharacters_in_the_path() {
+        // A directory may be named anything; an unescaped `&` yields a plist
+        // launchd refuses to parse, and the failure surfaces at bootstrap
+        // time, far from its cause.
+        let xml = launch_agent_plist_xml(
+            "com.wizard1209.nudge",
+            std::path::Path::new("/Users/a&b/<odd>/nudge"),
+        );
+        assert!(xml.contains("<string>/Users/a&amp;b/&lt;odd&gt;/nudge</string>"));
+        assert!(!xml.contains("/Users/a&b/"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn label_round_trips_through_the_generated_plist() {
+        let xml = launch_agent_plist_xml("com.wizard1209.nudge", std::path::Path::new("/bin/true"));
+        assert_eq!(
+            parse_plist_label(&xml).as_deref(),
+            Some("com.wizard1209.nudge")
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn label_of_a_foreign_or_malformed_plist_is_not_ours() {
+        let foreign =
+            launch_agent_plist_xml("com.example.other", std::path::Path::new("/bin/true"));
+        assert_eq!(
+            parse_plist_label(&foreign).as_deref(),
+            Some("com.example.other")
+        );
+        assert_eq!(parse_plist_label("not a plist at all"), None);
+        assert_eq!(parse_plist_label("<key>Label</key>"), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn already_registered_is_recognised_as_success() {
+        // EEXIST / EINPROGRESS, plus the textual forms across macOS versions.
+        assert!(launchctl_says_already_registered(
+            Some(17),
+            "Bootstrap failed: 17: File exists"
+        ));
+        assert!(launchctl_says_already_registered(
+            Some(37),
+            "Bootstrap failed: 37: Operation already in progress"
+        ));
+        assert!(launchctl_says_already_registered(
+            Some(5),
+            "service already bootstrapped"
+        ));
+    }
+
+    /// Observed on macOS 26: re-bootstrapping a loaded label yields exactly
+    /// `Bootstrap failed: 5: Input/output error` — the same reply a malformed
+    /// plist gets. Classifying it as "already registered" would report success
+    /// for an agent that cannot run, so `register` boots the label out first
+    /// instead and this reply stays a failure.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_ambiguous_exit_5_is_not_treated_as_already_registered() {
+        assert!(!launchctl_says_already_registered(
+            Some(5),
+            "Bootstrap failed: 5: Input/output error\nTry re-running the command as root \
+             for richer errors."
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn not_registered_is_recognised_as_success_for_disable() {
+        // Observed on macOS 26 for a bootout of a label that is not loaded.
+        assert!(launchctl_says_not_registered(
+            Some(3),
+            "Boot-out failed: 3: No such process"
+        ));
+        assert!(launchctl_says_not_registered(
+            Some(113),
+            "Could not find specified service"
+        ));
+        assert!(!launchctl_says_not_registered(
+            Some(5),
+            "Boot-out failed: 5: Input/output error"
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn pre_bootstrap_launchctl_is_detected() {
+        assert!(launchctl_says_unknown_subcommand(
+            "launchctl: Unrecognized subcommand: bootstrap"
+        ));
+        assert!(!launchctl_says_unknown_subcommand(
+            "Bootstrap failed: 5: Input/output error"
+        ));
     }
 }

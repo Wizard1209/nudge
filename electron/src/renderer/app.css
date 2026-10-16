@@ -1,1 +1,22 @@
 @import "tailwindcss";
+
+/* Spec §3: the focused row shows a rounded tint around its text — a field
+   inside the row (inset 10px sideways, 5px vertically, radius 8), not a
+   fill of the whole row and not a plate hugging the card's contour. The
+   input stays full-width so the whole row is the click target. */
+.row {
+  position: relative;
+}
+.row::before {
+  content: "";
+  position: absolute;
+  inset: 5px 10px;
+  border-radius: 8px;
+  pointer-events: none;
+}
+.row:focus-within::before {
+  background: rgb(255 255 255 / 0.08);
+}
+.row > input {
+  position: relative;
+}

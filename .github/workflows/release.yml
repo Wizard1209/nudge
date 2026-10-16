@@ -43,8 +43,33 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
-  release:
+  # The macOS artifact is built on its own runner and handed to the release job
+  # as a workflow artifact rather than published from here. Two jobs both
+  # calling action-gh-release for the same tag would race to create the
+  # release; one publisher avoids that entirely.
+  build-macos:
     needs: e2e-full
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+      # CI's test-macos job only runs on push/PR, and tags hit neither, so the
+      # portable tiers are re-run here rather than shipping unverified.
+      - run: cargo test
+      # LSUIElement is on by the build script's own default now that the
+      # menu-bar status item exists to quit from; see the comment beside
+      # AGENT_MODE in scripts/build-macos-app.sh.
+      - name: Build .app and DMG
+        run: UNIVERSAL=1 DMG=1 ./scripts/build-macos-app.sh
+      - run: mv target/macos/Nudge-*.dmg "nudge-${{ github.ref_name }}-macos-universal.dmg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: nudge-*.dmg
+          if-no-files-found: error
+
+  release:
+    needs: [e2e-full, build-macos]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -53,7 +78,25 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --bin nudge --target x86_64-pc-windows-gnu
       - run: cp target/x86_64-pc-windows-gnu/release/nudge.exe "nudge-${{ github.ref_name }}-x86_64-windows.exe"
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-dmg
       - uses: softprops/action-gh-release@v3
         with:
-          files: nudge-${{ github.ref_name }}-x86_64-windows.exe
+          files: |
+            nudge-${{ github.ref_name }}-x86_64-windows.exe
+            nudge-${{ github.ref_name }}-macos-universal.dmg
           generate_release_notes: true
+          body: |
+            ### macOS
+
+            The `.app` inside the DMG carries an ad-hoc signature, not a
+            Developer ID, so Gatekeeper blocks it on first launch — and macOS 15
+            removed the Control-click override that used to get past that. After
+            dragging it to Applications, run:
+
+            ```sh
+            xattr -dr com.apple.quarantine /Applications/Nudge.app
+            ```
+
+            or open it once via System Settings › Privacy & Security › Open Anyway.

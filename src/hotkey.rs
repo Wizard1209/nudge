@@ -37,6 +37,9 @@ pub enum ParseError {
     MultipleKeys,
     /// "Foo+Ctrl" — segment is neither a modifier nor a known key.
     UnknownToken(String),
+    /// "J" — a key that types something, with nothing held. The OS registers
+    /// it and the key then belongs to us everywhere. §5.
+    MissingModifier(String),
 }
 
 impl fmt::Display for ParseError {
@@ -53,17 +56,52 @@ impl fmt::Display for ParseError {
                 write!(f, "hotkey has more than one non-modifier key")
             }
             ParseError::UnknownToken(t) => write!(f, "unknown hotkey token: \"{}\"", t),
+            ParseError::MissingModifier(k) => write!(
+                f,
+                "hotkey \"{}\" has no modifier — that would take the key away from every other application (only F1-F24 may stand alone)",
+                k
+            ),
         }
     }
 }
 
 impl std::error::Error for ParseError {}
 
-/// Parse a user-readable hotkey string like "Ctrl+Shift+Space".
+/// The macOS symbol for each modifier, in the order Apple prints them in a
+/// menu: Control, Option, Shift, Command. Our bit order is already that
+/// order, so [`format`] and [`format_native`] walk the same list.
+const MOD_GLYPH_CTRL: char = '⌃';
+const MOD_GLYPH_ALT: char = '⌥';
+const MOD_GLYPH_SHIFT: char = '⇧';
+const MOD_GLYPH_WIN: char = '⌘';
+
+/// The modifier bit a leading symbol stands for, or `None` if the character
+/// is not a modifier symbol.
+///
+/// These are accepted on every platform, not just macOS. A user who pastes
+/// `⌥⌘J` into the Windows build should get a parse error about the *key*
+/// being unregistrable there, not "unknown token ⌥⌘J" — and the settings
+/// window on macOS writes this form into the file, so a config copied
+/// between machines has to keep meaning what it said.
+fn modifier_glyph(c: char) -> Option<u8> {
+    match c {
+        MOD_GLYPH_CTRL => Some(MOD_CTRL),
+        MOD_GLYPH_ALT => Some(MOD_ALT),
+        MOD_GLYPH_SHIFT => Some(MOD_SHIFT),
+        MOD_GLYPH_WIN | '⊞' => Some(MOD_WIN),
+        _ => None,
+    }
+}
+
+/// Parse a user-readable hotkey string like "Ctrl+Shift+Space" or "⌃⇧Space".
 ///
 /// Rules:
 /// - Case-insensitive; whitespace around `+` and around the whole string is ignored.
-/// - Modifier aliases: `Control`/`Ctrl`; `Alt`; `Shift`; `Win`/`Super`/`Meta`/`Cmd`.
+/// - Modifier aliases: `Control`/`Ctrl` and `⌃`; `Alt`/`Option`/`Opt` and `⌥`;
+///   `Shift` and `⇧`; `Win`/`Super`/`Meta`/`Cmd`/`Command` and `⌘`.
+/// - Modifier symbols need no `+` between them, because that is how macOS
+///   writes a shortcut and the settings window puts exactly that string in
+///   the field. `⌥⌘J`, `⌥+⌘+J` and `Alt+Cmd+J` are the same hotkey.
 /// - Exactly one non-modifier token is required.
 /// - Duplicate modifiers ("Ctrl+Ctrl+A") are accepted silently — the user
 ///   probably copy-pasted; refusing would be more annoying than helpful.
@@ -77,17 +115,30 @@ pub fn parse(input: &str) -> Result<Hotkey, ParseError> {
     let mut key: Option<String> = None;
 
     for segment in trimmed.split('+') {
-        let tok = segment.trim();
+        let mut tok = segment.trim();
         if tok.is_empty() {
             // "Ctrl++A" or trailing "+" — treat as a malformed empty token.
             return Err(ParseError::UnknownToken(String::new()));
         }
+        // Peel any leading modifier symbols off the segment. This is what
+        // makes the separator optional: "⌥⌘J" arrives as one segment and
+        // leaves "J" behind, while "Ctrl+⌘J" peels only in the second.
+        while let Some(c) = tok.chars().next()
+            && let Some(bit) = modifier_glyph(c)
+        {
+            modifiers |= bit;
+            tok = tok[c.len_utf8()..].trim_start();
+        }
+        if tok.is_empty() {
+            // The segment was symbols only — legal, unlike an empty one.
+            continue;
+        }
         let upper = tok.to_ascii_uppercase();
         match upper.as_str() {
             "CTRL" | "CONTROL" => modifiers |= MOD_CTRL,
-            "ALT" => modifiers |= MOD_ALT,
+            "ALT" | "OPTION" | "OPT" => modifiers |= MOD_ALT,
             "SHIFT" => modifiers |= MOD_SHIFT,
-            "WIN" | "SUPER" | "META" | "CMD" => modifiers |= MOD_WIN,
+            "WIN" | "SUPER" | "META" | "CMD" | "COMMAND" => modifiers |= MOD_WIN,
             _ => {
                 let canonical = canonicalize_key(&upper)
                     .ok_or_else(|| ParseError::UnknownToken(tok.to_string()))?;
@@ -100,22 +151,123 @@ pub fn parse(input: &str) -> Result<Hotkey, ParseError> {
     }
 
     let key = key.ok_or(ParseError::MissingKey)?;
+    // §5: at least one modifier, except for the F-row. The registration call
+    // accepts a bare key on both platforms and then owns it machine-wide —
+    // this is the only place that says no.
+    if modifiers == 0 && !is_function_key(&key) {
+        return Err(ParseError::MissingModifier(key));
+    }
     Ok(Hotkey {
         modifiers,
         key: HotkeyKey(key),
     })
 }
 
+/// Build a [`Hotkey`] from a modifier mask and one key token, applying the
+/// same canonicalisation and the same modifier rule [`parse`] does.
+///
+/// This is the door a *captured* press comes through, where [`parse`] is the
+/// door a *typed* string comes through. It exists so the platform never has to
+/// format a label and re-parse it to get a `Hotkey` — a round trip through
+/// text is a second grammar waiting to disagree with this one. Both entry
+/// points call [`canonicalize_key`] and both apply the F-row exception, and a
+/// test asserts they agree for every token the grammar knows.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // only the macOS edge source builds from key codes
+pub fn from_parts(modifiers: u8, token: &str) -> Result<Hotkey, ParseError> {
+    let upper = token.to_ascii_uppercase();
+    let key =
+        canonicalize_key(&upper).ok_or_else(|| ParseError::UnknownToken(token.to_string()))?;
+    if modifiers == 0 && !is_function_key(&key) {
+        return Err(ParseError::MissingModifier(key));
+    }
+    Ok(Hotkey {
+        modifiers,
+        key: HotkeyKey(key),
+    })
+}
+
+/// Every canonical key token the grammar accepts, once each.
+///
+/// Its reason for existing is the platform's key-code table: "every token maps
+/// to exactly one key code" is only an assertion a test can make if the token
+/// set is enumerable from the grammar itself. Eyeballing two hand-written
+/// tables against each other is the defect this whole feature exists to
+/// remove, and a list nobody can enumerate is how that defect hides.
+///
+/// Test-only, so far — the `dead_code` allow is for the binary's copy of this
+/// module, where nothing calls it.
+#[allow(dead_code)]
+pub fn all_key_tokens() -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(80);
+    for ch in 'A'..='Z' {
+        out.push(ch.to_string());
+    }
+    for ch in '0'..='9' {
+        out.push(ch.to_string());
+    }
+    for n in 1..=24u8 {
+        out.push(format!("F{n}"));
+    }
+    for (token, ..) in NAMED_KEYS {
+        out.push((*token).to_string());
+    }
+    for ch in SYMBOL_KEYS.chars() {
+        out.push(ch.to_string());
+    }
+    out
+}
+
+/// Whether a canonical key token is one of `F1`..`F24` — the keys that type
+/// nothing, and so are the only ones allowed to stand alone (§5).
+fn is_function_key(key: &str) -> bool {
+    key.strip_prefix('F')
+        .and_then(|rest| rest.parse::<u8>().ok())
+        .is_some_and(|n| (1..=24).contains(&n))
+}
+
 /// Return the canonical form of a key token (already uppercased) if we
 /// recognise it. None means "not a key we know how to register". Kept
 /// separate from `parse` so the platform layer can also use it for
 /// VK-mapping without re-parsing the whole string.
+/// The symbol caps, named by their unshifted legend (§5). One character each,
+/// so they are their own canonical token and their own label on both
+/// platforms. The shifted twin of a cap (`?` for `/`, `+` for `=`) is not a
+/// spelling: it would be a second name for one binding, and `+` is the
+/// separator besides.
+const SYMBOL_KEYS: &str = "-=[]\\;',./`";
+
+/// Every key that is not a letter, a digit or `F1`–`F24`, as
+/// `(canonical token, accepted spellings, label, macOS glyph)`.
+///
+/// One row per physical key. The spellings are what §5 lists — including the
+/// Mac symbols, so a shortcut written the way a Mac writes it round-trips.
+/// The label is what [`format`] emits; the glyph is what [`format_native`]
+/// shows on macOS, empty where the cap carries a word (`Space`) or has no cap
+/// there at all (`Insert`).
+#[rustfmt::skip]
+const NAMED_KEYS: &[(&str, &[&str], &str, &str)] = &[
+    ("SPACE",     &["SPACE", "␣"],                    "Space",     ""),
+    ("ENTER",     &["ENTER", "RETURN", "↩", "⏎", "⌤"], "Enter",     "↩"),
+    ("TAB",       &["TAB", "⇥"],                      "Tab",       "⇥"),
+    ("ESCAPE",    &["ESCAPE", "ESC", "⎋"],            "Escape",    "⎋"),
+    ("BACKSPACE", &["BACKSPACE", "⌫"],                "Backspace", "⌫"),
+    ("LEFT",      &["LEFT", "←"],                     "Left",      "←"),
+    ("RIGHT",     &["RIGHT", "→"],                    "Right",     "→"),
+    ("UP",        &["UP", "↑"],                       "Up",        "↑"),
+    ("DOWN",      &["DOWN", "↓"],                     "Down",      "↓"),
+    ("HOME",      &["HOME", "↖"],                     "Home",      "↖"),
+    ("END",       &["END", "↘"],                      "End",       "↘"),
+    ("PAGEUP",    &["PAGEUP", "PGUP", "⇞"],           "PageUp",    "⇞"),
+    ("PAGEDOWN",  &["PAGEDOWN", "PGDN", "⇟"],         "PageDown",  "⇟"),
+    ("INSERT",    &["INSERT", "INS"],                 "Insert",    ""),
+    ("DELETE",    &["DELETE", "DEL", "⌦"],            "Delete",    "⌦"),
+];
+
 fn canonicalize_key(upper: &str) -> Option<String> {
-    if upper.len() == 1 {
-        let ch = upper.chars().next().unwrap();
-        if ch.is_ascii_alphanumeric() {
-            return Some(upper.to_string());
-        }
+    if let Some(ch) = one_char(upper)
+        && (ch.is_ascii_alphanumeric() || SYMBOL_KEYS.contains(ch))
+    {
+        return Some(upper.to_string());
     }
     // Function keys F1..F24
     if let Some(rest) = upper.strip_prefix('F')
@@ -124,21 +276,27 @@ fn canonicalize_key(upper: &str) -> Option<String> {
     {
         return Some(format!("F{}", n));
     }
-    // Named keys we're willing to register globally. Deliberately conservative:
-    // home/end/arrows/etc. can stay un-supported until someone asks. Most users
-    // pick Letter+modifiers or Space for spotlight-style shortcuts.
-    match upper {
-        "SPACE" | "ENTER" | "RETURN" | "TAB" | "ESC" | "ESCAPE" | "BACKSPACE" => {
-            // Normalize aliases.
-            Some(match upper {
-                "RETURN" => "ENTER".to_string(),
-                "ESC" => "ESCAPE".to_string(),
-                other => other.to_string(),
-            })
-        }
-        _ => None,
-    }
+    NAMED_KEYS
+        .iter()
+        .find(|(_, spellings, _, _)| spellings.contains(&upper))
+        .map(|(token, ..)| token.to_string())
 }
+
+/// The single character of `s`, or `None` if it is not exactly one — by
+/// character, not by byte, so a multi-byte glyph is one character and falls
+/// through to [`NAMED_KEYS`] rather than being read as a symbol cap.
+fn one_char(s: &str) -> Option<char> {
+    let mut chars = s.chars();
+    chars.next().filter(|_| chars.next().is_none())
+}
+
+/// How this platform spells the fourth modifier when writing a hotkey out.
+/// The bit is one bit — `Win`, `Cmd` and `⌘` all parse to it everywhere — but
+/// a config file a Mac user opens should say `Cmd`, not `Win`.
+#[cfg(target_os = "macos")]
+const MOD_WIN_LABEL: &str = "Cmd";
+#[cfg(not(target_os = "macos"))]
+const MOD_WIN_LABEL: &str = "Win";
 
 /// Reconstruct the canonical label for a Hotkey ("Ctrl+Shift+Space"). Used
 /// when emitting the default config so the file looks the way the docs
@@ -155,7 +313,7 @@ pub fn format(hk: &Hotkey) -> String {
         parts.push("Shift");
     }
     if hk.modifiers & MOD_WIN != 0 {
-        parts.push("Win");
+        parts.push(MOD_WIN_LABEL);
     }
     let key_label = title_case_key(&hk.key.0);
     let mut out = parts.join("+");
@@ -166,22 +324,99 @@ pub fn format(hk: &Hotkey) -> String {
     out
 }
 
-fn title_case_key(upper: &str) -> String {
-    // F-keys stay uppercase. Single letters stay uppercase. Multi-char names
-    // (Space, Enter, Escape, …) get title-cased so the rendered label reads
-    // naturally instead of shouting.
-    let is_f_key = upper.starts_with('F') && upper[1..].chars().all(|c| c.is_ascii_digit());
-    if upper.len() == 1 || is_f_key {
-        return upper.to_string();
+/// Every token a hotkey string may contain, in one sentence, spelled the way
+/// this platform spells them.
+///
+/// This is the whole accepted vocabulary and it is deliberately one string
+/// rather than a table: it is shown in the settings banner when a typed
+/// hotkey does not parse, which is the only moment a user needs the list, and
+/// a banner has room for a sentence.
+///
+/// The named keys are short because the backends are: Carbon's
+/// `RegisterEventHotKey` and Win32's `RegisterHotKey` both take a single key
+/// code, and this set is the intersection that maps on both. The keypad is
+/// outside it on purpose — §5 says why.
+// The modifier symbols stay — they are what the keycaps say, and the line
+// exists to teach the form the field uses. The key symbols do not, with the
+// arrows as the one exception on macOS: at the size this renders, `⌫` and
+// `↩` are a smudge and have unambiguous names anyway, while `Left` reads as
+// a word where `←` reads as the cap. Elsewhere the arrows are words too:
+// only macOS installs a symbol font, and egui's bundled faces have no arrow
+// glyphs, so `←` renders as an empty box there — and `Left` is how the field
+// itself spells the key on those platforms.
+#[cfg(target_os = "macos")]
+pub const VOCABULARY: &str = "Modifiers ⌃ ⌥ ⇧ ⌘ (or Ctrl, Option, Shift, Cmd) \
+    plus one key: A–Z, 0–9, F1–F20, Space, Enter, Tab, Esc, Backspace, \
+    ← ↑ → ↓, Home, End, PageUp, PageDown, Insert, Delete, \
+    or a symbol cap: - = [ ] \\ ; ' , . / `";
+#[cfg(not(target_os = "macos"))]
+pub const VOCABULARY: &str = "Modifiers Ctrl, Alt, Shift, Win \
+    plus one key: A–Z, 0–9, F1–F24, Space, Enter, Tab, Esc, Backspace, \
+    Left, Right, Up, Down, Home, End, PageUp, PageDown, Insert, Delete, \
+    or a symbol cap: - = [ ] \\ ; ' , . / `";
+
+/// The label to *show* a user of this platform — on macOS the symbol form,
+/// `⌥⌘J`, which is what every other Mac app prints and what the keycaps say.
+/// Everywhere else it is [`format`] unchanged, because `Ctrl+Alt+J` is what
+/// Windows prints.
+///
+/// This is a rendering, not a second storage format: [`parse`] accepts what
+/// this emits, so the settings window can put it straight in the editable
+/// field and Save can hand it to the config unchanged.
+///
+/// The key half is symbolic only where a Mac keycap is: `⌘Space` and not
+/// `⌘␣`, because the space bar has no legend and Apple's own menus write the
+/// word.
+pub fn format_native(hk: &Hotkey) -> String {
+    #[cfg(not(target_os = "macos"))]
+    {
+        format(hk)
     }
-    let mut chars = upper.chars();
-    match chars.next() {
-        None => String::new(),
-        Some(first) => {
-            let rest: String = chars.as_str().to_ascii_lowercase();
-            format!("{}{}", first, rest)
+    #[cfg(target_os = "macos")]
+    {
+        let mut out = String::with_capacity(8);
+        for (bit, glyph) in [
+            (MOD_CTRL, MOD_GLYPH_CTRL),
+            (MOD_ALT, MOD_GLYPH_ALT),
+            (MOD_SHIFT, MOD_GLYPH_SHIFT),
+            (MOD_WIN, MOD_GLYPH_WIN),
+        ] {
+            if hk.modifiers & bit != 0 {
+                out.push(glyph);
+            }
         }
+        let key_label = NAMED_KEYS
+            .iter()
+            .find(|(token, ..)| *token == hk.key.as_str())
+            .map(|(_, _, _, glyph)| *glyph)
+            .filter(|glyph| !glyph.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| title_case_key(hk.key.as_str()));
+        out.push_str(&key_label);
+        out
     }
+}
+
+/// How to *name* one key token in a sentence — `PageUp`, `Space`, `J`, `F13`.
+///
+/// The platform layer needs this to refuse a key by name ("J cannot be part of
+/// a hotkey"), and the name has to be the one the rest of the app prints or
+/// the refusal teaches the wrong spelling.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // only the macOS edge source refuses keys by name
+pub fn key_label(token: &str) -> String {
+    title_case_key(token)
+}
+
+fn title_case_key(upper: &str) -> String {
+    // Letters, digits and symbol caps are one character and already read the
+    // way they are written; F-keys stay uppercase. Everything else is a named
+    // key, and [`NAMED_KEYS`] carries the spelling to show — `PageUp`, not the
+    // `Pageup` a mechanical title-casing would produce.
+    NAMED_KEYS
+        .iter()
+        .find(|(token, ..)| *token == upper)
+        .map(|(_, _, label, _)| (*label).to_string())
+        .unwrap_or_else(|| upper.to_string())
 }
 
 /// Default hotkey used when no config file exists yet. Ctrl+Shift+Space is
@@ -189,126 +424,6 @@ fn title_case_key(upper: &str) -> String {
 /// memorable as "spotlight-ish".
 pub fn default_hotkey() -> Hotkey {
     parse("Ctrl+Shift+Space").expect("default hotkey must parse")
-}
-
-/// Translate an egui-side `(modifiers, key)` pair from the settings recorder
-/// into a `Hotkey` in our canonical form. The supported key set deliberately
-/// mirrors what [`canonicalize_key`] accepts and what
-/// [`crate::tray_bridge::vk_for_key`] can translate to a Win32 VK — so the
-/// recorder cannot produce a label that would silently fail to register at
-/// next launch.
-///
-/// Returns `None` for any key outside that set (arrows, Home/End, punctuation,
-/// dead keys, …) — the caller surfaces a hint and keeps recording.
-///
-/// On the modifier side, egui's `mac_cmd` / `command` both fold into our
-/// `MOD_WIN` bit, matching the parser's `Win|Super|Meta|Cmd` aliasing rule.
-/// Callers must pass a real non-modifier key as `key`; egui doesn't surface
-/// raw Ctrl/Alt/Shift as `Key` variants, so this contract is naturally upheld
-/// by the input-pump loop.
-//
-// Bin-on-wasm reports this as "never used" because main.rs's settings_app
-// import is gated to non-wasm — same noise the rest of this module already
-// emits in that build. The library and the native bin both use this fn.
-#[allow(dead_code)]
-pub fn hotkey_from_egui(
-    modifiers: eframe::egui::Modifiers,
-    key: eframe::egui::Key,
-) -> Option<Hotkey> {
-    use eframe::egui::Key;
-
-    let token: &'static str = match key {
-        Key::A => "A",
-        Key::B => "B",
-        Key::C => "C",
-        Key::D => "D",
-        Key::E => "E",
-        Key::F => "F",
-        Key::G => "G",
-        Key::H => "H",
-        Key::I => "I",
-        Key::J => "J",
-        Key::K => "K",
-        Key::L => "L",
-        Key::M => "M",
-        Key::N => "N",
-        Key::O => "O",
-        Key::P => "P",
-        Key::Q => "Q",
-        Key::R => "R",
-        Key::S => "S",
-        Key::T => "T",
-        Key::U => "U",
-        Key::V => "V",
-        Key::W => "W",
-        Key::X => "X",
-        Key::Y => "Y",
-        Key::Z => "Z",
-        Key::Num0 => "0",
-        Key::Num1 => "1",
-        Key::Num2 => "2",
-        Key::Num3 => "3",
-        Key::Num4 => "4",
-        Key::Num5 => "5",
-        Key::Num6 => "6",
-        Key::Num7 => "7",
-        Key::Num8 => "8",
-        Key::Num9 => "9",
-        Key::F1 => "F1",
-        Key::F2 => "F2",
-        Key::F3 => "F3",
-        Key::F4 => "F4",
-        Key::F5 => "F5",
-        Key::F6 => "F6",
-        Key::F7 => "F7",
-        Key::F8 => "F8",
-        Key::F9 => "F9",
-        Key::F10 => "F10",
-        Key::F11 => "F11",
-        Key::F12 => "F12",
-        Key::F13 => "F13",
-        Key::F14 => "F14",
-        Key::F15 => "F15",
-        Key::F16 => "F16",
-        Key::F17 => "F17",
-        Key::F18 => "F18",
-        Key::F19 => "F19",
-        Key::F20 => "F20",
-        Key::F21 => "F21",
-        Key::F22 => "F22",
-        Key::F23 => "F23",
-        Key::F24 => "F24",
-        Key::Space => "SPACE",
-        Key::Enter => "ENTER",
-        Key::Tab => "TAB",
-        Key::Escape => "ESCAPE",
-        Key::Backspace => "BACKSPACE",
-        _ => return None,
-    };
-
-    let mut mods: u8 = 0;
-    if modifiers.ctrl {
-        mods |= MOD_CTRL;
-    }
-    if modifiers.alt {
-        mods |= MOD_ALT;
-    }
-    if modifiers.shift {
-        mods |= MOD_SHIFT;
-    }
-    // egui's `command` is the "primary modifier": Cmd on mac, Ctrl on others.
-    // `mac_cmd` is the raw Cmd key (mac only). Both fold into our MOD_WIN bit
-    // for cross-platform consistency with the parser's Win|Super|Meta|Cmd
-    // aliasing — except on non-mac targets `command == ctrl`, which we already
-    // handled above, so we only add MOD_WIN when `mac_cmd` is set (true Cmd).
-    if modifiers.mac_cmd {
-        mods |= MOD_WIN;
-    }
-
-    Some(Hotkey {
-        modifiers: mods,
-        key: HotkeyKey(token.to_string()),
-    })
 }
 
 #[cfg(test)]
@@ -447,230 +562,226 @@ mod tests {
         assert_eq!(format(&hk), "Ctrl+F5");
     }
 
-    #[test]
-    fn default_hotkey_is_ctrl_shift_space() {
-        let hk = default_hotkey();
-        assert_eq!(format(&hk), "Ctrl+Shift+Space");
-    }
-
-    // ---- hotkey_from_egui ---------------------------------------------------
-    // The recorder's pure mapping function. Verifies the supported key set
-    // exactly matches what `canonicalize_key` (and therefore
-    // `tray_bridge::vk_for_key`) accepts, so a recorded combo CAN be
-    // registered on Windows at next launch.
-
-    use eframe::egui::{Key, Modifiers};
+    // ---- the macOS vocabulary ------------------------------------------------
 
     #[test]
-    fn letters_map_to_uppercase_token() {
-        // egui::Key::A..=Z → "A".."Z". Modifier-less recording produces a
-        // bare-letter hotkey; the parser allows it (Cmd+A etc. are common,
-        // but bare-A is also legal — just impractical).
-        let letters = [
-            (Key::A, "A"),
-            (Key::B, "B"),
-            (Key::C, "C"),
-            (Key::D, "D"),
-            (Key::E, "E"),
-            (Key::F, "F"),
-            (Key::G, "G"),
-            (Key::H, "H"),
-            (Key::I, "I"),
-            (Key::J, "J"),
-            (Key::K, "K"),
-            (Key::L, "L"),
-            (Key::M, "M"),
-            (Key::N, "N"),
-            (Key::O, "O"),
-            (Key::P, "P"),
-            (Key::Q, "Q"),
-            (Key::R, "R"),
-            (Key::S, "S"),
-            (Key::T, "T"),
-            (Key::U, "U"),
-            (Key::V, "V"),
-            (Key::W, "W"),
-            (Key::X, "X"),
-            (Key::Y, "Y"),
-            (Key::Z, "Z"),
-        ];
-        for (k, expected) in letters {
-            let hk = hotkey_from_egui(Modifiers::NONE, k)
-                .unwrap_or_else(|| panic!("letter {expected:?} must map"));
-            assert_eq!(hk.key.as_str(), expected, "letter {expected:?}");
-            assert_eq!(hk.modifiers, 0, "no modifiers passed");
-        }
-    }
-
-    #[test]
-    fn digits_map_to_token() {
-        let digits = [
-            (Key::Num0, "0"),
-            (Key::Num1, "1"),
-            (Key::Num2, "2"),
-            (Key::Num3, "3"),
-            (Key::Num4, "4"),
-            (Key::Num5, "5"),
-            (Key::Num6, "6"),
-            (Key::Num7, "7"),
-            (Key::Num8, "8"),
-            (Key::Num9, "9"),
-        ];
-        for (k, expected) in digits {
-            let hk = hotkey_from_egui(Modifiers::CTRL, k).unwrap();
-            assert_eq!(hk.key.as_str(), expected);
-            assert_eq!(hk.modifiers, MOD_CTRL);
-        }
-    }
-
-    #[test]
-    fn f_keys_map_to_token() {
-        // F1..F24 — the same range vk_for_key registers globally.
-        let f_keys = [
-            (Key::F1, "F1"),
-            (Key::F2, "F2"),
-            (Key::F3, "F3"),
-            (Key::F4, "F4"),
-            (Key::F5, "F5"),
-            (Key::F6, "F6"),
-            (Key::F7, "F7"),
-            (Key::F8, "F8"),
-            (Key::F9, "F9"),
-            (Key::F10, "F10"),
-            (Key::F11, "F11"),
-            (Key::F12, "F12"),
-            (Key::F13, "F13"),
-            (Key::F14, "F14"),
-            (Key::F15, "F15"),
-            (Key::F16, "F16"),
-            (Key::F17, "F17"),
-            (Key::F18, "F18"),
-            (Key::F19, "F19"),
-            (Key::F20, "F20"),
-            (Key::F21, "F21"),
-            (Key::F22, "F22"),
-            (Key::F23, "F23"),
-            (Key::F24, "F24"),
-        ];
-        for (k, expected) in f_keys {
-            let hk = hotkey_from_egui(Modifiers::NONE, k).unwrap();
-            assert_eq!(hk.key.as_str(), expected);
-        }
-    }
-
-    #[test]
-    fn named_keys_map() {
-        // Same allowlist canonicalize_key permits — Space, Enter, Tab, Escape,
-        // Backspace. Aliases (Return → ENTER, Esc → ESCAPE) don't appear in
-        // egui::Key, so no aliasing logic needed here.
-        let named = [
-            (Key::Space, "SPACE"),
-            (Key::Enter, "ENTER"),
-            (Key::Tab, "TAB"),
-            (Key::Escape, "ESCAPE"),
-            (Key::Backspace, "BACKSPACE"),
-        ];
-        for (k, expected) in named {
-            let hk = hotkey_from_egui(Modifiers::NONE, k).unwrap();
-            assert_eq!(hk.key.as_str(), expected);
-        }
-    }
-
-    #[test]
-    fn modifiers_compose() {
-        // Ctrl+Shift+A → both bits set.
-        let mods = Modifiers {
-            ctrl: true,
-            shift: true,
-            ..Modifiers::NONE
-        };
-        let hk = hotkey_from_egui(mods, Key::A).unwrap();
-        assert_eq!(hk.modifiers, MOD_CTRL | MOD_SHIFT);
-        assert_eq!(hk.key.as_str(), "A");
-    }
-
-    #[test]
-    fn all_four_modifiers_compose() {
-        // Ctrl+Alt+Shift+Cmd+J — all four bits set. Tests that mac_cmd folds
-        // into our MOD_WIN bit (the parser treats Cmd as an alias for Win).
-        let mods = Modifiers {
-            ctrl: true,
-            alt: true,
-            shift: true,
-            mac_cmd: true,
-            command: true,
-        };
-        let hk = hotkey_from_egui(mods, Key::J).unwrap();
-        assert_eq!(hk.modifiers, MOD_CTRL | MOD_ALT | MOD_SHIFT | MOD_WIN);
+    fn modifier_symbols_parse_without_separators() {
+        // This is the shape the settings field holds on macOS, so if it does
+        // not parse, Save writes a hotkey the next launch cannot read.
+        let hk = parse("⌥⌘J").unwrap();
+        assert_eq!(hk.modifiers, MOD_ALT | MOD_WIN);
         assert_eq!(hk.key.as_str(), "J");
     }
 
     #[test]
-    fn unsupported_key_returns_none() {
-        // Anything outside the canonicalize_key allowlist must be rejected —
-        // otherwise the recorder writes a label that fails to register at
-        // next launch, silently.
-        for k in [
-            Key::Home,
-            Key::End,
-            Key::Insert,
-            Key::Delete,
-            Key::PageUp,
-            Key::PageDown,
-            Key::ArrowUp,
-            Key::ArrowDown,
-            Key::ArrowLeft,
-            Key::ArrowRight,
-            Key::Comma,
-            Key::Period,
-            Key::Semicolon,
-            Key::Quote,
-            Key::Minus,
-            Key::Plus,
-            Key::Equals,
-            Key::Slash,
-            Key::Backslash,
-            Key::F25, // F25..F35 exist in egui but Win32 only goes F1..F24
+    fn a_hotkey_is_one_hotkey_however_it_is_written() {
+        // Symbols, symbols with separators, and words are three spellings of
+        // one combination — the parser must not distinguish them.
+        let canonical = parse("⌃⌥⇧⌘K").unwrap();
+        for spelling in [
+            "⌃+⌥+⇧+⌘+K",
+            "Ctrl+Alt+Shift+Cmd+K",
+            "Control+Option+Shift+Command+K",
+            "ctrl+opt+shift+win+k",
+            "⌘⇧+Ctrl+⌥K",
         ] {
-            assert!(
-                hotkey_from_egui(Modifiers::CTRL, k).is_none(),
-                "{k:?} must be rejected"
+            assert_eq!(
+                parse(spelling).unwrap(),
+                canonical,
+                "spelling {spelling:?} must mean the same hotkey"
             );
         }
     }
 
     #[test]
-    fn roundtrip_via_format_and_parse() {
-        // Whatever the recorder produces, format() → parse() must reconstruct
-        // the same Hotkey. This is the contract that lets Save just write the
-        // text label: the parser will accept it back on next launch.
-        let samples: &[(Modifiers, Key)] = &[
-            (
-                Modifiers {
-                    ctrl: true,
-                    shift: true,
-                    ..Modifiers::NONE
-                },
-                Key::Space,
-            ),
-            (Modifiers::ALT, Key::J),
-            (Modifiers::NONE, Key::F12),
-            (
-                Modifiers {
-                    ctrl: true,
-                    alt: true,
-                    ..Modifiers::NONE
-                },
-                Key::Num7,
-            ),
-            (Modifiers::CTRL, Key::Enter),
-            (Modifiers::CTRL, Key::Backspace),
-        ];
-        for (m, k) in samples {
-            let hk = hotkey_from_egui(*m, *k).expect("supported");
-            let text = format(&hk);
-            let parsed = parse(&text).expect("format() output must parse");
-            assert_eq!(parsed, hk, "roundtrip failed for {text}");
+    fn key_symbols_parse_to_the_same_keys_as_their_names() {
+        for (symbol, name) in [
+            ("⎋", "Escape"),
+            ("⇥", "Tab"),
+            ("⌫", "Backspace"),
+            ("↩", "Enter"),
+            ("␣", "Space"),
+        ] {
+            assert_eq!(
+                parse(&format!("⌘{symbol}")).unwrap(),
+                parse(&format!("Cmd+{name}")).unwrap(),
+                "{symbol} must mean {name}"
+            );
         }
+    }
+
+    #[test]
+    fn a_symbol_only_string_still_needs_a_key() {
+        // "⌥⌘" is a modifier chord, not a hotkey. Without this the peeling
+        // loop would consume the whole string and leave no key to complain
+        // about.
+        assert_eq!(parse("⌥⌘").unwrap_err(), ParseError::MissingKey);
+        assert_eq!(parse("⇧").unwrap_err(), ParseError::MissingKey);
+    }
+
+    #[test]
+    fn an_unknown_key_after_symbols_is_still_reported_by_name() {
+        // The error has to name the offending token, not the whole string —
+        // the settings banner shows it verbatim.
+        assert!(matches!(
+            parse("⌘Numpad5"),
+            Err(ParseError::UnknownToken(t)) if t == "Numpad5"
+        ));
+    }
+
+    #[test]
+    fn format_native_is_the_symbol_form_on_macos_and_the_word_form_elsewhere() {
+        let hk = parse("Ctrl+Shift+Space").unwrap();
+        #[cfg(target_os = "macos")]
+        assert_eq!(format_native(&hk), "⌃⇧Space");
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(format_native(&hk), "Ctrl+Shift+Space");
+    }
+
+    #[test]
+    fn format_native_roundtrips_through_parse() {
+        // The settings field holds the native form and Save writes it to
+        // config.json verbatim, so anything `format_native` can emit must
+        // survive a round trip — otherwise a recorded hotkey is unreadable at
+        // next launch.
+        let samples = [
+            "Ctrl+Shift+Space",
+            "Alt+Cmd+J",
+            "Ctrl+F12",
+            "Cmd+Escape",
+            "Shift+Backspace",
+            "Ctrl+Alt+Shift+Cmd+7",
+            "Cmd+Enter",
+            "Alt+Tab",
+        ];
+        for s in samples {
+            let hk = parse(s).unwrap();
+            let shown = format_native(&hk);
+            assert_eq!(
+                parse(&shown).unwrap_or_else(|e| panic!("{shown:?} from {s:?} did not parse: {e}")),
+                hk,
+                "round trip failed for {s:?} → {shown:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_fourth_modifier_is_spelled_the_way_this_platform_spells_it() {
+        let hk = parse("Cmd+J").unwrap();
+        #[cfg(target_os = "macos")]
+        assert_eq!(format(&hk), "Cmd+J");
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(format(&hk), "Win+J");
+        // Whichever it printed, both spellings still parse back to it — a
+        // config file carried between a Mac and a PC keeps its meaning.
+        assert_eq!(parse(&format(&hk)).unwrap(), hk);
+        assert_eq!(parse("Win+J").unwrap(), hk);
+    }
+
+    #[test]
+    fn a_key_that_types_something_needs_a_modifier() {
+        // Registration would accept every one of these and then own the key
+        // machine-wide (§5).
+        for s in ["J", "5", "Space", "Enter", "/", "Left", "Delete"] {
+            assert!(
+                matches!(parse(s), Err(ParseError::MissingModifier(_))),
+                "{s} must be refused without a modifier, got {:?}",
+                parse(s)
+            );
+        }
+    }
+
+    #[test]
+    fn the_f_row_may_stand_alone() {
+        for s in ["F1", "F13", "F24"] {
+            let hk = parse(s).unwrap_or_else(|e| panic!("{s} should parse: {e}"));
+            assert_eq!(hk.modifiers, 0);
+            assert_eq!(hk.key.as_str(), s);
+        }
+    }
+
+    #[test]
+    fn one_modifier_is_enough_for_anything() {
+        for s in ["Ctrl+J", "⇧/", "Alt+Space"] {
+            assert!(parse(s).is_ok(), "{s} should parse");
+        }
+    }
+
+    // ---- the two doors into the grammar --------------------------------------
+
+    #[test]
+    fn from_parts_agrees_with_parse_for_every_token() {
+        // The two entry points must be one grammar. A token that parses one
+        // way and not the other is a hotkey a user can type but not record,
+        // or record but not save.
+        for token in all_key_tokens() {
+            let typed = parse(&format!("Ctrl+{token}")).unwrap_or_else(|e| {
+                panic!("Ctrl+{token} must parse: {e}");
+            });
+            let built = from_parts(MOD_CTRL, &token)
+                .unwrap_or_else(|e| panic!("from_parts(Ctrl, {token}) must build: {e}"));
+            assert_eq!(built, typed, "token {token}");
+        }
+    }
+
+    #[test]
+    fn from_parts_applies_the_modifier_rule() {
+        // Same rule, same error, same exception — this door cannot be the one
+        // that lets a bare letter through.
+        assert!(matches!(
+            from_parts(0, "J"),
+            Err(ParseError::MissingModifier(_))
+        ));
+        let f13 = from_parts(0, "F13").expect("the F-row may stand alone");
+        assert_eq!(f13.modifiers, 0);
+        assert_eq!(f13.key.as_str(), "F13");
+    }
+
+    #[test]
+    fn from_parts_canonicalises_its_token() {
+        // A platform reporting a key by an accepted spelling gets the same
+        // hotkey a user typing it does.
+        assert_eq!(
+            from_parts(MOD_WIN, "esc").unwrap(),
+            parse("Cmd+Escape").unwrap()
+        );
+        assert!(matches!(
+            from_parts(MOD_CTRL, "Numpad5"),
+            Err(ParseError::UnknownToken(t)) if t == "Numpad5"
+        ));
+    }
+
+    #[test]
+    fn all_key_tokens_is_the_whole_grammar_and_nothing_twice() {
+        let tokens = all_key_tokens();
+        let mut sorted = tokens.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), tokens.len(), "a token is listed twice");
+        for token in &tokens {
+            let hk = parse(&format!("Ctrl+{token}"))
+                .unwrap_or_else(|e| panic!("Ctrl+{token} must parse: {e}"));
+            assert_eq!(
+                hk.key.as_str(),
+                token,
+                "the listed token must already be canonical"
+            );
+        }
+        // And it is complete in the other direction: what the parser produces
+        // for a spelling it accepts is always in the list.
+        for spelling in ["Return", "PgUp", "Del", "Ins", "␣", "⎋", "↩", "←"] {
+            let hk = parse(&format!("Ctrl+{spelling}")).unwrap();
+            assert!(
+                tokens.iter().any(|t| t == hk.key.as_str()),
+                "{spelling} canonicalises to {}, which is not listed",
+                hk.key.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn default_hotkey_is_ctrl_shift_space() {
+        let hk = default_hotkey();
+        assert_eq!(format(&hk), "Ctrl+Shift+Space");
     }
 }

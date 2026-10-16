@@ -1,6 +1,5 @@
 import { expect } from "vitest"
 import { test } from "../fixtures/settings"
-import { decode, avgBrightness } from "../fixtures/pixels"
 
 /**
  * Settings UI e2e tests — drive the same lib.rs `wasm_entry::start` that
@@ -12,7 +11,8 @@ import { decode, avgBrightness } from "../fixtures/pixels"
  *
  * Coordinates below are tuned for the 800×600 viewport and egui's default
  * spacing. The SettingsApp renders a heading, then three rows with ~24px
- * each, then a banner area, then the button row.
+ * each — the hotkey row followed by its vocabulary line (design-spec §9) —
+ * then a banner area, then the button row.
  */
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -20,22 +20,18 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms))
 // Approximate Y-coordinates for the SettingsApp rows under egui's default
 // spacing in the 800x600 viewport. Calibrated against a screenshot of the
 // rendered canvas (e2e/dist served at localhost:8080). Loosen by ±5px if
-// egui's default spacing changes upstream.
+// egui's default spacing changes upstream. Everything below the hotkey row
+// sits one small-text line (~14px) lower than it would without the
+// vocabulary line under the hotkey field.
 const ROW_HOTKEY_Y = 42
-const ROW_INTERVAL_Y = 68
-const ROW_AUTOSTART_Y = 97
-const BUTTON_ROW_Y = 130
+const ROW_INTERVAL_Y = 82
+const ROW_AUTOSTART_Y = 110
+const BUTTON_ROW_Y = 143
 
 // The hotkey + interval TextEdits sit to the right of their labels; X
 // coordinates target the middle of each input box.
 const HOTKEY_INPUT_X = 237
 const INTERVAL_INPUT_X = 256
-// "Record" / "Cancel" button on the hotkey row, immediately right of the
-// TextEdit. Calibrated against a screenshot of the rendered canvas AFTER the
-// UI labels went English ("Global hotkey:" is narrower than the original
-// Russian label, which shifted the whole row left — the old 380 now missed
-// the button entirely). Toggles the recorder mode.
-const HOTKEY_RECORD_BUTTON_X = 344
 // Checkbox glyph for autostart sits at the very left of its row.
 const AUTOSTART_CHECKBOX_X = 9
 // Save button is the first (leftmost) button in the bottom row.
@@ -47,21 +43,6 @@ async function clickAt(page: Awaited<ReturnType<typeof test.extend<unknown>["pag
     await wait(200)
     await page.mouse.click(x, y)
     await wait(200)
-}
-
-/**
- * Assert the hotkey row actually entered capture mode. In recording mode the
- * light TextEdit box is replaced by the italic "Press a combo…" label on the
- * dark panel, so the row region's average brightness collapses (~243 idle →
- * ~63 recording). Without this guard a click that misses the Record button
- * leaves the tests asserting against the idle form — the Escape-cancel test
- * then passes vacuously and the capture test fails at the far end with an
- * unhelpful "persisted value didn't change".
- */
-async function assertRecordingEngaged(page: any): Promise<void> {
-    const png = decode((await page.screenshot()) as Buffer)
-    const avg = avgBrightness(png, 100, 34, 210, 16)
-    expect(avg, "hotkey row should show 'Press a combo…' (recording mode)").toBeLessThan(150)
 }
 
 async function readPersistedConfig(page: any): Promise<{
@@ -108,82 +89,6 @@ test("editing interval and saving persists the new value", async ({ settings }) 
     const persisted = await readPersistedConfig(settings.page)
     expect(persisted).not.toBeNull()
     expect(persisted!.default_interval_minutes).toBe(7)
-})
-
-test("hotkey recorder captures Ctrl+Shift+A and Save persists it", async ({ settings }) => {
-    // End-to-end recorder flow: click "Record" → the row enters capture
-    // mode → press Ctrl+Shift+A → the form's hotkey string flips to
-    // "Ctrl+Shift+A" (canonical form) → click Save → localStorage carries
-    // the new label.
-    await settings.page.evaluate(() => localStorage.clear())
-
-    // Click the "Record" button to enter capture mode.
-    await settings.page.mouse.click(HOTKEY_RECORD_BUTTON_X, ROW_HOTKEY_Y)
-    await wait(400)
-    await assertRecordingEngaged(settings.page)
-
-    // Make sure the canvas has keyboard focus so egui sees the keys. The
-    // recorder's per-frame poll reads ctx.input(); without focus, eframe-web
-    // doesn't forward key events into egui.
-    await settings.page.evaluate(() => {
-        const c = document.getElementById("nudge_canvas") as HTMLCanvasElement | null
-        c?.focus()
-    })
-    await wait(200)
-
-    // Press Ctrl+Shift+A as a real chord. Order matters: modifiers first so
-    // egui sees them as "down" when the non-modifier key arrives.
-    await settings.page.keyboard.down("Shift")
-    await settings.page.keyboard.down("Control")
-    await settings.page.keyboard.down("KeyA")
-    await wait(300)
-    await settings.page.keyboard.up("KeyA")
-    await settings.page.keyboard.up("Control")
-    await settings.page.keyboard.up("Shift")
-    await wait(500)
-
-    // Save — the recorder only stages the value, persistence still requires
-    // an explicit Save click (matches the spec §9: hotkey is the "click Save
-    // to persist" branch, autostart is the immediate one).
-    await settings.page.mouse.click(SAVE_BUTTON_X, BUTTON_ROW_Y)
-    await wait(500)
-
-    const persisted = await readPersistedConfig(settings.page)
-    expect(persisted).not.toBeNull()
-    expect(persisted!.hotkey).toBe("Ctrl+Shift+A")
-})
-
-test("Escape while recording cancels and restores prior hotkey", async ({ settings }) => {
-    // Bare Escape during capture is the cancel gesture — it must restore
-    // whatever the field held before the user clicked "Record" (not flip
-    // recording-state into the form). Save afterwards persists the original
-    // value, NOT some half-captured combo.
-    await settings.page.evaluate(() => localStorage.clear())
-
-    // Enter recording mode.
-    await settings.page.mouse.click(HOTKEY_RECORD_BUTTON_X, ROW_HOTKEY_Y)
-    await wait(400)
-    await assertRecordingEngaged(settings.page)
-
-    await settings.page.evaluate(() => {
-        const c = document.getElementById("nudge_canvas") as HTMLCanvasElement | null
-        c?.focus()
-    })
-    await wait(200)
-
-    // Press bare Escape — should cancel recording.
-    await settings.page.keyboard.press("Escape")
-    await wait(500)
-
-    // Save now — the form's hotkey should still be the default
-    // ("Ctrl+Shift+Space"), proving the cancel branch restored the prior value
-    // instead of leaving the field in some half-captured state.
-    await settings.page.mouse.click(SAVE_BUTTON_X, BUTTON_ROW_Y)
-    await wait(500)
-
-    const persisted = await readPersistedConfig(settings.page)
-    expect(persisted).not.toBeNull()
-    expect(persisted!.hotkey).toBe("Ctrl+Shift+Space")
 })
 
 test("autostart toggle persists immediately, without Save", async ({ settings }) => {

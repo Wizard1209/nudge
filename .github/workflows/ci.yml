@@ -43,6 +43,23 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test
 
+  test-macos:
+    # The macOS half of the `test` job. Runs the same portable unit tests plus
+    # tests/kittest_card.rs, which drives the real app through its AccessKit
+    # tree in-process — no window, no GPU, no permissions.
+    #
+    # tests/macos_native.rs deliberately does NOT run here. It launches the
+    # shipped binary and screenshots it, which needs Screen Recording and
+    # Accessibility. Those grants are baked into a runner image ahead of time
+    # and cannot be added during a job, so the native tier stays a local
+    # pre-release step (docs/releasing.md) exactly as its Windows counterpart
+    # does. Its tests are #[ignore]d, so plain `cargo test` skips them.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test
+
   e2e:
     runs-on: ubuntu-latest
     steps:

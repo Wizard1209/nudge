@@ -1,0 +1,209 @@
+# Task — read and register hotkeys through the OS, not the toolkit
+
+Nudge has one system-wide hotkey (§5 of `docs/design-spec.md`). It can be
+typed into the settings field, and on macOS pressed into it — this document is
+what that was built from, and §9 now describes what shipped. Windows can still
+only be typed into: none of its platform facts are measured, and that is the
+work this document still holds open.
+
+## What to build
+
+**One identifier, from the key going down to the registration call.**
+
+The window toolkit does not hand out that identifier. It folds keypad keys
+onto their main-row twins, converts `⌘X` / `⌘C` / `⌘V` into clipboard
+commands before any window sees a key, and reports a key that depends on the
+active layout. None of that comes from the OS — it is the toolkit serving a
+text editor, which is the common case and not ours. Undoing it takes a
+translation table, and that table has to agree by hand with the one used for
+registration. Two hand-written tables that must agree is the defect this task
+removes.
+
+Read the key from the same layer that registers it, and there is one table:
+platform key code ↔ §5 token, used in both directions. On macOS the key code
+the event carries is the key code the registration call takes, so nothing
+sits between them at all.
+
+## What the platform actually does
+
+Measured on macOS 26.5, by probe. Do not re-derive these; they are the facts
+the decisions below rest on.
+
+- Registration **does not validate the key code** — nonsense values succeed.
+- Registration **does not report a combination another process holds**. It
+  returns success. `⌘Space`, `⌘Tab` and the screenshot shortcuts all register
+  with no complaint. Detecting a conflict needs a different call than the one
+  that registers.
+- Registration **accepts a bare key**, which then belongs to us on the whole
+  machine.
+- The keypad, the arrows and `F13`–`F20` all register. Media keys are not
+  reachable at all.
+- An app-local key monitor needs **no permission**, sees the app's own keys
+  before menus and text fields do, and can swallow them. The global monitor
+  and the event tap both need a permission prompt and are the wrong tool.
+
+Measured afterwards by `cargo run --example hotkey_probe`, on macOS 26.5.2,
+because the conflict decisions rest on them and nothing documents them:
+
+- **Exclusive mode arbitrates against *any* registration in the same process,
+  and only against *exclusive* ones in another.** A process that holds a
+  combination non-exclusively refuses its own exclusive probe
+  (`eventHotKeyExistsErr`), while the same probe run against another process's
+  non-exclusive holder returns success. Two consequences, both load-bearing:
+  a process must never probe a combination it already holds without expecting
+  to find itself, and **the settings window cannot see the running Nudge's
+  binding at all** — that is what "cross-process, non-exclusive is invisible"
+  means.
+- **A non-exclusive registration succeeds against an exclusive holder.** So the
+  exclusive mode is a question, never a claim on the key: the app binds
+  non-exclusively and gets its binding no matter who else asked first.
+- Since almost every application registers non-exclusively — it is the default,
+  and what the crate this task removed always did — the exclusive probe finds
+  **almost nothing in practice**. It is kept because when it does fire the
+  answer is certain, but the source that actually catches the common case is
+  the system table below. A conflict report that leaned on the probe alone
+  would be a check that never fires, which is the defect this task removed.
+- **`CopySymbolicHotKeys` still works**: 230 entries on a stock machine, 171 of
+  them enabled. Disabled rows *are* included and carry the flag, which is what
+  lets a system shortcut the user turned off read as free. `⌘Space`, `⌃←`,
+  `⇧⌘3` and `⇧⌘5` are all in it.
+
+**Nothing on Windows has been measured.** The documentation says
+`RegisterHotKey` does arbitrate across processes and reports an
+already-registered error, that `F12` is reserved for the debugger at all
+times, and that some OS defaults can be silently overridden anyway. Measure
+before relying on any of it.
+
+## Decisions
+
+1. **Registration is direct**, not through `global-hotkey`. That crate cannot
+   reach the exclusive registration mode, and on macOS it never reports a
+   conflict for a real key — a check written against its error type works on
+   Windows and silently never fires on macOS.
+2. **Conflict detection is best-effort, from two sources**, and says which
+   kind it found: the exclusive registration mode catches another exclusive
+   holder, and the system's own shortcut table (`CopySymbolicHotKeys`) covers
+   what that misses. Neither alone is enough.
+3. **At least one modifier, except `F1`–`F24`** (§5, already enforced by the
+   parser).
+4. **The keypad stays out of the grammar.** It registers fine; the reason is
+   vocabulary size, and §5 now says so.
+5. **A hotkey follows the physical key on both platforms.** macOS gets this
+   free. Windows registers by a layout-dependent code, so the stored value
+   has to be the physical one and the binding has to be re-made when the
+   layout changes.
+
+## The decision table
+
+Two states, no clock. Everything that decides belongs in one pure function
+taking a state and an input and returning the next state plus an effect; it
+must not touch the platform, the window, or the event loop. **Whether a key
+is bindable is decided outside it and handed in already answered.**
+
+| | Idle | Armed |
+|---|---|---|
+| **Record** | → Armed | — |
+| **Press** — bindable | — | → Idle, field := the combination, canonically spelled |
+| **Press** — bare `Esc` | — | → Idle, field := the saved hotkey |
+| **Press** — not bindable | — | → **Armed**, with a hint naming the key |
+| **Cancel** | — | → Idle, field := the saved hotkey |
+| **Focus lost** | — | → Idle, field := the saved hotkey |
+
+Every cell is stated; no guards and no conditions outside the table. What
+follows from it, rather than being added to it: a chord of modifiers alone is
+not an event, so holding `⌥⌘` neither accepts nor refuses; an unbindable key
+does not disarm, because disarming would leave a mistyped chord looking like
+a recorded one; bare `Esc` cancels because a hotkey needs a modifier, so a
+lone `Esc` can never be one; every cancelling path reads `config.json`, so
+the recorder has nothing to remember when it arms; focus loss cancels because
+*which* shortcut took the focus is not observable.
+
+The only keyboard input an armed recorder accepts is a **press edge** — one
+press of a non-modifier key, carrying the modifiers held at that instant. Not
+the set of currently-held keys, not a release, not a duration, not a repeat.
+
+## Order of work
+
+1. ~~macOS: capture, behind the existing settings field.~~ Done — an app-local
+   `NSEvent` monitor in the settings process, `src/platform/macos/key_monitor.rs`.
+2. ~~macOS: registration, replacing `global-hotkey`.~~ Done — Carbon directly,
+   `src/platform/macos/hotkey_carbon.rs`; the crate and its second objc2 tree
+   are out of `Cargo.toml`.
+3. ~~macOS: conflict reporting.~~ Done — two sources, and the report says which
+   one answered. What each can see is in the measured facts above.
+4. **Windows: the same three, after its facts are measured.** Nothing is
+   started. `platform::windows::new_edge_source` returns `None`, so the row
+   there is the typed field it has always been, and `hotkey_conflict` returns
+   `None` rather than a check written from documentation.
+5. ~~§9 of the spec regains its recorder section, written against what
+   shipped.~~ Done.
+
+The guest tier has run. `SUITE=macos_hotkey_native scripts/native-tests-macos.sh`
+passes 13/13 against a real desktop, and every stream those tests recorded is in
+`tests/fixtures/keystreams/`, where `tests/hotkey_replay.rs` asserts against it
+on every `cargo test`. So the acceptance list below is a result on macOS rather
+than a specification — the Windows line excepted, which nothing has run.
+
+The port's own suite was re-run on the same guest afterwards
+(`scripts/native-tests-macos.sh`, 11/11): removing `global-hotkey` reached far
+enough into `src/platform/macos.rs` that the recorder's own tier passing is not
+evidence about the rest of it.
+
+## Acceptance
+
+From a real keyboard, on each platform. **A test for this feature is evidence
+only if its input is a recorded real event stream or a real keypress** — a
+suite that passes against a hand-written input sequence the platform never
+produces has already shipped a dead recorder here twice.
+
+- `⌥⌘J`, `⌥⌘←` and `⇧/` land in the field spelled the way §5 writes them.
+- `⌘C` records as `⌘C` and does not paste.
+- Keypad `5` is refused by name, and is not mistaken for the digit row.
+- A bare letter is refused by name; a bare `F13` records.
+- `⌥⌘` alone changes nothing and shows no error, and neither does `fn`.
+- With a Russian layout active, the cap that types `о` still records `⌥⌘J`.
+- Bare `Esc` puts the saved hotkey back, and so does `⌘Tab`.
+- Pressing the app's own current hotkey opens the popup and ends the
+  recording cancelled — the running instance holds it system-wide while the
+  settings window is a separate process.
+- `⌘Space` is reported as taken by the system rather than accepted silently.
+- The captured value survives `Save` and a relaunch, and the app logs no
+  error.
+- On Windows: switching the keyboard layout does not move the shortcut to a
+  different physical key.
+
+## The Electron prototype follows the same grammar
+
+§5 is the contract both implementations follow, and the prototype's parser
+(`electron/src/shared/hotkey.ts`) now carries all of it: the arrows, the
+navigation cluster and the symbol caps, the glyph spellings, and one canonical
+spelling per platform (`⌃⇧Space` on a Mac, `Ctrl+Shift+Space` on Windows).
+Its tables mirror `src/hotkey.rs` row for row.
+
+The recorder is built there too, against this document's decision table:
+`electron/src/shared/hotkeyRecorder.ts` holds the pure function, with the
+twelve cells covered by unit tests and the capture itself exercised by real
+key presses — Puppeteer's in the browser tier, Playwright's into the real
+Settings window in the native one.
+
+What the prototype cannot do with Electron's means, and does not pretend to:
+
+- **Conflict detection.** `globalShortcut.register` wraps the same call §5
+  measured, so a `false` return means the toolkit refused the string, never
+  that another application holds the combination. The system shortcut table
+  (`CopySymbolicHotKeys`) is not reachable from Electron.
+- **One identifier from the key down to the registration call.** Electron
+  registers from an accelerator *string*, so a second table (§5 token →
+  accelerator) sits between the event and the binding. That is exactly the
+  defect this task removes for the Rust app; here it is marked in the code.
+- **Seeing its own keys before the menus do.** There is no app-local key
+  monitor; a combination that matches a menu accelerator would be eaten
+  before the renderer. The prototype has no menu bar, so nothing hides the
+  gap — the Rust app must not rely on the same luck.
+
+## What must not come back
+
+- A translation table between the toolkit's key type and ours.
+- Reading the toolkit's set of currently-held keys.
+- Any claim that a combination held by another application is detected by the
+  registration call succeeding or failing. It is not, on macOS.

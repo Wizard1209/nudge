@@ -193,30 +193,36 @@
       class="absolute z-10 left-1/2 -translate-x-1/2 {isElectron ? 'top-0' : 'top-[25vh]'} bg-zinc-900/80 backdrop-blur-md text-white rounded-lg shadow-2xl w-[480px] overflow-hidden"
       data-testid="nudge"
     >
-      <input
-        bind:this={doingInput}
-        bind:value={doing}
-        type="text"
-        placeholder="Что я делаю?"
-        data-testid="field-doing"
-        class="w-full bg-transparent focus:bg-white/8 text-white px-5 py-4 text-base outline-none placeholder-zinc-500 border-b border-zinc-700 transition-none"
-      />
-      <input
-        bind:value={bullshit}
-        type="text"
-        placeholder="Хуйня?"
-        data-testid="field-bullshit"
-        class="w-full bg-transparent focus:bg-white/8 text-white px-5 py-4 text-base outline-none placeholder-zinc-500 border-b border-zinc-700 transition-none"
-      />
-      <input
-        bind:this={minutesInput}
-        bind:value={nextMinutes}
-        type="text"
-        inputmode="decimal"
-        placeholder="Следующий через (мин)"
-        data-testid="field-minutes"
-        class="w-full bg-transparent focus:bg-white/8 text-white px-5 py-4 text-base outline-none placeholder-zinc-500 transition-none"
-      />
+      <div class="row border-b border-zinc-700">
+        <input
+          bind:this={doingInput}
+          bind:value={doing}
+          type="text"
+          placeholder="Что я делаю?"
+          data-testid="field-doing"
+          class="w-full bg-transparent text-white px-5 py-4 text-base outline-none placeholder-zinc-500 transition-none"
+        />
+      </div>
+      <div class="row border-b border-zinc-700">
+        <input
+          bind:value={bullshit}
+          type="text"
+          placeholder="Хуйня?"
+          data-testid="field-bullshit"
+          class="w-full bg-transparent text-white px-5 py-4 text-base outline-none placeholder-zinc-500 transition-none"
+        />
+      </div>
+      <div class="row">
+        <input
+          bind:this={minutesInput}
+          bind:value={nextMinutes}
+          type="text"
+          inputmode="decimal"
+          placeholder="Следующий через (мин)"
+          data-testid="field-minutes"
+          class="w-full bg-transparent text-white px-5 py-4 text-base outline-none placeholder-zinc-500 transition-none"
+        />
+      </div>
     </form>
   {/if}
 

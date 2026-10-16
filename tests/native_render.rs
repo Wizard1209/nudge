@@ -34,11 +34,11 @@
 
 #![cfg(target_os = "windows")]
 
+mod common;
+
 use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::time::Duration;
-
-use base64::Engine as _;
 
 use windows::Win32::Foundation::{HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Gdi::{
@@ -293,14 +293,6 @@ Respond with ONLY a JSON object, no prose: \
 #[test]
 #[ignore = "needs a real desktop+GPU, Windows-only, pops a window, and an OPENAI_API_KEY + network; run via --ignored"]
 fn native_window_passes_llm_vision_judge() {
-    let api_key = match std::env::var("OPENAI_API_KEY") {
-        Ok(k) if !k.trim().is_empty() => k,
-        _ => {
-            eprintln!("[llm-judge] OPENAI_API_KEY unset — skipping (no-op pass)");
-            return;
-        }
-    };
-
     // No margin: hand the judge just the card window itself.
     let (cap, _w, _h) = spawn_and_capture(0);
 
@@ -310,86 +302,15 @@ fn native_window_passes_llm_vision_judge() {
         eprintln!("[llm-judge] wrote judged image to {path}");
     }
 
-    // ── Judge model menu (OpenAI API, current as of 2026-05) ─────────────
-    // Per-call cost is a fraction of a cent on ANY of these (one small
-    // screenshot + tiny JSON, run rarely), so pick for vision quality, not
-    // price. The bug is the ~20px text inset on a transparent card over a busy
-    // desktop — fine enough that gpt-4o-mini's vision CAN'T resolve it and
-    // false-fails a CORRECT render at full/half/low res alike (a capability
-    // ceiling, not a cost knob — observed). gpt-4o cleared it; gpt-5.4-mini is
-    // the newer-gen default (stronger vision + reasoning).
-    //
-    //   OPENAI_JUDGE_MODEL    in→out $/1M     notes
-    //   gpt-5.5               $5.00 → $30.00   flagship, max reliability
-    //   gpt-5.4               $2.50 → $15.00   strong, cheaper flagship
-    //   gpt-5.4-mini  (def)   $0.75 →  $4.50   best quality/cost (5.x vision+reasoning)
-    //   gpt-5.4-nano          $0.20 →  $1.25   cheapest 5.x; coarse checks only
-    //   gpt-4o                $2.50 → $10.00   legacy, cleared this bug
-    //   gpt-4o-mini           legacy           too weak — false-fails (see above)
-    let model = std::env::var("OPENAI_JUDGE_MODEL").unwrap_or_else(|_| "gpt-5.4-mini".to_string());
-
-    // GPT-5.x / o-series are *reasoning* models: on /v1/chat/completions they
-    // REJECT `max_tokens` (require `max_completion_tokens`), spend hidden
-    // reasoning tokens out of that budget before the JSON, and don't take a
-    // custom `temperature`. Legacy gpt-4o* use the old `max_tokens`+`temperature`
-    // shape. Branch on the family so OPENAI_JUDGE_MODEL "just works" either way.
-    // `reasoning_effort` (OPENAI_JUDGE_EFFORT, default "low") is the 5.x
-    // quality/cost knob — "low" is plenty for one focused check.
-    let is_reasoning = model.starts_with("gpt-5") || model.starts_with('o');
-    let effort = std::env::var("OPENAI_JUDGE_EFFORT").unwrap_or_else(|_| "low".to_string());
-    // Cost knobs: OPENAI_JUDGE_DETAIL "low" (default) sends one flat ~512px /
-    // ~85-token tile — judged correctly and ~13× cheaper than "high".
     // OPENAI_JUDGE_SCALE downscales the PNG before encoding (1.0 = full).
     let scale: f32 = std::env::var("OPENAI_JUDGE_SCALE")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(1.0);
-    let detail = std::env::var("OPENAI_JUDGE_DETAIL").unwrap_or_else(|_| "low".to_string());
-    let png = cap.png_bytes_scaled(scale);
-    eprintln!(
-        "[llm-judge] model={model} reasoning={is_reasoning} effort={effort} scale={scale} detail={detail} png_bytes={}",
-        png.len()
-    );
-    let data_url = format!(
-        "data:image/png;base64,{}",
-        base64::engine::general_purpose::STANDARD.encode(&png)
-    );
-    let mut request = serde_json::json!({
-        "model": model,
-        "response_format": { "type": "json_object" },
-        "messages": [{
-            "role": "user",
-            "content": [
-                { "type": "text", "text": JUDGE_PROMPT },
-                { "type": "image_url", "image_url": { "url": data_url, "detail": detail } }
-            ]
-        }]
-    });
-    if is_reasoning {
-        // Generous cap so reasoning tokens don't starve the JSON answer; you're
-        // billed only for tokens actually generated, so a high cap is free.
-        request["max_completion_tokens"] = serde_json::json!(4000);
-        request["reasoning_effort"] = serde_json::json!(effort);
-    } else {
-        request["max_tokens"] = serde_json::json!(200);
-        request["temperature"] = serde_json::json!(0);
-    }
-
-    let response = ureq::post("https://api.openai.com/v1/chat/completions")
-        .set("Authorization", &format!("Bearer {api_key}"))
-        .send_json(request)
-        .expect("OpenAI request failed");
-    let body: serde_json::Value = response.into_json().expect("parse OpenAI response");
-
-    let content = body["choices"][0]["message"]["content"]
-        .as_str()
-        .unwrap_or_else(|| panic!("no content in OpenAI response: {body}"));
-    eprintln!("[llm-judge] verdict: {content}");
-
-    let verdict: serde_json::Value =
-        serde_json::from_str(content).expect("judge did not return JSON");
-    let pass = verdict["pass"].as_bool().unwrap_or(false);
-    let reason = verdict["reason"].as_str().unwrap_or("(no reason given)");
+    let Some((pass, reason)) = common::vision_verdict(&cap.png_bytes_scaled(scale), JUDGE_PROMPT)
+    else {
+        return;
+    };
     assert!(pass, "LLM vision judge FAILED: {reason}");
 }
 

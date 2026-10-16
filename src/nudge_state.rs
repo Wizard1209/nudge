@@ -173,6 +173,14 @@ pub fn repaint_interval(popup_visible: bool) -> Option<Duration> {
     }
 }
 
+/// Logical size of the spotlight window, in points — the `(width, height)`
+/// [`window_position`] centres. One constant because the two platforms compute
+/// the position at different moments (Windows before the event loop, macOS on
+/// the first tick, once winit can say which monitor the window landed on) and
+/// a disagreement between them would show up as a window that is centred on
+/// one platform and not the other.
+pub const POPUP_SIZE: (u32, u32) = (520, 320);
+
 /// Screen position for the spotlight window: horizontally centered; the top
 /// of the window sits at 25% of screen height (spec §1 — upper third, at
 /// natural eye level). Window height is irrelevant to the y anchor.

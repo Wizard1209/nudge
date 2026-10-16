@@ -3,6 +3,7 @@ import { config } from "dotenv"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { PNG } from "pngjs"
+import { mkdirSync, writeFileSync } from "node:fs"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 config({ path: path.resolve(__dirname, "../../.env") })
@@ -33,6 +34,10 @@ export interface Region {
 // `detail: "low"` for cheap, rate-limit-safe API calls.
 export const CARD_REGION: Region = { x: 130, y: 130, w: 540, h: 180 }
 export const BOTTOM_RIGHT_REGION: Region = { x: 600, y: 460, w: 200, h: 140 }
+/** The card plus the error line it grows to show on a failed submit. */
+export const CARD_ERROR_REGION: Region = { x: 130, y: 130, w: 540, h: 230 }
+/** The settings page's form: title, three rows, buttons. */
+export const SETTINGS_REGION: Region = { x: 0, y: 0, w: 800, h: 320 }
 
 function cropPng(buf: Buffer, r: Region): Buffer {
     const src = PNG.sync.read(buf)
@@ -51,7 +56,7 @@ function cropPng(buf: Buffer, r: Region): Buffer {
 }
 
 /**
- * Send a screenshot to the judge model (default gpt-5.4-nano) and judge whether
+ * Send a screenshot to the judge model (default gpt-6-luna) and judge whether
  * it satisfies the assertion.
  *
  * Stability comes from three things:
@@ -68,17 +73,25 @@ export async function visualAssert(
 ): Promise<Judgment> {
     const cropped = opts.region ? cropPng(screenshot, opts.region) : screenshot
     const base64 = cropped.toString("base64")
+    // OPENAI_JUDGE_DUMP=<dir>: keep every image exactly as the judge saw it,
+    // so a surprising verdict can be checked against the pixels it was given.
+    if (process.env.OPENAI_JUDGE_DUMP) {
+        const dir = process.env.OPENAI_JUDGE_DUMP
+        mkdirSync(dir, { recursive: true })
+        const name = assertion.slice(0, 40).replace(/[^a-z0-9]+/gi, "-").toLowerCase()
+        writeFileSync(path.join(dir, `${Date.now()}-${name}.png`), cropped)
+    }
 
-    // gpt-5.4-nano is the cheap default ($0.20→$1.25 /1M); these e2e checks are
-    // coarse atomic facts (card present, three rows, typed text), so nano's
-    // vision is plenty. Override with OPENAI_JUDGE_MODEL.
+    // gpt-6-luna is the default ($0.10→$0.50 /1M, the cheapest current-gen
+    // vision model). Override with OPENAI_JUDGE_MODEL.
     //
-    // GPT-5.x / o-series are *reasoning* models: on chat/completions they reject
-    // `max_tokens` (need `max_completion_tokens`), burn hidden reasoning tokens
-    // out of that budget, and don't take a custom `temperature`. Legacy gpt-4o*
-    // use the old shape. Branch so either family works.
-    const model = process.env.OPENAI_JUDGE_MODEL ?? "gpt-5.4-nano"
-    const isReasoning = model.startsWith("gpt-5") || model.startsWith("o")
+    // GPT-5.x / GPT-6.x / o-series are *reasoning* models: on chat/completions
+    // they reject `max_tokens` (need `max_completion_tokens`), burn hidden
+    // reasoning tokens out of that budget, and don't take a custom
+    // `temperature`. Legacy gpt-4o* use the old shape. Branch so either family
+    // works.
+    const model = process.env.OPENAI_JUDGE_MODEL ?? "gpt-6-luna"
+    const isReasoning = /^(gpt-[5-9]|o)/.test(model)
     // Reasoning models run at temperature=1 (they REJECT temperature:0), so
     // their verdict has some sampling jitter; effort is the only stability /
     // quality lever. Default "low"; raise via OPENAI_JUDGE_EFFORT.
@@ -129,29 +142,66 @@ Respond ONLY with valid JSON: {"pass": true/false, "comment": "brief explanation
 
 // ────────────────────────────────────────────────────────────────────
 // Reusable atomic prompts. Pair each with the region indicated.
+//
+// Every prompt states what the product measurably looks like, in words that
+// are literally true of the pixels. A current-gen judge takes every word at
+// face value: "occupying a substantial portion of the window" false-failed a
+// correct 480×130 card in an 800×600 window (13% of its area), and "rows
+// separated by divider lines" was read as one line per row, so three rows
+// with two lines between them failed. Older, more lenient judges let those
+// claims through, which is how they survived.
+//
+// Each prompt was calibrated on the real render and on a deliberately broken
+// copy of it (text painted over, corners squared, a word replaced), five
+// verdicts per image, before it was trusted — see the commit that added it.
 // ────────────────────────────────────────────────────────────────────
 
 /** Full screen — no region. */
 export const PROMPT_CARD_PRESENT =
-    "A single large rounded rectangular card with a dark translucent fill is clearly visible in the screenshot, occupying a substantial portion of the window area (much larger than a small icon or pill)."
+    "A dark rounded rectangular card with text rows inside it is visible, horizontally centred in the upper half of the screenshot. It spans roughly half the screenshot's width (it is a panel with several lines of text, not a small icon or pill)."
 
 /** Full screen — no region. */
 export const PROMPT_CARD_ABSENT =
     "The screenshot shows only the wallpaper / background and at most a small pill or icon in a corner. There is NO large rectangular card or panel anywhere in the screenshot."
 
-/** Full screen — no region. */
-export const PROMPT_CARD_FROSTED =
-    "The card has visibly rounded corners and a soft shadow around it. The card's fill is dark but translucent — wallpaper colour bleeds through slightly, like frosted glass — rather than a flat opaque block."
+/** Use with `region: CARD_REGION`. Spec §3: the placeholder copy. */
+export const PROMPT_PLACEHOLDERS =
+    "The dark card has three rows of text. Read top to bottom they are: 'Что я делаю?' in grey, 'Хуйня?' in grey, and '10' in white. (The first row may show a thin text cursor before its text.)"
+
+/** Use with `region: CARD_REGION`. Spec §3: the placeholder yields to input. */
+export function promptTypedText(text: string): string {
+    // One fact only. Adding "and the placeholder is gone" made the judge
+    // object to the *other* rows' placeholders, 1 run in 5 — and egui cannot
+    // draw a hint over a non-empty field anyway.
+    return `The top row of the dark card shows the text '${text}'.`
+}
+
+/** Use with `region: CARD_ERROR_REGION`. Spec §4: a failed submit stays put and shows an error. */
+export const PROMPT_SUBMIT_ERROR =
+    "The dark card is visible with its three text rows, and below the third row, still inside the card, there is one line of small red text that begins with the word 'Interval'."
+
+/** Use with `region: CARD_REGION`. Spec §2: a noticeable, soft corner radius. */
+export const PROMPT_ROUNDED_CORNERS =
+    "The dark card is a rounded rectangle: all four of its corners are visibly rounded, none of them is a sharp 90-degree corner."
 
 /** Use with `region: BOTTOM_RIGHT_REGION`. */
 export const PROMPT_PILL_PRESENT =
     "A small pill-shaped element (a rounded rectangle clearly smaller than a third of the window width) is visible in the bottom-right corner of the screenshot."
 
-/** Use with `region: CARD_REGION`. */
-export const PROMPT_THREE_ROWS =
-    "Inside the dark card there are exactly three horizontal rows stacked vertically, separated by thin horizontal divider lines. Each row is a single strip of one text-line in height (not two)."
+/** Use with `region: SETTINGS_REGION`. Spec §9: the hotkey row, in this platform's spelling. */
+export const PROMPT_SETTINGS_HOTKEY_ROW =
+    "There is a text field labelled 'Global hotkey:' and the field contains the text 'Ctrl+Shift+Space'. Directly under that field is a line of smaller, dimmer text that begins with the word 'Modifiers'."
 
-/** Use with `region: CARD_REGION`. Substitute the typed text into the prompt. */
-export function promptTypedText(text: string): string {
-    return `The text '${text}' is visible somewhere in the image, written in a text input field.`
-}
+/** Use with `region: SETTINGS_REGION`. Spec §9: the fields and their labels. */
+export const PROMPT_SETTINGS_FIELDS =
+    "There is a text field labelled 'Default interval (min):' containing '10', and below it a checkbox whose label reads 'Launch with Windows'."
+
+/**
+ * Use with `region: SETTINGS_REGION`. Every glyph in the vocabulary line
+ * renders. Asked as the specific fact rather than as "no empty boxes": a
+ * general no-tofu prompt let a line with four tofu boxes through 1 run in 5,
+ * because the `[ ]` symbol caps at the end look like boxes too and the judge
+ * reasoned its way past the real ones.
+ */
+export const PROMPT_SETTINGS_ARROWS_ARE_WORDS =
+    "In the line of small dim text under the hotkey field, between the words 'Backspace,' and 'Home,' the line reads 'Left, Right, Up, Down' — four words, not arrow symbols and not empty boxes."
