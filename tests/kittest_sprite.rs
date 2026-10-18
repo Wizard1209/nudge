@@ -163,3 +163,51 @@ fn a_sprite_change_that_fails_the_check_turns_the_sprite_off() {
 
     assert_eq!(sprite_textures(&harness), vec![], "the sprite is off");
 }
+
+/// A primary click at `pos` (points), as the OS would deliver it.
+fn click_at(harness: &Harness<'_, NudgeApp>, pos: egui::Pos2) {
+    harness.event(egui::Event::PointerMoved(pos));
+    for pressed in [true, false] {
+        harness.event(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+}
+
+#[test]
+fn sprite_takes_no_clicks() {
+    // The sprite is a painting, not a widget (§10): over the card a click
+    // goes to the field beneath, off the card it is the click outside that
+    // closes the popup (§4). The green sprite at (0, 0) is 360×215 pt, so it
+    // covers rows 1–3 of the 130 pt card and 85 pt of air below it.
+    let mut harness = harness(vec2(1470.0, 833.0), |cc| {
+        NudgeApp::new(cc, 10.0)
+            .with_screen_geometry(g1())
+            .with_sprite(
+                &cc.egui_ctx,
+                green_sprite(),
+                SpriteConfig {
+                    x: 0,
+                    y: 0,
+                    ..green_config()
+                },
+            )
+    });
+    let card_top = first_field(&harness).top();
+    assert_eq!(card_top, 286.0);
+
+    // Row 2, under the sprite: the field takes the click.
+    click_at(&harness, pos2(450.0, card_top + 60.0));
+    harness.run();
+    let inputs: Vec<_> = harness.get_all_by_role(Role::TextInput).collect();
+    assert_eq!(inputs.len(), 3, "the popup is still up");
+    assert!(inputs[1].is_focused(), "the click reached the second field");
+
+    // The sprite's lower part, below the card: a click outside (§4).
+    click_at(&harness, pos2(450.0, card_top + 130.0 + 40.0));
+    harness.run();
+    assert_eq!(harness.query_all_by_role(Role::TextInput).count(), 0);
+}

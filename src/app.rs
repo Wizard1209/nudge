@@ -576,6 +576,9 @@ impl NudgeApp {
         }
     }
 
+    // `ctx` only reaches `apply_pending_sprite`, which the browser build has no
+    // hidden window to apply to.
+    #[cfg_attr(target_arch = "wasm32", expect(unused_variables))]
     fn hide_popup(&mut self, ctx: &egui::Context, action: Action) {
         // The entire spec §4 close decision lives in `decide_close`; this
         // method is its executor. The only thing we resolve here that the

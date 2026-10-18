@@ -675,7 +675,10 @@ sprite were off.
 ### Position on screen
 
 The card keeps its §1 anchor: centred on the monitor, top edge at 25% of
-the monitor height plus 80 pt. The sprite may rise above the card; when it
+the monitor height plus 80 pt. Both floor the half point: a 679 pt card on a
+1470 pt monitor starts at x = 395. A `card_width` wider than the work area
+minus 48 pt is clamped to that, so 24 pt stay free on each side. The sprite
+may rise above the card; when it
 would rise past the top of the work area (the strip the menu bar or taskbar
 takes), the card moves down by the overhang, so the sprite is shown whole,
 as high as the screen allows. Nothing is pinned at the bottom: the card may

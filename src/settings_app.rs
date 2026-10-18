@@ -56,7 +56,7 @@ pub struct SettingsForm {
     /// only AFTER `apply_autostart` confirms the OS change — never optimistically.
     pub autostart: bool,
     /// The §10 sprite row. The numbers are field text, parsed strictly on
-    /// Save — whole numbers of pixels, like the interval is a number of
+    /// Save — whole numbers of points, like the interval is a number of
     /// minutes — and validated whether or not the sprite is on, so a typo
     /// cannot sit in the file waiting for the checkbox.
     pub sprite_enabled: bool,
@@ -152,11 +152,11 @@ impl SettingsForm {
         let interval = self
             .parsed_interval()
             .map_err(SettingsValidationError::Interval)?;
-        let x = parse_pixels(&self.sprite_x_text)
+        let x = parse_points(&self.sprite_x_text)
             .ok_or_else(|| SettingsValidationError::SpriteX(self.sprite_x_text.trim().into()))?;
-        let y = parse_pixels(&self.sprite_y_text)
+        let y = parse_points(&self.sprite_y_text)
             .ok_or_else(|| SettingsValidationError::SpriteY(self.sprite_y_text.trim().into()))?;
-        let card_width = parse_pixels(&self.card_width_text)
+        let card_width = parse_points(&self.card_width_text)
             .and_then(|w| u32::try_from(w).ok().filter(|w| *w > 0))
             .ok_or_else(|| {
                 SettingsValidationError::CardWidth(self.card_width_text.trim().into())
@@ -251,13 +251,13 @@ impl std::fmt::Display for SettingsValidationError {
             // place the accepted vocabulary is stated.
             SettingsValidationError::Hotkey(e) => write!(f, "{e}. {}", hotkey::VOCABULARY),
             SettingsValidationError::SpriteX(_) => {
-                f.write_str("Sprite X must be a whole number of pixels")
+                f.write_str("Sprite X must be a whole number of points")
             }
             SettingsValidationError::SpriteY(_) => {
-                f.write_str("Sprite Y must be a whole number of pixels")
+                f.write_str("Sprite Y must be a whole number of points")
             }
             SettingsValidationError::CardWidth(_) => {
-                f.write_str("Card width must be a positive whole number of pixels")
+                f.write_str("Card width must be a positive whole number of points")
             }
         }
     }
@@ -302,10 +302,10 @@ pub fn parse_interval_minutes(text: &str) -> Result<f64, IntervalParseError> {
     Ok(n)
 }
 
-/// A whole number of pixels, optionally signed: `^-?\d+$` on the trimmed
+/// A whole number of points, optionally signed: `^-?\d+$` on the trimmed
 /// text, nothing looser. Strict like the interval — the settings window is
 /// where a typo is surfaced, not papered over.
-fn parse_pixels(text: &str) -> Option<i32> {
+fn parse_points(text: &str) -> Option<i32> {
     let trimmed = text.trim();
     let digits = trimmed.strip_prefix('-').unwrap_or(trimmed);
     if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
@@ -738,21 +738,21 @@ impl eframe::App for SettingsApp {
             }
         });
         ui.horizontal(|ui| {
-            ui.label("X (px):");
+            ui.label("X (pt):");
             ui.add(
                 egui::TextEdit::singleline(&mut self.form.sprite_x_text)
                     .id(egui::Id::new("settings_sprite_x"))
                     .desired_width(60.0)
                     .hint_text("0"),
             );
-            ui.label("Y (px):");
+            ui.label("Y (pt):");
             ui.add(
                 egui::TextEdit::singleline(&mut self.form.sprite_y_text)
                     .id(egui::Id::new("settings_sprite_y"))
                     .desired_width(60.0)
                     .hint_text("0"),
             );
-            ui.label("Card width (px):");
+            ui.label("Card width (pt):");
             ui.add(
                 egui::TextEdit::singleline(&mut self.form.card_width_text)
                     .id(egui::Id::new("settings_card_width"))
@@ -1216,7 +1216,7 @@ mod tests {
         }
         assert_eq!(
             SettingsValidationError::SpriteX("abc".to_string()).to_string(),
-            "Sprite X must be a whole number of pixels"
+            "Sprite X must be a whole number of points"
         );
     }
 
@@ -1232,7 +1232,7 @@ mod tests {
         }
         assert_eq!(
             SettingsValidationError::SpriteY("abc".to_string()).to_string(),
-            "Sprite Y must be a whole number of pixels"
+            "Sprite Y must be a whole number of points"
         );
     }
 
@@ -1248,7 +1248,7 @@ mod tests {
         }
         assert_eq!(
             SettingsValidationError::CardWidth("0".to_string()).to_string(),
-            "Card width must be a positive whole number of pixels"
+            "Card width must be a positive whole number of points"
         );
     }
 

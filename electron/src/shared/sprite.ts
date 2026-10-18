@@ -87,6 +87,9 @@ export interface Display {
  * instead, and the card moves down by the overhang. Nothing is pinned at the
  * bottom: a card may hang off there.
  */
+// TODO: spec §10 floors the half point and clamps card_width to the work area
+// minus 48 pt; this rounds and never clamps (tests/unit/sprite.test.ts pins
+// 396 where the spec says 395).
 export function windowOrigin({ bounds, workArea }: Display, card: Rect): { x: number; y: number } {
   const x = Math.round(bounds.x + (bounds.width - card.width) / 2) - card.x;
   const y = Math.round(bounds.y + bounds.height * CARD_TOP_FRACTION) + CARD_TOP_OFFSET - card.y;
