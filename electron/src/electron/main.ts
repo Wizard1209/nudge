@@ -53,6 +53,7 @@ import {
   type SpriteView,
 } from "../shared/sprite";
 import { ElectronAutostartProvider } from "./autostart";
+import { backdropState, hideBackdrop, syncBackdrop } from "./backdrop";
 import { buildTrayIcon, daisyFrame, formatTooltip, type DaisyFrame } from "./trayIcon";
 
 // An uncaught exception in the main process would otherwise come up as a
@@ -244,6 +245,7 @@ function positionCard() {
   layoutSpriteFor(display);
   const { x, y } = windowOrigin(display, cardRect());
   win.setPosition(x, y);
+  syncBackdrop(win, cardRect());
 }
 
 /** The display the popup goes on: the one under the cursor. */
@@ -254,6 +256,7 @@ function currentDisplay(): Electron.Display {
 function hideNudge() {
   if (!win) return;
   win.hide();
+  hideBackdrop();
   applyPendingSprite();
 }
 
@@ -460,6 +463,9 @@ function createWindow() {
   } else {
     win.loadFile(path.join(__dirname, "../renderer/index.html"));
   }
+  // Spec §2: on macOS the frost behind the card is the system's material,
+  // clipped to the card and placed under the page (see backdrop.ts).
+  syncBackdrop(win, cardRect());
 }
 
 // --- Sprite ---
@@ -574,6 +580,7 @@ function applyPendingSprite(): void {
       const size = windowSize();
       win.setContentSize(size.width, size.height);
       win.webContents.send("nudge:sprite", sprite);
+      syncBackdrop(win, cardRect());
     }
   });
 }
@@ -766,6 +773,9 @@ if (process.env.NUDGE_E2E) {
       timerArmed: timerId !== null,
       popupVisible: !!win?.isVisible(),
     }),
+    // The macOS glass under the card: whether the addon loaded and where the
+    // view sits, in the page's coordinates.
+    backdrop: () => backdropState(),
   };
 }
 

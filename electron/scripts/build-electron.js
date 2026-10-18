@@ -5,6 +5,8 @@
 import { build } from "vite";
 import { resolve } from "node:path";
 import { writeFileSync, mkdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
 
 export async function buildElectronFiles() {
   // Build main process
@@ -24,6 +26,7 @@ export async function buildElectronFiles() {
           "node:fs",
           "node:url",
           "node:child_process",
+          "node:module",
           "node:zlib",
         ],
       },
@@ -59,6 +62,19 @@ export async function buildElectronFiles() {
   );
 
   console.log("Electron files compiled to dist/electron/");
+
+  // The macOS glass under the card is a native addon (native/backdrop); it is
+  // N-API, so one build serves node and Electron alike. Nothing to build
+  // elsewhere: main.ts loads it on darwin only.
+  if (process.platform === "darwin") buildBackdropAddon();
+}
+
+export function buildBackdropAddon() {
+  const nodeGyp = createRequire(import.meta.url).resolve("node-gyp/bin/node-gyp.js");
+  execFileSync(process.execPath, [nodeGyp, "rebuild", "-C", resolve("native/backdrop")], {
+    stdio: "inherit",
+  });
+  console.log("Backdrop addon built to native/backdrop/build/");
 }
 
 // Allow running directly
