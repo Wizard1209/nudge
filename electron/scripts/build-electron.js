@@ -65,8 +65,21 @@ export async function buildElectronFiles() {
 
   // The macOS glass under the card is a native addon (native/backdrop); it is
   // N-API, so one build serves node and Electron alike. Nothing to build
-  // elsewhere: main.ts loads it on darwin only.
-  if (process.platform === "darwin") buildBackdropAddon();
+  // elsewhere: main.ts loads it on darwin only. A Mac where node-gyp cannot
+  // build it (no Xcode command line tools, say) still gets a working popup
+  // — main.ts runs without the glass and the card's fill carries the 95% —
+  // so the build goes on; the native backdrop tests are what demand the addon.
+  if (process.platform === "darwin") {
+    try {
+      buildBackdropAddon();
+    } catch (err) {
+      console.warn(
+        `\nWARNING: the backdrop addon did not build (${err.message.trim()}).\n` +
+          "The popup will run without the macOS glass under the card.\n" +
+          "pnpm build:backdrop rebuilds it once node-gyp can; tests/native/backdrop.test.js fails until then.\n",
+      );
+    }
+  }
 }
 
 export function buildBackdropAddon() {
