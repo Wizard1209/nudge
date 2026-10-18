@@ -10,9 +10,10 @@ import { test } from "../fixtures/settings"
  * would read on the next boot.
  *
  * Coordinates below are tuned for the 800×600 viewport and egui's default
- * spacing. The SettingsApp renders a heading, then three rows with ~24px
- * each — the hotkey row followed by its vocabulary line (design-spec §9) —
- * then a banner area, then the button row.
+ * spacing. The SettingsApp renders a heading, then the rows with ~24px
+ * each — the hotkey row followed by its vocabulary line (design-spec §9),
+ * interval, autostart, then the sprite rows — then a banner area, then the
+ * button row.
  */
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -26,7 +27,10 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const ROW_HOTKEY_Y = 42
 const ROW_INTERVAL_Y = 82
 const ROW_AUTOSTART_Y = 110
-const BUTTON_ROW_Y = 143
+// The sprite rows (checkbox, PNG path, X / Y / card width) sit between the
+// autostart row and the buttons, so the button row is three rows lower
+// than the autostart one.
+const BUTTON_ROW_Y = 214
 
 // The hotkey + interval TextEdits sit to the right of their labels; X
 // coordinates target the middle of each input box.

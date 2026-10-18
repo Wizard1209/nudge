@@ -37,6 +37,11 @@ ulid = "1"
 # frosted-glass backdrop is inserted next to on macOS.
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 raw-window-handle = "0.6"
+# The settings window's `Browse…` for the sprite PNG: one `pick_file` call on
+# the native open panel. No default features — those are the Linux portal
+# backends, and this is not built there. On macOS its objc2 0.6 line is the
+# one arboard already pulls in, so this adds no second objc2 tree.
+rfd = { version = "0.15", default-features = false, features = ["common-controls-v6"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # The notification-area icon. Windows-only: the menu it builds is `muda`'s,

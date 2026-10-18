@@ -25,7 +25,7 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use nudge_web::app::NudgeApp;
 use nudge_web::autostart::AutostartProvider;
 use nudge_web::config::Config;
-use nudge_web::settings_app::{PersistFn, SettingsApp, SettingsForm};
+use nudge_web::settings_app::{PersistFn, SettingsApp, SettingsForm, SpriteCheckFn};
 
 // =============================================================================
 // NudgeApp — the spotlight card
@@ -230,20 +230,42 @@ fn no_op_persist() -> PersistFn {
     Box::new(|_cfg: &Config| Ok(()))
 }
 
+/// A PNG check that passes everything: no test here reads a file.
+fn accept_any_sprite() -> SpriteCheckFn {
+    Box::new(|_path: &std::path::Path| Ok(()))
+}
+
+/// The autostart checkbox, by its platform label — there are two checkboxes
+/// in the window now, and the sprite's is the other one.
+#[cfg(target_os = "macos")]
+const AUTOSTART_LABEL: &str = "Open at login";
+#[cfg(not(target_os = "macos"))]
+const AUTOSTART_LABEL: &str = "Launch with Windows";
+
 #[test]
 fn settings_form_populates_from_a_config() {
     let provider: Box<dyn AutostartProvider> = Box::new(RecordingProvider::new(true));
     let mut harness = Harness::new_eframe(|cc| {
-        SettingsApp::new(cc, cfg("Alt+J", 7.0, true), provider, no_op_persist())
+        SettingsApp::new(
+            cc,
+            cfg("Alt+J", 7.0, true),
+            provider,
+            no_op_persist(),
+            accept_any_sprite(),
+        )
     });
     harness.run();
 
-    // Hotkey row, then interval row: both TextEdit::singleline with
-    // hint_text only, same unlabelled shape as the spotlight card's fields
-    // (row 1: "Global hotkey:", row 2: "Default interval (min):" are
-    // separate ui.label()s, not wired via .labelled_by()).
+    // Hotkey row, then interval row, then the sprite's path, X, Y and card
+    // width: all TextEdit::singleline with hint_text only, same unlabelled
+    // shape as the spotlight card's fields (the row labels are separate
+    // ui.label()s, not wired via .labelled_by()).
     let inputs: Vec<_> = harness.get_all_by_role(Role::TextInput).collect();
-    assert_eq!(inputs.len(), 2, "hotkey field + interval field");
+    assert_eq!(
+        inputs.len(),
+        6,
+        "hotkey, interval, sprite path, X, Y, card width"
+    );
     // The stored spelling is the cross-platform one; the field shows this
     // platform's — `⌥J` on macOS. Deriving the expectation the same way the
     // window does would assert nothing, so this states both forms.
@@ -253,7 +275,7 @@ fn settings_form_populates_from_a_config() {
     assert_eq!(inputs[0].value().as_deref(), Some("Alt+J"));
     assert_eq!(inputs[1].value().as_deref(), Some("7"));
 
-    let checkbox = harness.get_by_role(Role::CheckBox);
+    let checkbox = harness.get_by_label(AUTOSTART_LABEL);
     assert_eq!(
         checkbox.accesskit_node().toggled(),
         Some(eframe::egui::accesskit::Toggled::True),
@@ -284,7 +306,13 @@ fn settings_form_editing_marks_it_dirty() {
 fn settings_app_editing_a_field_round_trips_through_the_ui() {
     let provider: Box<dyn AutostartProvider> = Box::new(RecordingProvider::new(false));
     let mut harness = Harness::new_eframe(|cc| {
-        SettingsApp::new(cc, cfg("Alt+J", 7.0, false), provider, no_op_persist())
+        SettingsApp::new(
+            cc,
+            cfg("Alt+J", 7.0, false),
+            provider,
+            no_op_persist(),
+            accept_any_sprite(),
+        )
     });
     harness.run();
 
@@ -325,7 +353,13 @@ fn toggling_autostart_goes_through_the_injected_provider_not_the_os() {
 
     let boxed_provider: Box<dyn AutostartProvider> = Box::new(provider);
     let mut harness = Harness::new_eframe(|cc| {
-        SettingsApp::new(cc, cfg("Alt+J", 7.0, false), boxed_provider, persist)
+        SettingsApp::new(
+            cc,
+            cfg("Alt+J", 7.0, false),
+            boxed_provider,
+            persist,
+            accept_any_sprite(),
+        )
     });
     harness.run();
 
@@ -335,7 +369,7 @@ fn toggling_autostart_goes_through_the_injected_provider_not_the_os() {
         "unclicked checkbox never touches the provider"
     );
 
-    harness.get_by_role(Role::CheckBox).click();
+    harness.get_by_label(AUTOSTART_LABEL).click();
     harness.run();
 
     assert_eq!(
@@ -348,5 +382,54 @@ fn toggling_autostart_goes_through_the_injected_provider_not_the_os() {
         persisted.lock().unwrap().last().map(|c| c.autostart),
         Some(true),
         "the confirmed autostart change is persisted through the injected closure"
+    );
+}
+
+/// §9: an enabled sprite must pass the §10 PNG check or Save refuses it,
+/// naming the reason on the window's message line and writing nothing.
+#[test]
+fn settings_save_with_a_bad_sprite_shows_the_reason_and_persists_nothing() {
+    const REASON: &str = "Sprite PNG has no transparent pixels — it needs a transparent background";
+
+    let persisted: std::sync::Arc<std::sync::Mutex<Vec<Config>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let persisted_writer = std::sync::Arc::clone(&persisted);
+    let persist: PersistFn = Box::new(move |cfg: &Config| {
+        persisted_writer.lock().unwrap().push(cfg.clone());
+        Ok(())
+    });
+    let refuse: SpriteCheckFn = Box::new(|_path: &std::path::Path| Err(REASON.to_string()));
+
+    let provider: Box<dyn AutostartProvider> = Box::new(RecordingProvider::new(false));
+    let mut harness = Harness::new_eframe(|cc| {
+        SettingsApp::new(cc, cfg("Alt+J", 7.0, false), provider, persist, refuse)
+    });
+    harness.run();
+
+    // Type a path into the sprite row's third input, tick Sprite, Save.
+    harness
+        .get_all_by_role(Role::TextInput)
+        .nth(2)
+        .unwrap()
+        .focus();
+    harness.run();
+    harness
+        .get_all_by_role(Role::TextInput)
+        .nth(2)
+        .unwrap()
+        .type_text("/art/s.png");
+    harness.run();
+    harness.get_by_label("Sprite").click();
+    harness.run();
+    harness.get_by_label("Save").click();
+    harness.run();
+
+    assert!(
+        harness.query_by_label(REASON).is_some(),
+        "the message line carries the check's reason"
+    );
+    assert!(
+        persisted.lock().unwrap().is_empty(),
+        "a refused save writes nothing"
     );
 }

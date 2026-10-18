@@ -469,7 +469,7 @@ file while a hand-editing user reads the other.
 | Global hotkey | text | A string in the §5 grammar. See below. |
 | Default interval (min) | text | A number, must be finite and positive; same rules as the minutes field of the popup in §3. |
 | Open at login / Launch with Windows | checkbox | Registers the app to launch at session start. The label names the platform's own mechanism, because that is what tells the user whether the setting applies to them. |
-| Sprite (Electron prototype only) | checkbox, path with `Browse…`, X, Y, Card width | The `sprite` block of §10. X, Y and Card width must be whole numbers, Card width positive; an enabled sprite must pass the §10 PNG check or `Save` refuses it, naming the reason. |
+| Sprite | checkbox, path with `Browse…`, X, Y, Card width | The `sprite` block of §10. X, Y and Card width must be whole numbers, Card width positive; an enabled sprite must pass the §10 PNG check or `Save` refuses it, naming the reason. |
 
 #### The hotkey row
 
