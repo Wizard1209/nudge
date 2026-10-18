@@ -53,7 +53,7 @@ import {
   type SpriteView,
 } from "../shared/sprite";
 import { ElectronAutostartProvider } from "./autostart";
-import { backdropState, hideBackdrop, syncBackdrop } from "./backdrop";
+import { backdropAttached, backdropState, hideBackdrop, syncBackdrop } from "./backdrop";
 import { buildTrayIcon, daisyFrame, formatTooltip, type DaisyFrame } from "./trayIcon";
 
 // An uncaught exception in the main process would otherwise come up as a
@@ -586,6 +586,12 @@ function applyPendingSprite(): void {
 }
 
 ipcMain.handle("nudge:sprite", () => sprite);
+
+// Whether the macOS glass is under the card, asked by the preload before the
+// page's first paint (spec §2: with no material the fill is the surface).
+ipcMain.on("nudge:backdrop", (event) => {
+  event.returnValue = backdropAttached();
+});
 
 // --- IPC ---
 

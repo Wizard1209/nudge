@@ -31,9 +31,13 @@ export function cardMaterial(host: {
   electron: boolean;
   platform: Platform;
   sprite: boolean;
+  /** Whether the main process has the frosted view under this card. */
+  backdrop: boolean;
 }): CardMaterial {
   if (!host.electron) return "none";
-  if (host.platform === "macos") return "glass";
+  // The glass is a native addon the build can go without; a card that
+  // assumed it would be a half-opaque flat fill.
+  if (host.platform === "macos") return host.backdrop ? "glass" : "none";
   // Acrylic only composites on a window that is not transparent, and a
   // sprite needs a transparent window around the card.
   return host.sprite ? "none" : "acrylic";
@@ -43,8 +47,8 @@ export function cardMaterial(host: {
  * Alpha of the (24,24,27) fill. The card reads as 95% opaque in every case;
  * what the fill has to contribute depends on the material behind it. Over the
  * glass the desktop reaching the card is already blurred and the fill only
- * tints it. Over Acrylic 0.8 measures at about 95%. With nothing behind it
- * the fill is the surface.
+ * tints it. Over Acrylic 0.8 is the Windows way to the same 95%. With nothing
+ * behind it the fill is the surface.
  */
 export function cardFillAlpha(material: CardMaterial): number {
   switch (material) {

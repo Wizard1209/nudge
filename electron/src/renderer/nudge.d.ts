@@ -1,5 +1,7 @@
 interface NudgeAPI {
   platform: "electron";
+  /** Whether the OS puts a frosted material under this window's card. */
+  backdrop: boolean;
   save: (data: {
     doing: string;
     bullshit: string;

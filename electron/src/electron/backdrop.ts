@@ -58,6 +58,11 @@ export function hideBackdrop(): void {
   load()?.detach();
 }
 
+/** Whether the glass is under a window: what the card's fill is told. */
+export function backdropAttached(): boolean {
+  return !!load()?.state();
+}
+
 /** Where the glass is, for tests: null when it is not there. */
 export function backdropState(): { loaded: boolean } & Partial<BackdropState> {
   const backdrop = load();

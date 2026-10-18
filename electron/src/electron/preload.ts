@@ -3,6 +3,11 @@ import { contextBridge, ipcRenderer } from "electron";
 contextBridge.exposeInMainWorld("nudge", {
   platform: "electron" as const,
 
+  // Whether the frosted material is under this window's card (macOS with the
+  // backdrop addon built). Fixed for the window's life, and read before the
+  // page's first paint so the fill never flashes the wrong alpha.
+  backdrop: ipcRenderer.sendSync("nudge:backdrop") as boolean,
+
   save: (data: { doing: string; bullshit: string; nextMinutes: number }) =>
     ipcRenderer.invoke("nudge:save", data),
 

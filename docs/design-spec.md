@@ -69,8 +69,10 @@ explicitly. Otherwise the spec applies to all of them.
   material, dark vibrant appearance, clipped to the card: its corners and its
   129.5 pt, not the whole-point window row that holds it). Where
   nothing frosts the window the fill is the surface and carries the 95% on
-  its own; the Electron workbench on Windows instead puts the DWM's Acrylic
-  behind a 0.8 fill, which measures at the same 95%.
+  its own — the browser build, and a macOS build whose material is missing:
+  the fill follows whether the material is actually under the card, never
+  the platform alone. The Electron workbench on Windows instead puts the
+  DWM's Acrylic behind a 0.8 fill, which measures at the same 95%.
 - Width is around 480 pt; height grows with content. The three rows and the
   two separators between them make 129.5 pt. While a sprite is on, its
   `card_width` sets the width instead (§10).

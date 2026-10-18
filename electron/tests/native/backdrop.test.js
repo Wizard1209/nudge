@@ -54,6 +54,8 @@ describe.skipIf(process.platform !== 'darwin')('card backdrop (macOS glass)', ()
       frame: { x: 0, y: 0, width: 480, height: 129.5 },
       radius: 16,
     });
+    // The renderer is told the glass is there, so its fill only tints it.
+    expect(await popupPage().evaluate(() => window.nudge.backdrop)).toBe(true);
   });
 
   it('puts the glass under the card, not under the sprite', async () => {

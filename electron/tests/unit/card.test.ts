@@ -48,21 +48,28 @@ describe("cardFillAlpha", () => {
 });
 
 describe("cardMaterial", () => {
-  it("is glass in the Electron app on macOS, sprite or not", () => {
-    expect(cardMaterial({ electron: true, platform: "macos", sprite: false })).toBe("glass");
-    expect(cardMaterial({ electron: true, platform: "macos", sprite: true })).toBe("glass");
+  const mac = { electron: true, platform: "macos" as const };
+
+  it("is glass in the Electron app on macOS with the backdrop under the card, sprite or not", () => {
+    expect(cardMaterial({ ...mac, sprite: false, backdrop: true })).toBe("glass");
+    expect(cardMaterial({ ...mac, sprite: true, backdrop: true })).toBe("glass");
+  });
+
+  it("is nothing on macOS when the backdrop is not there: the fill is then the surface", () => {
+    expect(cardMaterial({ ...mac, sprite: false, backdrop: false })).toBe("none");
+    expect(cardMaterial({ ...mac, sprite: true, backdrop: false })).toBe("none");
   });
 
   it("is Acrylic in the Electron app on Windows without a sprite", () => {
-    expect(cardMaterial({ electron: true, platform: "windows", sprite: false })).toBe("acrylic");
+    expect(cardMaterial({ electron: true, platform: "windows", sprite: false, backdrop: false })).toBe("acrylic");
   });
 
   it("is nothing on Windows with a sprite: the window is transparent, and Acrylic cannot be", () => {
-    expect(cardMaterial({ electron: true, platform: "windows", sprite: true })).toBe("none");
+    expect(cardMaterial({ electron: true, platform: "windows", sprite: true, backdrop: false })).toBe("none");
   });
 
   it("is nothing in the browser build", () => {
-    expect(cardMaterial({ electron: false, platform: "macos", sprite: false })).toBe("none");
-    expect(cardMaterial({ electron: false, platform: "windows", sprite: false })).toBe("none");
+    expect(cardMaterial({ electron: false, platform: "macos", sprite: false, backdrop: false })).toBe("none");
+    expect(cardMaterial({ electron: false, platform: "windows", sprite: false, backdrop: false })).toBe("none");
   });
 });

@@ -50,11 +50,13 @@
   let sprite: SpriteView | null = $state(null);
 
   // Spec §2: the fill only tints whatever material the OS puts behind the
-  // card, so its alpha follows the platform and whether a sprite made the
-  // window transparent (which rules Acrylic out).
+  // card, so its alpha follows the platform, whether the main process has
+  // the macOS glass under the card, and whether a sprite made the window
+  // transparent (which rules Acrylic out).
   const platform = detectPlatform();
+  const backdrop = isElectron && !!window.nudge?.backdrop;
   const cardAlpha = $derived(
-    cardFillAlpha(cardMaterial({ electron: isElectron, platform, sprite: !!sprite })),
+    cardFillAlpha(cardMaterial({ electron: isElectron, platform, sprite: !!sprite, backdrop })),
   );
 
   async function browserSprite(): Promise<SpriteView | null> {
