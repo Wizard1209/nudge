@@ -24,8 +24,8 @@ Opens focused on the first field.
 | # | Field (Russian product copy — the actual questions) | Type | Description |
 |---|------|-----|----------|
 | 1 | Что я делаю? | text | Free-form input, focused on open |
-| 2 | Не хуйню ли я делаю? | text | Free-form input, reflection |
-| 3 | Следующий nudge через | number (min) | Pre-filled with the current interval (default 10 min) |
+| 2 | Хуйня? | text | Free-form input, reflection |
+| 3 | Следующий через (мин) | number (min) | Pre-filled with the current interval (default 10 min) |
 
 - **Enter** — save and close
 - **Esc** — close without saving (whether the timer restarts depends on how

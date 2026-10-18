@@ -4,18 +4,30 @@ Description at the level of feel and functionality, not pixel-perfect layout.
 Implementation-independent — a person or model should be able to reproduce
 the same usability and look from this document alone.
 
-Nudge ships in two build surfaces:
+Nudge ships in several build surfaces, and one of them is the look the
+others are measured against:
 
-- **Native Windows build** — the real app the user runs (tray icon, popup
-  window, global hotkey, autostart, on-disk journal and config).
+- **Native macOS build** — the reference look. The real app the user runs
+  (menu-bar icon, popup window, global hotkey, autostart, on-disk journal
+  and config). Where this document gives a number — a radius, an alpha, a
+  row height — it is a number measured on this build.
+- **Native Windows build** — the same app on Windows (tray icon instead of
+  the menu bar), derived from the macOS look. Where the platform cannot
+  supply something (the frosted material, §2) the section says what stands
+  in for it.
 - **Browser build** — a stripped-down surface used for visual verification
-  and end-to-end tests in a browser. It mirrors the popup card and a
-  tray-emulating pill but has no real tray, no global hotkey, and no OS
-  integrations; its journal and config live in browser storage.
+  and end-to-end tests in a browser, derived the same way. It mirrors the
+  popup card and a tray-emulating pill but has no real tray, no global
+  hotkey, and no OS integrations; its journal and config live in browser
+  storage.
+- **Electron prototype** (`electron/`) — the workbench where new behaviour
+  is tried first, then written into this document and ported to the native
+  builds. It follows the spec like the others; a section implemented there
+  alone says so in its heading.
 
-Where the two surfaces differ in behavior (e.g. the tray exists only on
-native, the pill exists only in the browser), the relevant section says so
-explicitly. Otherwise the spec applies to both.
+Where the surfaces differ in behavior (e.g. the tray exists only on native,
+the pill exists only in the browser), the relevant section says so
+explicitly. Otherwise the spec applies to all of them.
 
 ## 1. Window and background
 
@@ -28,25 +40,19 @@ explicitly. Otherwise the spec applies to both.
 - Not resizable.
 - Does not appear in the taskbar or in ALT+TAB.
 - Lives in the tray: closing the popup does not exit the app.
-- The window is transparent in both builds. The browser build draws a
+- The window is transparent in every build. The browser build draws a
   static decorative backdrop behind the card so the card's transparency and
   shadow are visible during in-browser verification; the native build has
   the desktop or other windows behind it.
-- Palette: only shades of gray, no accent color.
+- Palette: only shades of gray, no accent color. The one exception is the
+  line a failed submit (§4) puts inside the card: it is red, (255,80,80),
+  at 12 pt, so a lost answer does not read as a fourth row.
 - Card position: horizontally centred on the screen. Vertically — the top
   edge of the card sits at 25% of the screen height plus 80 pt from the top
   (the upper third, at natural eye level, noticeably above the geometric
   center). Both are measured on the whole monitor, menu bar and Dock
-  included. The card grows downward from this anchor. When a decoration
-  above the card would rise past the top of the work area (the strip the
-  menu bar or taskbar takes), the window is pinned to the top of the work
-  area instead and the card moves down by the overhang: the decoration is
-  shown whole, as high as the screen allows. Nothing is pinned at the
-  bottom.
-  - A sprite is drawn at its native pixel density, 1 image pixel = 1 device
-    pixel, never resampled: its size in points is its pixel size over the
-    display's scale factor, so a 720×430 PNG occupies 360×215 pt on a 2x
-    display. Its placement (x/y from the card's top-left) is in points.
+  included. The card grows downward from this anchor. A sprite above the
+  card (§10) is the one thing that can move it, and §10 says how.
 
 ## 2. Card
 
@@ -65,7 +71,8 @@ explicitly. Otherwise the spec applies to both.
   its own; the Electron workbench on Windows instead puts the DWM's Acrylic
   behind a 0.8 fill, which measures at the same 95%.
 - Width is around 480 pt; height grows with content. The three rows and the
-  two separators between them make 129.5 pt.
+  two separators between them make 129.5 pt. While a sprite is on, its
+  `card_width` sets the width instead (§10).
 - Typeface: Ubuntu Light at 16 pt, the egui default; every build bundles the
   face rather than taking whatever the system has.
 - Corner radius: 16 pt, circular, the same for the fill, the contour and the
@@ -449,6 +456,7 @@ file while a hand-editing user reads the other.
 | Global hotkey | text | A string in the §5 grammar. See below. |
 | Default interval (min) | text | A number, must be finite and positive; same rules as the minutes field of the popup in §3. |
 | Open at login / Launch with Windows | checkbox | Registers the app to launch at session start. The label names the platform's own mechanism, because that is what tells the user whether the setting applies to them. |
+| Sprite (Electron prototype only) | checkbox, path with `Browse…`, X, Y, Card width | The `sprite` block of §10. X, Y and Card width must be whole numbers, Card width positive; an enabled sprite must pass the §10 PNG check or `Save` refuses it, naming the reason. |
 
 #### The hotkey row
 
@@ -582,6 +590,8 @@ consistency but have no active UI effect:
 - `autostart` — managed transactionally from the settings window (see
   above); the main app does not touch the registry and does not try to
   reconcile it against `config.json` — that is an adjacent concern.
+- `sprite` — applied the next time the popup is hidden (§10), never under
+  the user's hands.
 
 ### Window chrome
 
@@ -592,3 +602,73 @@ consistency but have no active UI effect:
   to Cancel: the window closes without saving the fields that are saved
   explicitly (hotkey, interval). An autostart change already applied is of
   course not rolled back — it was committed at the moment of the click.
+
+## 10. Sprite overlay (Electron prototype only)
+
+An optional PNG — a character, a mascot — drawn in front of the popup card.
+It is implemented in the Electron prototype; this section is the behaviour
+the native builds port.
+
+### Config
+
+A `sprite` block in `config.json` (§9):
+
+| Field | Type | What it does |
+|---|---|---|
+| `enabled` | bool | Whether the sprite is drawn. Default `false`. |
+| `path` | string | Absolute path to the PNG. |
+| `x`, `y` | integer | The sprite's top-left corner relative to the card's top-left, in points; either may be negative. Default `0`. |
+| `card_width` | integer > 0 | The card's width while the sprite is on, in points; it replaces §2's "around 480". Ignored while the sprite is off. |
+
+Each field that is absent or malformed falls back to its default alone, the
+same forgiving rule §9 applies to the rest of the file. The settings window
+has a row for each of them; `Browse…` picks the PNG with the system's file
+dialog.
+
+### What counts as a sprite
+
+A PNG with an alpha channel (a colour type with alpha, or a `tRNS` chunk)
+and at least one fully transparent pixel — a picture with no background. A
+file that fails this — missing, not a PNG, no alpha, no transparent pixel,
+undecodable — is not a sprite: `Save` in the settings window refuses it with
+a message naming the reason, and a running app that finds one in
+`config.json` logs the reason to stderr and shows the plain card, as if the
+sprite were off.
+
+### Size and placement
+
+- Drawn at its native pixel density: 1 image pixel = 1 device pixel, never
+  resampled. Its size in points is its pixel size over the display's scale
+  factor, so a 720×430 PNG occupies 360×215 pt on a 2x display and twice
+  that on a 1x display. A popup that lands on a display with a different
+  scale factor is laid out again for it.
+- `x`/`y` place it relative to the card's top-left corner, in points.
+- It is drawn **over** the card. How much of the card it covers is the
+  sprite's own business — its transparent margins and the configured `x`/`y`
+  decide it — and the app never pushes it off the card. It takes no clicks:
+  the fields under it stay reachable.
+- The window is the union of the card and the sprite, rounded up to whole
+  points, and is fully transparent outside the card: no material, no fill,
+  no shadow around the sprite. On Windows the Acrylic material §2 mentions
+  needs a window that is not transparent, so it is off while a sprite is
+  on and the card's fill carries the 95% alone.
+
+### Position on screen
+
+The card keeps its §1 anchor: centred on the monitor, top edge at 25% of
+the monitor height plus 80 pt. The sprite may rise above the card; when it
+would rise past the top of the work area (the strip the menu bar or taskbar
+takes), the window is pinned to the top of the work area instead and the
+card moves down by the overhang, so the sprite is shown whole, as high as
+the screen allows. Nothing is pinned at the bottom: the card may hang off
+there.
+
+### Applying a change
+
+A sprite change — saved from the settings window or edited by hand — is
+applied while the popup is hidden, never under the user's hands: a change
+that arrives while the popup is visible waits for the next close. When the
+change turns the sprite on or off (a PNG that fails the check counts as
+off) the popup window is recreated, because whether a window is transparent
+is fixed when it is created; any other change resizes the window and
+redraws.
