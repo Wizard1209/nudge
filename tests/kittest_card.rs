@@ -222,6 +222,7 @@ fn cfg(hotkey: &str, minutes: f64, autostart: bool) -> Config {
         hotkey: hotkey.to_string(),
         default_interval_minutes: minutes,
         autostart,
+        ..Config::default()
     }
 }
 

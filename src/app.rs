@@ -529,7 +529,7 @@ impl NudgeApp {
         // egui 0.34 split screen_rect() into viewport_rect()/content_rect();
         // content_rect() is the in-window content area we size the card against.
         let screen = ctx.content_rect();
-        let card_width = 480.0_f32.min(screen.width() - 48.0);
+        let card_width = (crate::config::DEFAULT_CARD_WIDTH as f32).min(screen.width() - 48.0);
         let top_offset = screen.height() * 0.25;
 
         let inner = egui::Area::new(egui::Id::new("nudge_card"))

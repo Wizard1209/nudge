@@ -376,6 +376,7 @@ fn replay(stream: &Stream, saved: &str) -> Outcome {
         hotkey: saved.to_string(),
         default_interval_minutes: 10.0,
         autostart: false,
+        ..Config::default()
     };
     let mut form = SettingsForm::from_config(config);
     let source = ReplayEdgeSource::new(stream.edges.iter().map(|e| e.edge).collect());

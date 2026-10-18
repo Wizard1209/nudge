@@ -19,7 +19,7 @@
 //! direct.
 
 use crate::autostart::{AutostartError, AutostartProvider, apply_autostart};
-use crate::config::{Config, ConfigError};
+use crate::config::{Config, ConfigError, SpriteConfig};
 use crate::hotkey::{self, Hotkey};
 use crate::recorder::{self, EdgeSource, Effect, Input, Recorder};
 
@@ -54,6 +54,10 @@ pub struct SettingsForm {
     /// Mirrors the persisted autostart bit. The checkbox writes through this
     /// only AFTER `apply_autostart` confirms the OS change — never optimistically.
     pub autostart: bool,
+    /// The sprite block as loaded, carried through Save untouched so the
+    /// window never deletes a hand-written block.
+    // TODO(U5): typed sprite fields in the form.
+    pub sprite: SpriteConfig,
     /// Snapshot of the loaded config so we can detect a dirty form without
     /// re-parsing. `is_dirty` compares against this.
     original: Config,
@@ -79,6 +83,7 @@ impl SettingsForm {
             hotkey: cfg.hotkey.clone(),
             interval_text: format_interval(cfg.default_interval_minutes),
             autostart: cfg.autostart,
+            sprite: cfg.sprite.clone(),
             original: cfg,
         }
     }
@@ -98,6 +103,7 @@ impl SettingsForm {
         self.hotkey != self.original.hotkey
             || self.interval_text != format_interval(self.original.default_interval_minutes)
             || self.autostart != self.original.autostart
+            || self.sprite != self.original.sprite
     }
 
     /// The hotkey as last saved — what every cancelling path in the recorder
@@ -138,6 +144,7 @@ impl SettingsForm {
             hotkey: hotkey::format_native(&hotkey),
             default_interval_minutes: interval,
             autostart: self.autostart,
+            sprite: self.sprite.clone(),
         })
     }
 
@@ -151,6 +158,7 @@ impl SettingsForm {
         self.hotkey = saved.hotkey.clone();
         self.interval_text = format_interval(saved.default_interval_minutes);
         self.autostart = saved.autostart;
+        self.sprite = saved.sprite.clone();
         self.original = saved;
     }
 
@@ -177,6 +185,7 @@ impl SettingsForm {
             hotkey: self.original.hotkey.clone(),
             default_interval_minutes: self.original.default_interval_minutes,
             autostart: self.autostart,
+            sprite: self.original.sprite.clone(),
         };
         apply_autostart(provider, &mut staged, desired, persist)?;
         // Provider + persist both succeeded; reflect into the form + baseline.
@@ -642,6 +651,7 @@ mod tests {
             hotkey: hotkey.to_string(),
             default_interval_minutes: mins,
             autostart,
+            ..Config::default()
         }
     }
 
@@ -831,6 +841,50 @@ mod tests {
             "persist saw autostart=true"
         );
         assert!(!f.is_dirty(), "baseline updated, so still clean");
+    }
+
+    fn sprite_on() -> SpriteConfig {
+        SpriteConfig {
+            enabled: true,
+            path: "/a/b.png".to_string(),
+            x: -41,
+            y: -277,
+            card_width: 679,
+        }
+    }
+
+    #[test]
+    fn to_config_carries_the_sprite_block() {
+        // The form has no sprite row yet; Save must still not delete the
+        // block a hand-edited file carries.
+        let f = SettingsForm::from_config(Config {
+            sprite: sprite_on(),
+            ..Config::default()
+        });
+        assert!(!f.is_dirty());
+        assert_eq!(f.to_config().unwrap().sprite, sprite_on());
+    }
+
+    #[test]
+    fn toggle_autostart_keeps_the_sprite_block() {
+        let provider = FakeProvider::new(false);
+        let mut f = SettingsForm::from_config(Config {
+            sprite: sprite_on(),
+            ..Config::default()
+        });
+        let saved = std::cell::RefCell::new(None);
+
+        f.toggle_autostart(&provider, true, |c| {
+            *saved.borrow_mut() = Some(c.clone());
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(
+            saved.borrow().as_ref().map(|c| c.sprite.clone()),
+            Some(sprite_on()),
+            "the persisted config carries the sprite block"
+        );
     }
 
     #[test]

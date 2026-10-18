@@ -565,6 +565,11 @@ fn apply_config_reload(
                     previous_cfg.autostart, new_cfg.autostart
                 );
             }
+            // TODO: apply the sprite while the popup is hidden (spec §10);
+            // the Windows port is pending.
+            ConfigChange::Sprite { to } => {
+                eprintln!("[nudge] config reload: sprite → {to:?} (no live effect yet)");
+            }
         }
     }
 

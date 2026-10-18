@@ -790,6 +790,10 @@ fn reload_config(state: &mut ReloadState) {
                  (settings process owns the LaunchAgent)",
                 state.previous_cfg.autostart, new_cfg.autostart
             ),
+            // TODO: apply the sprite while the popup is hidden (spec §10).
+            ConfigChange::Sprite { to } => {
+                eprintln!("[nudge] config reload: sprite → {to:?} (no live effect yet)")
+            }
         }
     }
 
@@ -1310,11 +1314,13 @@ mod tests {
             hotkey: "Ctrl+Shift+Space".to_string(),
             default_interval_minutes: 10.0,
             autostart: false,
+            ..config::Config::default()
         };
         let after = config::Config {
             hotkey: "Ctrl+F21".to_string(),
             default_interval_minutes: 25.0,
             autostart: true,
+            ..config::Config::default()
         };
         config::save(&path, &after).expect("write the edited config");
 
@@ -1352,6 +1358,7 @@ mod tests {
             hotkey: "Ctrl+Shift+Space".to_string(),
             default_interval_minutes: 10.0,
             autostart: false,
+            ..config::Config::default()
         };
         let mut state = ReloadState {
             registered: None,
