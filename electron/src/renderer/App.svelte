@@ -10,6 +10,7 @@
     CARD_HEIGHT,
     CARD_TOP_OFFSET,
     spriteLayout,
+    spritePoints,
     type SpriteView,
   } from "../shared/sprite";
 
@@ -41,9 +42,9 @@
 
   const isElectron = typeof window !== "undefined" && !!window.nudge?.save;
 
-  // Optional sprite drawn 1:1 in front of the card. Electron: the main
-  // process validates config.sprite and pushes the layout. Browser (tests):
-  // `?sprite=<url>&x=<px>&y=<px>&cardWidth=<px>`.
+  // Optional sprite drawn in front of the card at native pixels (1 PNG pixel
+  // = 1 device pixel). Electron: the main process validates config.sprite and
+  // pushes the layout. Browser (tests): `?sprite=<url>&x=<pt>&y=<pt>&cardWidth=<pt>`.
   let sprite: SpriteView | null = $state(null);
 
   async function browserSprite(): Promise<SpriteView | null> {
@@ -61,7 +62,11 @@
       url,
       layout: spriteLayout(
         { width: int("cardWidth", CARD_WIDTH), height: CARD_HEIGHT },
-        { x: int("x", 0), y: int("y", 0), width: img.naturalWidth, height: img.naturalHeight },
+        {
+          x: int("x", 0),
+          y: int("y", 0),
+          ...spritePoints({ width: img.naturalWidth, height: img.naturalHeight }, window.devicePixelRatio),
+        },
       ),
     };
   }

@@ -100,3 +100,34 @@ describe('sprite at another placement', () => {
         expect(g.card.top).toBe(SPRITE_VIEWPORT.height * 0.25 + 80);
     });
 });
+
+// The PNG's pixels are the device's: on a 2x display the same file covers
+// half as many CSS px in each direction, never stretched.
+describe('sprite on a 2x display', () => {
+    let browser;
+    let page;
+
+    beforeAll(async () => {
+        browser = await launchBrowser();
+        ({ page } = await createPage(browser, SPRITE_URL, { ...SPRITE_VIEWPORT, deviceScaleFactor: 2 }));
+        await page.waitForSelector('[data-testid="sprite"]');
+    });
+
+    afterAll(async () => {
+        await browser?.close();
+    });
+
+    it('draws the 720×430 PNG as 360×215 CSS px', async () => {
+        const sprite = await page.evaluate(() =>
+            document.querySelector('[data-testid="sprite"]').getBoundingClientRect().toJSON());
+        expect([sprite.width, sprite.height]).toEqual([360, 215]);
+    });
+
+    it('keeps x/y in CSS px: the card top is still 277 below the sprite top', async () => {
+        const g = await page.evaluate(() => {
+            const r = (sel) => document.querySelector(sel).getBoundingClientRect().toJSON();
+            return { sprite: r('[data-testid="sprite"]'), card: r('[data-testid="nudge"]') };
+        });
+        expect([g.card.left - g.sprite.left, g.card.top - g.sprite.top]).toEqual([41, 277]);
+    });
+});

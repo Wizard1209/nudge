@@ -43,6 +43,10 @@ explicitly. Otherwise the spec applies to both.
   area instead and the card moves down by the overhang: the decoration is
   shown whole, as high as the screen allows. Nothing is pinned at the
   bottom.
+  - A sprite is drawn at its native pixel density, 1 image pixel = 1 device
+    pixel, never resampled: its size in points is its pixel size over the
+    display's scale factor, so a 720×430 PNG occupies 360×215 pt on a 2x
+    display. Its placement (x/y from the card's top-left) is in points.
 
 ## 2. Card
 

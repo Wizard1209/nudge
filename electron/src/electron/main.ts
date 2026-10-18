@@ -45,9 +45,11 @@ import {
   SPRITE_ERROR,
   checkSpritePng,
   spriteLayout,
+  spritePoints,
   windowOrigin,
   type Rect,
   type Size,
+  type SpriteLayout,
   type SpriteView,
 } from "../shared/sprite";
 import { ElectronAutostartProvider } from "./autostart";
@@ -66,7 +68,10 @@ const PETAL_FADE_MS = 250;
 
 let win: BrowserWindow | null = null;
 let settingsWin: BrowserWindow | null = null;
-// The sprite the popup window is laid out for; null = plain card.
+// The configured sprite: its PNG and placement, display-independent.
+let spriteSource: SpriteSource | null = null;
+// The sprite laid out for the display the popup was last placed on; null =
+// plain card.
 let sprite: SpriteView | null = null;
 // A saved sprite config not yet applied: it waits until the popup is hidden.
 let pendingSprite: SpriteConfig | null = null;
@@ -226,10 +231,15 @@ function becameFocused(w: BrowserWindow): Promise<boolean> {
 // the card moves down (`windowOrigin`).
 function positionCard() {
   if (!win) return;
-  const cursor = screen.getCursorScreenPoint();
-  const display = screen.getDisplayNearestPoint(cursor);
+  const display = currentDisplay();
+  layoutSpriteFor(display);
   const { x, y } = windowOrigin(display, cardRect());
   win.setPosition(x, y);
+}
+
+/** The display the popup goes on: the one under the cursor. */
+function currentDisplay(): Electron.Display {
+  return screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
 }
 
 function hideNudge() {
@@ -450,6 +460,39 @@ function windowSize(): Size {
   return sprite?.layout.window ?? { width: CARD_WIDTH, height: CARD_HEIGHT };
 }
 
+interface SpriteSource {
+  url: string;
+  png: Size;
+  placement: SpriteConfig;
+}
+
+/** The sprite's layout on a display: its PNG at native pixels, in that display's points. */
+function spriteLayoutOn(source: SpriteSource, display: Electron.Display): SpriteLayout {
+  const { card_width, x, y } = source.placement;
+  return spriteLayout(
+    { width: card_width, height: CARD_HEIGHT },
+    { x, y, ...spritePoints(source.png, display.scaleFactor) },
+  );
+}
+
+function sameLayout(a: SpriteLayout, b: SpriteLayout): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * Re-lay out the sprite for a display. The sprite's point size depends on the
+ * display's scale factor, so a popup moving to another display may need a
+ * different window size and a new layout in the renderer.
+ */
+function layoutSpriteFor(display: Electron.Display): void {
+  if (!spriteSource || !sprite || !win) return;
+  const layout = spriteLayoutOn(spriteSource, display);
+  if (sameLayout(layout, sprite.layout)) return;
+  sprite = { url: sprite.url, layout };
+  win.setContentSize(layout.window.width, layout.window.height);
+  win.webContents.send("nudge:sprite", sprite);
+}
+
 type SpriteFile =
   | { ok: true; bytes: Buffer; width: number; height: number }
   | { ok: false; error: string };
@@ -470,8 +513,8 @@ async function readSpriteFile(file: string): Promise<SpriteFile> {
   return check.ok ? { ...check, bytes } : check;
 }
 
-/** The sprite to draw for a config, or null when it is off or unusable. */
-async function spriteView(cfg: SpriteConfig): Promise<SpriteView | null> {
+/** The sprite a config asks for, or null when it is off or unusable. */
+async function loadSpriteSource(cfg: SpriteConfig): Promise<SpriteSource | null> {
   if (!cfg.enabled) return null;
   const file = await readSpriteFile(cfg.path);
   if (!file.ok) {
@@ -480,11 +523,15 @@ async function spriteView(cfg: SpriteConfig): Promise<SpriteView | null> {
   }
   return {
     url: "data:image/png;base64," + file.bytes.toString("base64"),
-    layout: spriteLayout(
-      { width: cfg.card_width, height: CARD_HEIGHT },
-      { x: cfg.x, y: cfg.y, width: file.width, height: file.height },
-    ),
+    png: { width: file.width, height: file.height },
+    placement: cfg,
   };
+}
+
+/** Take a sprite source into use, laid out for the current display. */
+function setSpriteSource(source: SpriteSource | null): void {
+  spriteSource = source;
+  sprite = source && { url: source.url, layout: spriteLayoutOn(source, currentDisplay()) };
 }
 
 // Applies run one at a time, so a slow read can't overwrite a newer config.
@@ -501,13 +548,13 @@ function applyPendingSprite(): void {
     if (!pendingSprite || !win || win.isVisible()) return;
     const cfg = pendingSprite;
     pendingSprite = null;
-    const next = await spriteView(cfg);
+    const next = await loadSpriteSource(cfg);
     if (win.isVisible()) {
       pendingSprite ??= cfg; // shown meanwhile: retry on the next hide
       return;
     }
     const recreate = !!sprite !== !!next;
-    sprite = next;
+    setSpriteSource(next);
     if (recreate) {
       win.destroy();
       createWindow();
@@ -652,11 +699,17 @@ app.whenReady().then(async () => {
   }
   currentConfig = config;
 
-  sprite = await spriteView(currentConfig.sprite);
+  setSpriteSource(await loadSpriteSource(currentConfig.sprite));
   createWindow();
   createTray();
   registerHotkey(currentConfig);
   startConfigWatcher();
+  // A display's scale factor can change under an open popup (an external
+  // monitor plugged in, a resolution switch): lay the sprite out again. A
+  // hidden popup is laid out when it next shows.
+  screen.on("display-metrics-changed", () => {
+    if (win?.isVisible()) positionCard();
+  });
   // First-launch rule (spec §4): show popup immediately, start timer only
   // after the first close (Enter / Esc / Switch). Tray tooltip stays on the
   // default interval until then.

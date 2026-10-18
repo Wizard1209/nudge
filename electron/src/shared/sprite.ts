@@ -32,9 +32,20 @@ export interface SpriteView {
 }
 
 /**
+ * A sprite is drawn at its native pixel density: 1 image pixel = 1 device
+ * pixel, never resampled. Its size in points is therefore the PNG's pixel
+ * size over the display's scale factor; an odd pixel count on a 2x display
+ * ends on a half point, which is still exactly one device pixel.
+ */
+export function spritePoints(png: Size, scaleFactor: number): Size {
+  return { width: png.width / scaleFactor, height: png.height / scaleFactor };
+}
+
+/**
  * Lay out the card and a sprite placed at (sprite.x, sprite.y) relative to the
- * card's top-left corner. The window is the union of both rects; everything is
- * shifted so that union starts at (0, 0).
+ * card's top-left corner, all in points. The window is the union of both
+ * rects rounded up to whole points; everything is shifted so that union
+ * starts at (0, 0).
  */
 export function spriteLayout(card: Size, sprite: Rect): SpriteLayout {
   const left = Math.min(0, sprite.x);
@@ -42,7 +53,7 @@ export function spriteLayout(card: Size, sprite: Rect): SpriteLayout {
   const right = Math.max(card.width, sprite.x + sprite.width);
   const bottom = Math.max(card.height, sprite.y + sprite.height);
   return {
-    window: { width: right - left, height: bottom - top },
+    window: { width: Math.ceil(right - left), height: Math.ceil(bottom - top) },
     // `0 - left`, not `-left`: a zero offset must stay 0, not -0.
     card: { x: 0 - left, y: 0 - top, width: card.width, height: card.height },
     sprite: { x: sprite.x - left, y: sprite.y - top, width: sprite.width, height: sprite.height },

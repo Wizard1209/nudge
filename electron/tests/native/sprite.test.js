@@ -66,12 +66,40 @@ describe('popup with a sprite', () => {
     expect(await size()).toEqual([720, 447]);
   });
 
+  /** Scale factor of the display the popup goes on (the cursor's). */
+  function scaleFactor() {
+    return app.evaluate(({ screen }) =>
+      screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).scaleFactor);
+  }
+
   it('places the sprite at the window origin and the card at (41, 277), 679 wide', async () => {
     const { popup } = await launch({ sprite: REAL });
     await popup.waitForSelector('[data-testid="sprite"]');
     const g = await geometry(popup);
-    expect([g.sprite.left, g.sprite.top, g.sprite.width, g.sprite.height]).toEqual([0, 0, 720, 430]);
+    expect([g.sprite.left, g.sprite.top]).toEqual([0, 0]);
     expect([g.card.left, g.card.top, g.card.width]).toEqual([41, 277, 679]);
+  });
+
+  it('draws the sprite at native pixels: 1 PNG pixel = 1 device pixel', async () => {
+    const { popup } = await launch({ sprite: REAL });
+    await popup.waitForSelector('[data-testid="sprite"]');
+    const scale = await scaleFactor();
+    const g = await geometry(popup);
+    // The 720×430 fixture covers 720×430 device pixels, which is fewer points
+    // on a HiDPI display; the <img> is laid out at that point size so
+    // Chromium maps it 1:1 and never resamples.
+    expect([g.sprite.width, g.sprite.height]).toEqual([720 / scale, 430 / scale]);
+    expect(await popup.evaluate(() => {
+      const img = document.querySelector('[data-testid="sprite"]');
+      return [img.naturalWidth, img.naturalHeight];
+    })).toEqual([720, 430]);
+  });
+
+  it('sizes the window from the sprite\'s point size, so it follows the display scale', async () => {
+    // Below a default card nothing but the sprite sets the height.
+    await launch({ sprite: { ...REAL, x: 0, y: 170, card_width: 480 } });
+    const scale = await scaleFactor();
+    expect(await size()).toEqual([Math.max(480, 720 / scale), 170 + 430 / scale]);
   });
 
   it('keeps the card at its spec screen spot, or as close as the sprite lets it', async () => {
@@ -155,8 +183,10 @@ describe('popup with a sprite', () => {
     const { popup, dir } = await launch({ sprite: REAL });
     await hide(popup);
     writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ sprite: { ...REAL, x: 0, y: 170, card_width: 480 } }));
-    // Sprite hangs below a default card: 720 wide, 170 + 430 tall.
-    await expect.poll(size, { timeout: 10_000 }).toEqual([720, 600]);
+    // Sprite hangs below a default card: as wide as the wider of the two,
+    // card plus sprite tall, the sprite measured in points.
+    const scale = await scaleFactor();
+    await expect.poll(size, { timeout: 10_000 }).toEqual([Math.max(480, 720 / scale), 170 + 430 / scale]);
     await show();
     await expect.poll(async () => {
       const g = await geometry(popupPage());

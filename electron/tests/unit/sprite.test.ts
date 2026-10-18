@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import {
   spriteLayout,
+  spritePoints,
   windowOrigin,
   inspectPng,
   hasTransparentPixel,
@@ -85,6 +86,30 @@ describe("spriteLayout", () => {
       window: { width: 510, height: 190 },
       card: { x: 30, y: 20, width: 480, height: 170 },
       sprite: { x: 0, y: 0, width: 100, height: 60 },
+    });
+  });
+});
+
+describe("spritePoints", () => {
+  it("maps 1 PNG pixel to 1 device pixel: a 720×430 PNG is 360×215 pt on a 2x display", () => {
+    expect(spritePoints({ width: 720, height: 430 }, 2)).toEqual({ width: 360, height: 215 });
+  });
+
+  it("is the PNG's own size on a 1x display", () => {
+    expect(spritePoints({ width: 720, height: 430 }, 1)).toEqual({ width: 720, height: 430 });
+  });
+
+  it("keeps the half point of an odd pixel count rather than resampling", () => {
+    expect(spritePoints({ width: 721, height: 431 }, 2)).toEqual({ width: 360.5, height: 215.5 });
+  });
+});
+
+describe("spriteLayout with a sprite measured in half points", () => {
+  it("rounds the window up to whole points so the sprite is never clipped", () => {
+    expect(spriteLayout(card, { x: 0, y: 170, width: 360.5, height: 215.5 })).toEqual({
+      window: { width: 480, height: 386 },
+      card: { x: 0, y: 0, width: 480, height: 170 },
+      sprite: { x: 0, y: 170, width: 360.5, height: 215.5 },
     });
   });
 });
