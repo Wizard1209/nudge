@@ -239,9 +239,8 @@ function becameFocused(w: BrowserWindow): Promise<boolean> {
 // spans card ∪ sprite and the card sits inside it at its layout offset; a
 // sprite that would rise above the work area pins the window to its top and
 // the card moves down (`windowOrigin`).
-function positionCard() {
+function positionCard(display: Electron.Display = currentDisplay()) {
   if (!win) return;
-  const display = currentDisplay();
   layoutSpriteFor(display);
   const { x, y } = windowOrigin(display, cardRect());
   win.setPosition(x, y);
@@ -730,10 +729,11 @@ app.whenReady().then(async () => {
   registerHotkey(currentConfig);
   startConfigWatcher();
   // A display's scale factor can change under an open popup (an external
-  // monitor plugged in, a resolution switch): lay the sprite out again. A
-  // hidden popup is laid out when it next shows.
+  // monitor plugged in, a resolution switch): lay the sprite out again on
+  // the display the popup is on — the cursor may have gone elsewhere since
+  // it was shown. A hidden popup is laid out when it next shows.
   screen.on("display-metrics-changed", () => {
-    if (win?.isVisible()) positionCard();
+    if (win?.isVisible()) positionCard(screen.getDisplayMatching(win.getBounds()));
   });
   // First-launch rule (spec §4): show popup immediately, start timer only
   // after the first close (Enter / Esc / Switch). Tray tooltip stays on the

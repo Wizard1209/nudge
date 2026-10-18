@@ -644,7 +644,9 @@ sprite were off.
   resampled. Its size in points is its pixel size over the display's scale
   factor, so a 720×430 PNG occupies 360×215 pt on a 2x display and twice
   that on a 1x display. A popup that lands on a display with a different
-  scale factor is laid out again for it.
+  scale factor is laid out again for it; one whose display changes under it
+  while it is visible is laid out again on that display, where it is, not
+  where the cursor has since gone.
 - `x`/`y` place it relative to the card's top-left corner, in points.
 - It is drawn **over** the card. How much of the card it covers is the
   sprite's own business — its transparent margins and the configured `x`/`y`
