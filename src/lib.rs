@@ -94,6 +94,9 @@ pub mod nudge_state;
 pub mod platform;
 pub mod recorder;
 pub mod settings_app;
+pub mod sprite;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod sprite_png;
 pub mod timer;
 #[cfg(target_os = "windows")]
 pub mod tray_bridge;

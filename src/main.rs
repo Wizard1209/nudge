@@ -21,6 +21,10 @@ mod recorder;
 #[cfg(not(target_arch = "wasm32"))]
 mod settings_app;
 #[cfg(not(target_arch = "wasm32"))]
+mod sprite;
+#[cfg(not(target_arch = "wasm32"))]
+mod sprite_png;
+#[cfg(not(target_arch = "wasm32"))]
 mod timer;
 #[cfg(target_os = "windows")]
 mod tray_bridge;
