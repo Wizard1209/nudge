@@ -3060,3 +3060,49 @@ impl Drop for ReleaseModifiers {
         post_flags_changed(VK_COMMAND, CGEventFlags::CGEventFlagNull, 20);
     }
 }
+
+/// Spec §10 "Applying a change": a change that arrives while the popup is
+/// hidden is applied right there — and the sprite it turns on must be on
+/// screen at the next reveal, not only the layout that makes room for it.
+#[test]
+#[ignore = "needs a GUI session + Screen Recording + PostEvent grants; run in the guest via scripts/native-tests-macos.sh"]
+fn sprite_turned_on_while_hidden_is_drawn_at_the_next_reveal() {
+    let app = SandboxedApp::launch_with_config(&config_with_sprite(false, -41, -277, 679));
+    assert_eq!(
+        shoot(&app).sprite,
+        None,
+        "the sprite is on before it was turned on"
+    );
+
+    dismiss_with_escape();
+    assert!(
+        wait_until(Duration::from_secs(1), || !popup_visible(app.pid())),
+        "Esc did not dismiss the popup — synthetic input is not reaching the app"
+    );
+
+    let (sw, _) = sprite_points();
+    std::fs::write(
+        app.config_path(),
+        config_with_sprite(true, -(sw + 10.0) as i32, -20, 679)
+            .replace("{sprite}", &app.sprite_path().display().to_string()),
+    )
+    .expect("edit config.json in place");
+    // Hidden: the change applies now. Give the watcher a moment to deliver it.
+    std::thread::sleep(Duration::from_millis(1500));
+
+    press_chord(
+        VK_SPACE,
+        CGEventFlags::CGEventFlagControl | CGEventFlags::CGEventFlagShift,
+    );
+    assert!(
+        wait_until(Duration::from_secs(2), || popup_visible(app.pid())),
+        "⌃⇧Space did not bring the popup back"
+    );
+    std::thread::sleep(Duration::from_millis(500));
+
+    let after = shoot(&app);
+    assert!(
+        after.sprite.is_some(),
+        "the popup came back without the sprite that was turned on while it was hidden"
+    );
+}

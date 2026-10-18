@@ -542,7 +542,7 @@ fn main() -> eframe::Result {
             platform::start_on_event_loop(&cc.egui_ctx);
             let mut app = NudgeApp::new(cc, default_minutes);
             if let Some((decoded, cfg)) = sprite {
-                app = app.with_sprite(&cc.egui_ctx, decoded, cfg);
+                app = app.with_sprite(decoded, cfg);
             }
             Ok(Box::new(app))
         }),

@@ -104,7 +104,7 @@ fn card_moves_by_the_sprite_layout_offset() {
     let harness = harness(vec2(1470.0, 833.0), |cc| {
         NudgeApp::new(cc, 10.0)
             .with_screen_geometry(g1())
-            .with_sprite(&cc.egui_ctx, green_sprite(), green_config())
+            .with_sprite(green_sprite(), green_config())
     });
     let field = first_field(&harness);
     assert_eq!(field.min, pos2(395.0, 286.0));
@@ -117,7 +117,7 @@ fn sprite_uploads_one_nearest_texture() {
     let harness = harness(vec2(1470.0, 833.0), |cc| {
         NudgeApp::new(cc, 10.0)
             .with_screen_geometry(g1())
-            .with_sprite(&cc.egui_ctx, green_sprite(), green_config())
+            .with_sprite(green_sprite(), green_config())
     });
     assert_eq!(
         sprite_textures(&harness),
@@ -150,7 +150,7 @@ fn a_sprite_change_that_fails_the_check_turns_the_sprite_off() {
     let mut harness = harness(vec2(1470.0, 833.0), |cc| {
         NudgeApp::new(cc, 10.0)
             .with_screen_geometry(g1())
-            .with_sprite(&cc.egui_ctx, green_sprite(), green_config())
+            .with_sprite(green_sprite(), green_config())
     });
     assert_eq!(first_field(&harness).min.x, 395.0);
 
@@ -187,7 +187,6 @@ fn sprite_takes_no_clicks() {
         NudgeApp::new(cc, 10.0)
             .with_screen_geometry(g1())
             .with_sprite(
-                &cc.egui_ctx,
                 green_sprite(),
                 SpriteConfig {
                     x: 0,

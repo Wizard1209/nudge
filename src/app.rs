@@ -98,31 +98,43 @@ const CARD_STROKE: egui::Stroke = egui::Stroke {
     color: egui::Color32::from_rgba_premultiplied(60, 60, 60, 60),
 };
 
-/// The sprite as drawn (spec §10): its texture, its size in pixels and the
-/// config block that places it.
+/// The sprite as drawn (spec §10): its pixels, its size and the config block
+/// that places it. The GPU texture is made on a frame eframe paints: it drops
+/// the texture uploads of frames it does not, and the popup is hidden when a
+/// change arrives.
 pub struct LoadedSprite {
-    tex: egui::TextureHandle,
+    image: Option<egui::ColorImage>,
+    tex: Option<egui::TextureHandle>,
     px: [u32; 2],
     cfg: SpriteConfig,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl LoadedSprite {
-    fn upload(
-        ctx: &egui::Context,
-        sprite: crate::sprite_png::DecodedSprite,
-        cfg: SpriteConfig,
-    ) -> Self {
+    fn decoded(sprite: crate::sprite_png::DecodedSprite, cfg: SpriteConfig) -> Self {
         let image = egui::ColorImage::from_rgba_unmultiplied(
             [sprite.px[0] as usize, sprite.px[1] as usize],
             &sprite.rgba,
         );
-        let tex = ctx.load_texture("nudge_sprite", image, egui::TextureOptions::NEAREST);
         Self {
-            tex,
+            image: Some(image),
+            tex: None,
             px: sprite.px,
             cfg,
         }
+    }
+}
+
+impl LoadedSprite {
+    /// The texture to draw, uploaded on the first frame that will be painted.
+    fn texture(&mut self, ctx: &egui::Context) -> Option<egui::TextureId> {
+        if self.tex.is_none()
+            && ctx.input(|i| i.viewport().visible().unwrap_or(true))
+            && let Some(image) = self.image.take()
+        {
+            self.tex = Some(ctx.load_texture("nudge_sprite", image, egui::TextureOptions::NEAREST));
+        }
+        self.tex.as_ref().map(|t| t.id())
     }
 }
 
@@ -282,11 +294,10 @@ impl NudgeApp {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn with_sprite(
         mut self,
-        ctx: &egui::Context,
         sprite: crate::sprite_png::DecodedSprite,
         cfg: SpriteConfig,
     ) -> Self {
-        self.sprite = Some(LoadedSprite::upload(ctx, sprite, cfg));
+        self.sprite = Some(LoadedSprite::decoded(sprite, cfg));
         self
     }
 
@@ -302,7 +313,7 @@ impl NudgeApp {
     /// "Applying a change"). Decoding happens here, once per change; the
     /// window is then laid out again by `place_window`, nothing is recreated.
     #[cfg(not(target_arch = "wasm32"))]
-    fn apply_pending_sprite(&mut self, ctx: &egui::Context) {
+    fn apply_pending_sprite(&mut self) {
         if let Some(cfg) = crate::platform::take_pending_sprite() {
             self.pending_sprite = Some(cfg);
         }
@@ -312,9 +323,11 @@ impl NudgeApp {
         };
         self.pending_sprite = None;
         // A PNG that fails the check counts as off (§10): say why, show the
-        // plain card. Dropping the old handle frees its texture.
+        // plain card.
+        // TODO: dropping the old handle queues a free that eframe discards
+        // with this hidden frame, so the old texture stays on the GPU.
         self.sprite = match crate::sprite_png::load_sprite(&cfg) {
-            Some(Ok(decoded)) => Some(LoadedSprite::upload(ctx, decoded, cfg)),
+            Some(Ok(decoded)) => Some(LoadedSprite::decoded(decoded, cfg)),
             Some(Err(reason)) => {
                 eprintln!("[nudge] sprite not shown: {reason}");
                 None
@@ -576,8 +589,8 @@ impl NudgeApp {
         }
     }
 
-    // `ctx` only reaches `apply_pending_sprite`, which the browser build has no
-    // hidden window to apply to.
+    // `ctx` is only needed to hide the native window; the browser build has
+    // none.
     #[cfg_attr(target_arch = "wasm32", expect(unused_variables))]
     fn hide_popup(&mut self, ctx: &egui::Context, action: Action) {
         // The entire spec §4 close decision lives in `decide_close`; this
@@ -697,7 +710,7 @@ impl NudgeApp {
             // Hidden now: a change that waited for this close goes in before
             // the next reveal, which on Windows the tray thread may do
             // before another frame runs.
-            self.apply_pending_sprite(ctx);
+            self.apply_pending_sprite();
         }
     }
 
@@ -756,13 +769,16 @@ impl NudgeApp {
 
         // The sprite is a painting, not a widget (§10): a click on it goes to
         // the field beneath, or past the card to the "outside" branch.
-        if let (Some(sprite), Some(rect)) = (&self.sprite, self.layout.and_then(|l| l.sprite)) {
+        let sprite_rect = self.layout.and_then(|l| l.sprite);
+        if let (Some(sprite), Some(rect)) = (&mut self.sprite, sprite_rect)
+            && let Some(tex) = sprite.texture(ctx)
+        {
             ctx.layer_painter(egui::LayerId::new(
                 egui::Order::Foreground,
                 egui::Id::new("nudge_sprite"),
             ))
             .image(
-                sprite.tex.id(),
+                tex,
                 rect,
                 egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                 egui::Color32::WHITE,
@@ -961,7 +977,7 @@ impl eframe::App for NudgeApp {
     #[cfg(not(target_arch = "wasm32"))]
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         crate::platform::tick(ctx);
-        self.apply_pending_sprite(ctx);
+        self.apply_pending_sprite();
         self.place_window(ctx, frame);
     }
 

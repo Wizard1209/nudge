@@ -76,18 +76,21 @@ fn a_sprite_change_while_visible_waits_for_hide() {
     );
     assert_eq!(first_field(&harness).min, pos2(495.0, 286.0));
 
-    // Esc closes it: the change is applied now, the texture replaced.
+    // Esc closes it: the change is applied now. The texture waits for a
+    // frame that is painted — eframe drops uploads from hidden ones.
     harness.key_press(egui::Key::Escape);
     harness.run();
-    assert_eq!(
-        sprite_textures(&harness),
-        vec![([720, 430], TextureOptions::NEAREST)]
-    );
+    assert_eq!(sprite_textures(&harness), vec![]);
 
-    // The next open draws the re-laid-out card: 679 wide, re-centred.
+    // The next open draws the re-laid-out card, 679 wide and re-centred,
+    // and the sprite over it.
     nudge_web::platform::set_tray_clicked();
     harness.run();
     let field = first_field(&harness);
     assert_eq!(field.min, pos2(395.0, 286.0));
     assert_eq!(field.width(), 679.0);
+    assert_eq!(
+        sprite_textures(&harness),
+        vec![([720, 430], TextureOptions::NEAREST)]
+    );
 }
