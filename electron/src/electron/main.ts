@@ -55,6 +55,15 @@ import {
 import { ElectronAutostartProvider } from "./autostart";
 import { buildTrayIcon, daisyFrame, formatTooltip, type DaisyFrame } from "./trayIcon";
 
+// An uncaught exception in the main process would otherwise come up as a
+// modal "A JavaScript error occurred" box on whatever desktop the app runs
+// on, and stay there until someone clicks it away. This is a workbench that
+// test harnesses launch unattended: die in the terminal instead.
+process.on("uncaughtException", (err) => {
+  console.error("Nudge: uncaught exception in the main process", err);
+  app.exit(1);
+});
+
 // Load the dev server in development, the built files when packaged. The
 // NUDGE_FORCE_PROD escape hatch lets native e2e tests drive an unpackaged
 // build against the *shipped* renderer files (the same path the portable exe
