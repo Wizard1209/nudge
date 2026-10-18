@@ -90,27 +90,52 @@ describe("spriteLayout", () => {
 });
 
 describe("windowOrigin", () => {
-  const workArea = { x: 0, y: 33, width: 1470, height: 833 };
+  // This host: 1470×956 pt with a 33 pt menu bar. 25% of 956 is 239, plus 80
+  // puts the card top at 319.
+  const display = {
+    bounds: { x: 0, y: 0, width: 1470, height: 956 },
+    workArea: { x: 0, y: 33, width: 1470, height: 833 },
+  };
 
-  it("centres the card and puts its top at 25% of the work area", () => {
+  it("centres the card on the monitor and puts its top at 25% of its height + 80", () => {
     const card = { x: 0, y: 0, width: 480, height: 170 };
-    expect(windowOrigin(workArea, card)).toEqual({ x: 495, y: 33 + 208 });
+    expect(windowOrigin(display, card)).toEqual({ x: 495, y: 319 });
+  });
+
+  it("anchors on the monitor, not the work area: a Dock on the left and the menu bar move nothing", () => {
+    const docked = { ...display, workArea: { x: 70, y: 33, width: 1400, height: 833 } };
+    const card = { x: 0, y: 0, width: 480, height: 170 };
+    expect(windowOrigin(docked, card)).toEqual({ x: 495, y: 319 });
   });
 
   it("offsets the window so the card, not the window, lands on the spot", () => {
     const card = { x: 41, y: 100, width: 679, height: 170 };
-    expect(windowOrigin(workArea, card)).toEqual({ x: 396 - 41, y: 33 + 208 - 100 });
+    expect(windowOrigin(display, card)).toEqual({ x: 396 - 41, y: 319 - 100 });
   });
 
-  it("pins the window to the top of the work area when the sprite would stick out above it", () => {
+  it("lets a decoration above the card rise into the menu bar strip as long as it stays on the work area", () => {
     const card = { x: 41, y: 277, width: 679, height: 170 };
-    expect(windowOrigin(workArea, card)).toEqual({ x: 355, y: 33 });
+    expect(windowOrigin(display, card)).toEqual({ x: 355, y: 319 - 277 });
   });
 
-  it("does not pin on a work area tall enough for the sprite", () => {
-    const tall = { x: 0, y: 25, width: 2560, height: 1415 };
+  it("pins the window to the top of the work area when the decoration would stick out above it", () => {
+    const short = {
+      bounds: { x: 0, y: 0, width: 1280, height: 720 },
+      workArea: { x: 0, y: 25, width: 1280, height: 695 },
+    };
     const card = { x: 41, y: 277, width: 679, height: 170 };
-    expect(windowOrigin(tall, card)).toEqual({ x: 941 - 41, y: 25 + 354 - 277 });
+    // 180 + 80 − 277 = −17, which is above the work area; the card then
+    // sits 277 below the work area's top instead.
+    expect(windowOrigin(short, card)).toEqual({ x: 301 - 41, y: 25 });
+  });
+
+  it("does not pin on a monitor tall enough for the decoration", () => {
+    const tall = {
+      bounds: { x: 0, y: 0, width: 2560, height: 1440 },
+      workArea: { x: 0, y: 25, width: 2560, height: 1415 },
+    };
+    const card = { x: 41, y: 277, width: 679, height: 170 };
+    expect(windowOrigin(tall, card)).toEqual({ x: 941 - 41, y: 360 + 80 - 277 });
   });
 });
 

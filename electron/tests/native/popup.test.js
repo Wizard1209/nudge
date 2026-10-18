@@ -60,9 +60,9 @@ describe('popup — Tab navigation must keep focus inside the window', () => {
 });
 
 // Bug 1 (the real one): "on first open only half is visible." The card is
-// positioned `top-[25vh]` — correct for the browser build where the window IS
-// the full screen, but in Electron the window is sized to the card (480×170)
-// and the main process already places it at 25% of the screen. So the 25vh
+// positioned `top-[calc(25vh+80px)]` — correct for the browser build where the
+// window IS the full screen, but in Electron the window is sized to the card
+// (480×170) and the main process already places it at its spec spot. So the
 // offset pushes the card down INSIDE its own window: a transparent strip
 // appears above it (the blurred-desktop band) and the last field is clipped
 // below the fold. The card must fill its window in Electron.

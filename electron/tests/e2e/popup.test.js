@@ -341,18 +341,16 @@ describe('popup visual', () => {
         expect(alpha).toBeLessThanOrEqual(0.95);
     });
 
-    it('card top edge sits ~25% from top of viewport (§1)', async () => {
-        // Spec §1: top edge of card at 25% of screen height. Card grows
-        // downward from that point — explicitly not vertically centred.
+    it('card top edge sits at 25% of the viewport + 80px (§1)', async () => {
+        // Spec §1: top edge of card at 25% of screen height plus 80. Card
+        // grows downward from that point — explicitly not vertically centred.
         const { topY, viewportH } = await page.evaluate(() => {
             const el = document.querySelector('[data-testid="nudge"]');
             const r = el.getBoundingClientRect();
             return { topY: r.top, viewportH: window.innerHeight };
         });
-        const ratio = topY / viewportH;
-        // Tolerate ±1% for sub-pixel layout; this is a positional spec, not pixel-perfect.
-        expect(ratio).toBeGreaterThanOrEqual(0.24);
-        expect(ratio).toBeLessThanOrEqual(0.26);
+        // ±1px for sub-pixel layout; this is a positional spec, not pixel-perfect.
+        expect(Math.abs(topY - (viewportH * 0.25 + 80))).toBeLessThanOrEqual(1);
     });
 
     it('card has backdrop-filter blur (frosted glass, §2)', async () => {

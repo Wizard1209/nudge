@@ -33,14 +33,16 @@ explicitly. Otherwise the spec applies to both.
   shadow are visible during in-browser verification; the native build has
   the desktop or other windows behind it.
 - Palette: only shades of gray, no accent color.
-- Card position: horizontally centered. Vertically — the top edge of the card
-  sits at 25% of screen height from the top (the upper third, at natural eye
-  level, noticeably above the geometric center). The card grows downward
-  from this anchor. When the window is taller than the card (a decoration
-  above it) and that anchor would put the window's top above the work area,
-  the window is pinned to the top of the work area instead and the card
-  moves down by the overhang: the decoration is shown whole, as high as the
-  screen allows. Nothing is pinned at the bottom.
+- Card position: horizontally centred on the screen. Vertically — the top
+  edge of the card sits at 25% of the screen height plus 80 pt from the top
+  (the upper third, at natural eye level, noticeably above the geometric
+  center). Both are measured on the whole monitor, menu bar and Dock
+  included. The card grows downward from this anchor. When a decoration
+  above the card would rise past the top of the work area (the strip the
+  menu bar or taskbar takes), the window is pinned to the top of the work
+  area instead and the card moves down by the overhang: the decoration is
+  shown whole, as high as the screen allows. Nothing is pinned at the
+  bottom.
 
 ## 2. Card
 

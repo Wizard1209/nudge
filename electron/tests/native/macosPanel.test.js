@@ -36,7 +36,8 @@ describe.skipIf(process.platform !== 'darwin')('macOS popup window', () => {
       const w = BrowserWindow.getAllWindows().find((x) => x.getTitle() === 'Nudge');
       return { visible: w.isVisible(), focused: w.isFocused(), bounds: w.getBounds() };
     });
-  const workArea = () => app.evaluate(({ screen }) => screen.getPrimaryDisplay().workArea);
+  const display = () => app.evaluate(({ screen }) => screen.getPrimaryDisplay());
+  const workArea = async () => (await display()).workArea;
   const state = () => app.evaluate(() => globalThis.__nudgeTest.getState());
 
   async function waitFor(pred, ms, step = 20) {
@@ -119,8 +120,10 @@ describe.skipIf(process.platform !== 'darwin')('macOS popup window', () => {
       console.log('[after hotkey]', JSON.stringify(after), 'probe home:', await probeHome());
       expect(after.visible).toBe(true);
       expect(inside(after.bounds, wa), `bounds ${JSON.stringify(after.bounds)} outside workArea ${JSON.stringify(wa)}`).toBe(true);
-      expect(after.bounds.y).toBe(Math.round(wa.y + wa.height * 0.25));
-      expect(after.bounds.x).toBe(Math.round(wa.x + (wa.width - after.bounds.width) / 2));
+      // Spec §1: card top at 25% of the monitor's height + 80, centred on it.
+      const { bounds: mon } = await display();
+      expect(after.bounds.y).toBe(Math.round(mon.y + mon.height * 0.25) + 80);
+      expect(after.bounds.x).toBe(Math.round(mon.x + (mon.width - after.bounds.width) / 2));
       expect(after.focused).toBe(true);
     } finally {
       // Leave the desktop as found: a second wallpaper click ends reveal mode.

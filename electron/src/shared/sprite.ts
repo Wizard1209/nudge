@@ -49,19 +49,30 @@ export function spriteLayout(card: Size, sprite: Rect): SpriteLayout {
   };
 }
 
-/** Where the card's top edge goes: 25% of the work area down (spec §1). */
+/**
+ * Where the card's top edge goes (spec §1): 25% of the monitor's height down,
+ * plus 80 pt.
+ */
 export const CARD_TOP_FRACTION = 0.25;
+export const CARD_TOP_OFFSET = 80;
+
+/** The monitor the popup goes on: its full extent and the part free of menu bar, Dock and taskbar. */
+export interface Display {
+  bounds: Rect;
+  workArea: Rect;
+}
 
 /**
  * Window origin that puts the card (given in window coordinates) at its spec
- * spot: horizontally centred in the work area, top edge at 25% of its height.
- * A sprite above the card can push the window top above the work area; the
- * window is then pinned to the top instead, and the card moves down by the
- * overhang. Nothing is pinned at the bottom: a card may hang off there.
+ * spot: horizontally centred on the monitor, top edge at 25% of the monitor's
+ * height plus 80 pt. A decoration above the card can push the window top
+ * above the work area; the window is then pinned to the work area's top
+ * instead, and the card moves down by the overhang. Nothing is pinned at the
+ * bottom: a card may hang off there.
  */
-export function windowOrigin(workArea: Rect, card: Rect): { x: number; y: number } {
-  const x = Math.round(workArea.x + (workArea.width - card.width) / 2) - card.x;
-  const y = Math.round(workArea.y + workArea.height * CARD_TOP_FRACTION) - card.y;
+export function windowOrigin({ bounds, workArea }: Display, card: Rect): { x: number; y: number } {
+  const x = Math.round(bounds.x + (bounds.width - card.width) / 2) - card.x;
+  const y = Math.round(bounds.y + bounds.height * CARD_TOP_FRACTION) + CARD_TOP_OFFSET - card.y;
   return { x, y: Math.max(workArea.y, y) };
 }
 

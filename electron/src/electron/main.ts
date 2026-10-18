@@ -219,16 +219,16 @@ function becameFocused(w: BrowserWindow): Promise<boolean> {
   });
 }
 
-// Spec §1: horizontally centered, top edge at 25% of screen height — card
-// grows downward from there (upper third, eye level; clearly above the
-// geometric centre). With a sprite the window spans card ∪ sprite and the
-// card sits inside it at its layout offset; a sprite too tall for the work
-// area pins the window to its top and the card moves down (`windowOrigin`).
+// Spec §1: horizontally centred on the monitor, top edge at 25% of its height
+// plus 80 pt — the card grows downward from there. With a sprite the window
+// spans card ∪ sprite and the card sits inside it at its layout offset; a
+// sprite that would rise above the work area pins the window to its top and
+// the card moves down (`windowOrigin`).
 function positionCard() {
   if (!win) return;
   const cursor = screen.getCursorScreenPoint();
-  const { workArea } = screen.getDisplayNearestPoint(cursor);
-  const { x, y } = windowOrigin(workArea, cardRect());
+  const display = screen.getDisplayNearestPoint(cursor);
+  const { x, y } = windowOrigin(display, cardRect());
   win.setPosition(x, y);
 }
 

@@ -8,6 +8,7 @@
   import {
     CARD_WIDTH,
     CARD_HEIGHT,
+    CARD_TOP_OFFSET,
     spriteLayout,
     type SpriteView,
   } from "../shared/sprite";
@@ -66,11 +67,12 @@
   }
 
   // Where the window box sits on the page. Electron: the window is the box.
-  // Browser: offset so the card lands at its spec spot (centred, top 25vh).
+  // Browser: offset so the card lands at its spec spot (centred, top at
+  // 25vh + 80px).
   const stageLeft = (s: SpriteView) =>
     isElectron ? "0px" : `calc(50% - ${s.layout.card.width / 2 + s.layout.card.x}px)`;
   const stageTop = (s: SpriteView) =>
-    isElectron ? "0px" : `calc(25vh - ${s.layout.card.y}px)`;
+    isElectron ? "0px" : `calc(25vh + ${CARD_TOP_OFFSET - s.layout.card.y}px)`;
 
   onMount(() => {
     doingInput?.focus();
@@ -257,7 +259,7 @@
     <form
       onkeydown={handleKeydown}
       onsubmit={(e) => e.preventDefault()}
-      class="absolute z-10 {sprite ? '' : `left-1/2 -translate-x-1/2 w-[480px] ${isElectron ? 'top-0' : 'top-[25vh]'}`} bg-zinc-900/80 backdrop-blur-md text-white rounded-lg shadow-2xl overflow-hidden"
+      class="absolute z-10 {sprite ? '' : `left-1/2 -translate-x-1/2 w-[480px] ${isElectron ? 'top-0' : 'top-[calc(25vh+80px)]'}`} bg-zinc-900/80 backdrop-blur-md text-white rounded-lg shadow-2xl overflow-hidden"
       style:left={sprite ? `calc(${stageLeft(sprite)} + ${sprite.layout.card.x}px)` : undefined}
       style:top={sprite ? `calc(${stageTop(sprite)} + ${sprite.layout.card.y}px)` : undefined}
       style:width={sprite ? `${sprite.layout.card.width}px` : undefined}

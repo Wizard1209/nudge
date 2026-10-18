@@ -43,9 +43,9 @@ describe('sprite over the card', () => {
     it('makes the card cardWidth wide and keeps it at its spec spot', async () => {
         const { card } = await rects();
         expect(card.width).toBe(679);
-        // Spec §1: centred, top edge at 25vh.
+        // Spec §1: centred, top edge at 25vh + 80px.
         expect(card.left + card.width / 2).toBe(SPRITE_VIEWPORT.width / 2);
-        expect(card.top).toBe(SPRITE_VIEWPORT.height * 0.25);
+        expect(card.top).toBe(SPRITE_VIEWPORT.height * 0.25 + 80);
     });
 
     it('keeps the hair tail outside the card', async () => {
@@ -97,6 +97,6 @@ describe('sprite at another placement', () => {
         });
         expect([g.sprite.left - g.card.left, g.sprite.top - g.card.top]).toEqual([200, 120]);
         expect(g.card.width).toBe(480);
-        expect(g.card.top).toBe(SPRITE_VIEWPORT.height * 0.25);
+        expect(g.card.top).toBe(SPRITE_VIEWPORT.height * 0.25 + 80);
     });
 });

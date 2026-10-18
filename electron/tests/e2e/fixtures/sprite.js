@@ -5,8 +5,8 @@ export const SPRITE_FIXTURE_PATH = '/tests/e2e/fixtures/sprite-green.png';
 // (-41, -277) from the card's, on a 679px card.
 export const SPRITE_URL = `/?sprite=${SPRITE_FIXTURE_PATH}&x=-41&y=-277&cardWidth=679`;
 
-// Tall enough that the sprite above the card (card top at 25vh, 277px of
-// sprite above it) stays inside the viewport.
+// Tall enough that the sprite above the card (card top at 25vh + 80px, 277px
+// of sprite above it) stays inside the viewport.
 export const SPRITE_VIEWPORT = { width: 1000, height: 1200 };
 
 /** RGB of one screen pixel, read from a 1×1 screenshot decoded in the page. */
