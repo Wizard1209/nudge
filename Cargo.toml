@@ -133,12 +133,15 @@ dirs = "6"
 # crate is fully cfg-gated out of wasm via the `cfg(not(target_arch = "wasm32"))`
 # scope so the browser build never pulls it in.
 notify = "8"
+# Decodes the sprite PNG (`sprite_png::decode_rgba`); the header inspection
+# is hand-rolled. Already in the tree via eframe → egui-winit → arboard, so
+# this adds no crate to the build. The native capture tests use it too.
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]
 tempfile = "3"
-# Used only by the #[ignore]'d native capture tests: encode the window grab to
-# PNG (image) and submit it to an LLM vision judge over HTTPS (ureq + base64).
-image = { version = "0.25", default-features = false, features = ["png"] }
+# Used only by the #[ignore]'d native capture tests: submit the window grab
+# to an LLM vision judge over HTTPS.
 ureq = { version = "2", features = ["json"] }
 base64 = "0.22"
 # Headless AccessKit-driven tests against the real eframe apps (tests/kittest_card.rs).

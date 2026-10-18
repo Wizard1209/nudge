@@ -14,3 +14,7 @@ TODO.md
 .worktrees/
 node_modules/
 dist/
+
+# Root-level PNGs are scratch; the real sprite lives outside the repo (spec §10).
+/*.png
+sprites/
