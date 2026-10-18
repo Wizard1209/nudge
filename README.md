@@ -149,6 +149,8 @@ This repo holds two implementations of the same spec. Alongside the Rust app
 lives [`electron/`](electron/README.md) — the **prototyping harness** where new
 features and design changes are tried first, because Electron is fast to build
 and easy to inspect visually. The outcome is captured in the shared spec under
-[`docs/`](docs), the contract both implementations follow, and then ported to
-Rust. The released product is the Rust binary only; the Electron app is a
-workbench, fully rewritable from the spec.
+[`docs/`](docs), the contract both implementations follow, the tests are
+derived from the spec, and the Rust port is written against them. The steps
+are listed in [`electron/README.md`](electron/README.md). The released product
+is the Rust binary only; the Electron app is a workbench, fully rewritable
+from the spec.
