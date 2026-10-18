@@ -89,6 +89,12 @@ Full contract: [docs/journal-spec.md](docs/journal-spec.md)
   `HKCU\…\Run\Nudge` on Windows and with a LaunchAgent plist at
   `~/Library/LaunchAgents/com.wizard1209.nudge.plist` on macOS; see
   `docs/design-spec.md` §9.
+- Sprite: a `sprite` block in the same `config.json` — `enabled`, `path`
+  (an absolute path to a PNG with a transparent background), `x`, `y` (the
+  sprite's top-left corner relative to the card's, in points, either may be
+  negative) and `card_width` (the card's width while the sprite is on). Off
+  by default. The PNG is drawn in front of the card at its native pixels;
+  see `docs/design-spec.md` §10.
 
 ## Installing on macOS
 
@@ -110,8 +116,14 @@ in the menu bar is where Settings and Quit live.
 ## Settings
 
 The settings window opens from the tray menu (`Settings`) and edits the same
-`config.json` (hotkey, interval, autostart). Edits are picked up by the
-running app immediately via a file watcher.
+`config.json` (hotkey, interval, autostart, sprite). Edits are picked up by
+the running app immediately via a file watcher; a sprite change is applied
+the next time the popup is hidden.
+
+The sprite row has the five fields of the `sprite` block; `Browse…` picks the
+PNG with the system's file dialog (macOS). `Save` refuses an enabled sprite
+whose file is missing, not a PNG, or has no transparent background, and says
+which.
 
 The hotkey is typed in, in any of the spellings above — `⌥⌘J`, `Alt+Cmd+J`
 and `alt+cmd+j` are one combination. Full grammar: `docs/design-spec.md` §5.

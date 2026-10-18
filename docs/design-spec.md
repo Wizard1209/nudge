@@ -616,11 +616,11 @@ consistency but have no active UI effect:
   explicitly (hotkey, interval). An autostart change already applied is of
   course not rolled back — it was committed at the moment of the click.
 
-## 10. Sprite overlay (Electron prototype only)
+## 10. Sprite overlay
 
 An optional PNG — a character, a mascot — drawn in front of the popup card.
-It is implemented in the Electron prototype; this section is the behaviour
-the native builds port.
+Both implementations follow this section. Pending on Windows: the window
+covering the work area (§1) and `Browse…`.
 
 ### Config
 

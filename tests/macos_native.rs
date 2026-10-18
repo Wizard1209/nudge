@@ -63,7 +63,7 @@
 mod common;
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use core_foundation::base::{CFType, TCFType};
@@ -111,6 +111,14 @@ impl Drop for SandboxedApp {
     }
 }
 
+/// The sprite the sprite cases show: a 720×430 px silhouette, every pixel
+/// either `(0,255,0,0)` or `(0,255,0,255)`, opaque from (4,6) to (717,424).
+/// Embedded rather than read from the tree, because the guest receives only
+/// binaries.
+const SPRITE_GREEN: &[u8] = include_bytes!("../electron/tests/e2e/fixtures/sprite-green.png");
+/// Where `launch_with_config` writes the fixture, relative to `$HOME`.
+const SPRITE_FILE: &str = "sprite.png";
+
 impl SandboxedApp {
     fn launch() -> Self {
         let home = tempfile::tempdir().expect("temp HOME");
@@ -127,25 +135,48 @@ impl SandboxedApp {
 
     /// Like `launch`, but seeds `config.json` with the given interval
     /// *before* the binary is spawned, instead of letting the app write its
-    /// own first-run default. Uses the exact schema the app itself writes:
-    /// `{"hotkey": "Ctrl+Shift+Space", "default_interval_minutes": ..., "autostart": false}`.
-    /// Pre-seeding avoids a race with the app's own first-run write, and is
-    /// what lets a 3s interval (0.05 min) drive the reappearance test instead
-    /// of waiting out a real-world default.
+    /// own first-run default. Pre-seeding avoids a race with the app's own
+    /// first-run write, and is what lets a 3s interval (0.05 min) drive the
+    /// reappearance test instead of waiting out a real-world default.
     fn launch_with_interval(minutes: f64) -> Self {
+        Self::launch_with_config(&format!(
+            r#"{{"hotkey": "Ctrl+Shift+Space", "default_interval_minutes": {minutes}, "autostart": false}}"#
+        ))
+    }
+
+    /// Like `launch`, but with this `config.json` in place before the binary
+    /// is spawned. The green sprite fixture is written into HOME first, and
+    /// `{sprite}` in `config` stands for its absolute path.
+    fn launch_with_config(config: &str) -> Self {
+        Self::launch_inner(config, false)
+    }
+
+    /// The same, with stderr captured so a test can assert on what the app
+    /// logged. Read it with [`SandboxedApp::stderr_after_exit`], which kills
+    /// the child first — the pipe is never drained while the process runs.
+    fn launch_with_config_logging(config: &str) -> Self {
+        Self::launch_inner(config, true)
+    }
+
+    fn launch_inner(config: &str, capture_stderr: bool) -> Self {
         let home = tempfile::tempdir().expect("temp HOME");
+        std::fs::create_dir_all(home.path().join("Documents")).expect("Documents");
+        let sprite = home.path().join(SPRITE_FILE);
+        std::fs::write(&sprite, SPRITE_GREEN).expect("write the sprite fixture");
         let config_dir = home.path().join(CONFIG_SUBDIR);
         std::fs::create_dir_all(&config_dir).expect("config dir");
         std::fs::write(
             config_dir.join("config.json"),
-            format!(
-                r#"{{"hotkey": "Ctrl+Shift+Space", "default_interval_minutes": {minutes}, "autostart": false}}"#
-            ),
+            config.replace("{sprite}", &sprite.display().to_string()),
         )
         .expect("seed config.json");
 
-        let child = Command::new(binary_path())
-            .env("HOME", home.path())
+        let mut cmd = Command::new(binary_path());
+        cmd.env("HOME", home.path());
+        if capture_stderr {
+            cmd.stderr(Stdio::piped());
+        }
+        let child = cmd
             .spawn()
             .expect("spawn nudge — run `cargo build --bin nudge` first");
 
@@ -153,8 +184,25 @@ impl SandboxedApp {
         Self { child, home }
     }
 
+    /// Kill the child and return everything it wrote to stderr. Only valid on
+    /// an app made by [`SandboxedApp::launch_with_config_logging`].
+    fn stderr_after_exit(&mut self) -> String {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let mut text = String::new();
+        if let Some(mut pipe) = self.child.stderr.take() {
+            use std::io::Read;
+            let _ = pipe.read_to_string(&mut text);
+        }
+        text
+    }
+
     fn pid(&self) -> u32 {
         self.child.id()
+    }
+
+    fn sprite_path(&self) -> PathBuf {
+        self.home.path().join(SPRITE_FILE)
     }
 
     fn config_path(&self) -> PathBuf {
@@ -172,6 +220,15 @@ fn binary_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("target/debug/nudge")
 }
 
+/// A `config.json` whose `sprite` block (spec §10) points at the fixture
+/// `launch_with_config` writes into HOME.
+fn config_with_sprite(enabled: bool, x: i32, y: i32, card_width: u32) -> String {
+    format!(
+        r#"{{"hotkey": "Ctrl+Shift+Space", "default_interval_minutes": 10, "autostart": false,
+  "sprite": {{"enabled": {enabled}, "path": "{{sprite}}", "x": {x}, "y": {y}, "card_width": {card_width}}}}}"#
+    )
+}
+
 /// Screen-space rect, top-left origin, in points (not backing pixels).
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Rect {
@@ -187,6 +244,14 @@ impl Rect {
             && other.x < self.x + self.w
             && self.y < other.y + other.h
             && other.y < self.y + self.h
+    }
+
+    /// The same rect to within a point on every side.
+    fn same_as(&self, other: &Rect) -> bool {
+        (self.x - other.x).abs() <= 1.0
+            && (self.y - other.y).abs() <= 1.0
+            && (self.w - other.w).abs() <= 1.0
+            && (self.h - other.h).abs() <= 1.0
     }
 }
 
@@ -294,10 +359,11 @@ fn window_rect(pid: u32) -> Option<WindowInfo> {
         // which macOS represents as a nonzero CGWindowLevel — surfaced here as
         // `kCGWindowLayer`. This is the reliable signal, confirmed empirically:
         // the same pid also owns an unnamed 500x500 layer-0 window (an
-        // AppKit/winit-internal surface, not the popup) that is *larger* than
-        // the real 520x320 popup, so ranking candidates by area alone picks
-        // the wrong one. Elevated-layer candidates win outright; only among
-        // ties (or if none are elevated) does area break the tie.
+        // AppKit/winit-internal surface, not the popup). While visible the
+        // popup covers the work area (spec §1) and so happens to be the
+        // larger of the two, but that is the geometry of the day, not the
+        // rule: elevated-layer candidates win outright, and only among ties
+        // (or if none are elevated) does area break the tie.
         let layer_key = unsafe { CFString::wrap_under_get_rule(kCGWindowLayer) };
         let elevated = dict
             .find(&layer_key)
@@ -347,9 +413,10 @@ fn popup_visible(pid: u32) -> bool {
 /// System Events is used here ONLY to deliver a keystroke, never to read
 /// window geometry: its AX origin disagrees with Core Graphics for this same
 /// window (System Events reports this window at y=-1137/-1160, while
-/// `CGWindowListCopyWindowInfo` reports a stable, centred (475, 162) — see
-/// `window_is_within_the_visible_screen`). Any geometry assertion in this
-/// module must go through `window_rect`, not through System Events.
+/// `CGWindowListCopyWindowInfo` reports the work area — see
+/// `window_covers_the_work_area_and_the_card_sits_at_its_anchor`). Any
+/// geometry assertion in this module must go through `window_rect`, not
+/// through System Events.
 fn dismiss_with_escape() {
     let focused = Command::new("osascript")
         .arg("-e")
@@ -390,6 +457,109 @@ fn main_display_frame() -> Rect {
     }
 }
 
+/// `NSScreen.mainScreen`'s `visibleFrame` — in AppKit's bottom-left space,
+/// as read — and its `backingScaleFactor`.
+///
+/// Read from AppKit through a JXA one-liner: both are `NSScreen` facts with
+/// no Core Graphics twin (`CGDisplayPixelsWide` reports the mode's logical
+/// size, 1024 on the guest's 2x display), and JXA reaches AppKit from any
+/// thread.
+fn main_screen_facts() -> (Rect, f64) {
+    let out = Command::new("osascript")
+        .args([
+            "-l",
+            "JavaScript",
+            "-e",
+            r#"ObjC.import("AppKit"); const s = $.NSScreen.mainScreen; const f = s.visibleFrame; [f.origin.x, f.origin.y, f.size.width, f.size.height, s.backingScaleFactor].join(" ")"#,
+        ])
+        .output()
+        .expect("osascript not runnable");
+    assert!(
+        out.status.success(),
+        "osascript could not read NSScreen.mainScreen: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: Vec<f64> = String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .map(|n| n.parse().expect("NSScreen facts are numbers"))
+        .collect();
+    assert_eq!(
+        v.len(),
+        5,
+        "visibleFrame plus the scale is five numbers, got {v:?}"
+    );
+    (
+        Rect {
+            x: v[0],
+            y: v[1],
+            w: v[2],
+            h: v[3],
+        },
+        v[4],
+    )
+}
+
+/// The main display's work area — what the menu bar and the Dock leave free
+/// — in the same top-left space as `window_rect`. This is the window while
+/// the popup is visible (spec §1). AppKit's origin is bottom-left, so the
+/// rect is flipped with the display's height — the one conversion this file
+/// otherwise avoids, done in one place.
+fn work_area() -> Rect {
+    let (visible, _) = main_screen_facts();
+    let display = main_display_frame();
+    Rect {
+        x: visible.x,
+        y: display.y + display.h - (visible.y + visible.h),
+        w: visible.w,
+        h: visible.h,
+    }
+}
+
+/// Backing pixels per point of the main display: 2 on a Retina panel. A
+/// sprite is drawn at 1 PNG pixel = 1 device pixel (spec §10), so this is
+/// what turns the fixture's pixel size into points.
+fn display_scale() -> f64 {
+    main_screen_facts().1
+}
+
+/// The sprite fixture's size in points on this display.
+fn sprite_points() -> (f64, f64) {
+    let scale = display_scale();
+    (720.0 / scale, 430.0 / scale)
+}
+
+/// The fixture decoded, with the bbox of its opaque pixels: what its green
+/// looks like before the app draws it, so the capture is compared with the
+/// file rather than with numbers copied from it.
+fn sprite_fixture() -> (image::RgbaImage, (u32, u32, u32, u32)) {
+    let img = image::load_from_memory(SPRITE_GREEN)
+        .expect("the embedded fixture decodes")
+        .to_rgba8();
+    let bbox = bbox_of(&img, is_green).expect("the fixture has opaque pixels");
+    (img, bbox)
+}
+
+/// Where the fixture's opaque pixels begin, in its own rows.
+fn sprite_opaque_top() -> u32 {
+    sprite_fixture().1.1
+}
+
+/// Where spec §1 puts the card's top edge: a quarter of the monitor's height,
+/// floored, plus 80 pt.
+fn card_anchor_top(display: &Rect) -> f64 {
+    display.y + (display.h / 4.0).floor() + 80.0
+}
+
+/// A bbox of capture pixels as a screen rect in points.
+fn bbox_rect(window: &WindowInfo, scale: f64, (x0, y0, x1, y1): (u32, u32, u32, u32)) -> Rect {
+    Rect {
+        x: window.rect.x + f64::from(x0) / scale,
+        y: window.rect.y + f64::from(y0) / scale,
+        w: f64::from(x1 - x0 + 1) / scale,
+        h: f64::from(y1 - y0 + 1) / scale,
+    }
+}
+
 /// Capture one window on its own, alpha channel intact.
 ///
 /// `-l <windowID>` grabs the window's own output instead of a screen region,
@@ -427,27 +597,52 @@ fn capture_window(id: u32, dest: &Path) -> image::RgbaImage {
         .to_rgba8()
 }
 
+/// Whether a captured pixel is the sprite fixture's green, with room for the
+/// colour management between the GL surface and the PNG on disk. Nothing the
+/// card paints — greys, the red error line — comes near it.
+fn is_green(p: &image::Rgba<u8>) -> bool {
+    let [r, g, b, a] = p.0;
+    a > 128 && g >= 200 && r <= 80 && b <= 80
+}
+
+/// The smallest pixel box holding every pixel `keep` accepts, as inclusive
+/// indices; `None` if it accepts none.
+fn bbox_of(
+    img: &image::RgbaImage,
+    keep: impl Fn(&image::Rgba<u8>) -> bool,
+) -> Option<(u32, u32, u32, u32)> {
+    let mut found: Option<(u32, u32, u32, u32)> = None;
+    for (x, y, p) in img.enumerate_pixels() {
+        if !keep(p) {
+            continue;
+        }
+        found = Some(match found {
+            None => (x, y, x, y),
+            Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x), y1.max(y)),
+        });
+    }
+    found
+}
+
 /// The painted card's bounds inside a window capture, as pixel indices.
 ///
 /// Found on the alpha channel, which is unambiguous here: the popup clears its
 /// framebuffer to a fully transparent black (`CLEAR_COLOR_TRANSPARENT`), so
 /// everything the app did not paint is alpha 0. The 128 threshold also
 /// excludes the card's own drop shadow, which peaks well under half opacity
-/// just outside the card edge.
+/// just outside the card edge. The sprite's green is left out, so a sprite
+/// drawn over the card does not widen the answer — as long as it leaves some
+/// of every card edge showing, which the sprite cases arrange.
 fn card_bbox(img: &image::RgbaImage) -> (u32, u32, u32, u32) {
     let (w, h) = img.dimensions();
-    let solid = |x: u32, y: u32| img.get_pixel(x, y).0[3] > 128;
+    bbox_of(img, |p| p.0[3] > 128 && !is_green(p)).unwrap_or_else(|| {
+        panic!("no painted pixels in the {w}x{h} window capture — the popup rendered nothing")
+    })
+}
 
-    let mid_y = h / 2;
-    let mid_x = w / 2;
-    let xs: Vec<u32> = (0..w).filter(|&x| solid(x, mid_y)).collect();
-    let ys: Vec<u32> = (0..h).filter(|&y| solid(mid_x, y)).collect();
-    assert!(
-        !xs.is_empty() && !ys.is_empty(),
-        "no painted pixels across the middle of the {w}x{h} window capture — \
-         the popup rendered nothing"
-    );
-    (xs[0], ys[0], *xs.last().unwrap(), *ys.last().unwrap())
+/// The sprite's opaque pixels in a window capture, if any are on it.
+fn sprite_bbox(img: &image::RgbaImage) -> Option<(u32, u32, u32, u32)> {
+    bbox_of(img, is_green)
 }
 
 /// Luminance of a captured pixel composited over black.
@@ -566,56 +761,68 @@ fn a_config_left_in_documents_is_carried_over_to_application_support() {
 // Acceptance criteria for the port
 // ---------------------------------------------------------------------------
 
-/// The spotlight lands where spec §1 says, in points.
+/// The window is the work area and the card lands where spec §1 says, in
+/// points.
 ///
-/// The unit test for `window_position` cannot see the failure this catches.
+/// The unit tests for `shield_layout` cannot see the failure this catches.
 /// `CGWindowListCopyWindowInfo` reports points, `ViewportCommand::OuterPosition`
-/// takes points, but the *pixels* of this display are 2940x1912 — so a
-/// placement computed the Windows way (`GetSystemMetrics` returns physical
-/// pixels) would put the card at (-235, 478) and still pass a
-/// pure-arithmetic test. Only a measurement of the real window separates the
-/// two.
+/// takes points, but the *pixels* of a Retina display are twice its points —
+/// so a placement computed the Windows way (`GetSystemMetrics` returns
+/// physical pixels) would put the card's top twice as far down and still pass
+/// a pure-arithmetic test. Only a measurement of the real window separates
+/// the two.
 ///
 /// Worth knowing before trusting any other geometry here: the AX path
-/// disagrees. System Events reports this same window at y=-1137/-1160 — with a
-/// correct 520x320 size, which is what makes the reading convincing — and that
-/// negative origin is an artifact of the AX coordinate source, not the app.
-/// Anything that measures placement must go through `CGWindowListCopyWindowInfo`.
+/// disagrees. System Events has reported this window with a negative origin
+/// while Core Graphics reported it on screen — an artifact of the AX
+/// coordinate source, not the app. Anything that measures placement must go
+/// through `CGWindowListCopyWindowInfo`.
 ///
 /// This check also has to run before any capture-based assertion: those pass
 /// silently on an empty crop when the window is not on screen.
 #[test]
-#[ignore = "needs a GUI session; run via --ignored"]
-fn window_is_within_the_visible_screen() {
+#[ignore = "needs a GUI session + Screen Recording grant; run via --ignored"]
+fn window_covers_the_work_area_and_the_card_sits_at_its_anchor() {
     let app = SandboxedApp::launch();
     let window = window_rect(app.pid()).expect("no nudge window found");
     let display = main_display_frame();
-    eprintln!("window={:?} display={display:?}", window.rect);
+    let work = work_area();
+    eprintln!("window={:?} display={display:?} work={work:?}", window.rect);
 
     assert!(
         window.rect.intersects(&display),
         "popup is off-screen at {:?} — invisible to the user despite a live process",
         window.rect
     );
+    assert!(
+        window.rect.same_as(&work),
+        "the window is {:?}, not the work area {work:?} — spec §1: while visible it \
+         covers the monitor's work area, so a click anywhere beside the card closes \
+         the popup and reaches nothing",
+        window.rect
+    );
 
-    use nudge_web::nudge_state::{POPUP_SIZE, window_position};
-    let want = window_position((display.w as u32, display.h as u32), POPUP_SIZE);
-    assert_eq!(
-        (window.rect.x as i32, window.rect.y as i32),
-        want,
-        "spec §1 wants the card horizontally centred with its top at 25% of the \
-         {}x{}-point display. Feeding the same arithmetic this display's *pixels* \
-         instead would land it at {:?} — which is the mistake this assertion exists \
-         to catch, so check the units before adjusting the expectation.",
+    let (window, img) = capture_card(&app);
+    let card = bbox_rect(&window, capture_scale(&img, &window), card_bbox(&img));
+    eprintln!("card={card:?}");
+    let centre = card.x + card.w / 2.0;
+    let want_centre = display.x + display.w / 2.0;
+    assert!(
+        (centre - want_centre).abs() <= 1.0,
+        "the card's centre is at x={centre}, the display's at x={want_centre} — spec §1 \
+         centres the card on the monitor"
+    );
+    let want_top = card_anchor_top(&display);
+    let pixels_top = display.y + (display.h * display_scale() / 4.0).floor() + 80.0;
+    assert!(
+        (card.y - want_top).abs() <= 1.0,
+        "spec §1 wants the card's top at 25% of the {}x{}-point display plus 80 pt, \
+         at y={want_top}; it is at y={}. Feeding the same arithmetic this display's \
+         *pixels* instead would put it at y={pixels_top} — which is the mistake this \
+         assertion exists to catch, so check the units before adjusting the expectation.",
         display.w,
         display.h,
-        window_position(
-            (
-                CGDisplay::main().pixels_wide() as u32,
-                CGDisplay::main().pixels_high() as u32,
-            ),
-            POPUP_SIZE,
-        ),
+        card.y
     );
 }
 
@@ -1903,25 +2110,27 @@ fn press_return() {
 // Revealing the popup after the desktop has had its way with it
 // ---------------------------------------------------------------------------
 
-/// A wallpaper click must not leave the popup somewhere the next reveal cannot
-/// be seen.
+/// A reveal-desktop sweep must not leave the popup somewhere the next reveal
+/// cannot be seen.
 ///
 /// "Click wallpaper to reveal desktop" (the macOS 14+ default) sweeps every
 /// window AppKit considers transient off the screen, and a window at any level
-/// above normal is transient unless it says otherwise. The popup hides on the
-/// focus loss the same click causes (spec §4), so the sweep shows only when
-/// the next reveal orders the window back in while the desktop is still
+/// above normal is transient unless it says otherwise. While the popup is
+/// visible its window covers the work area (spec §1), so no click reaches the
+/// wallpaper then; the sweep is provoked while the popup is hidden, and shows
+/// when the next reveal orders the window back in while the desktop is still
 /// revealed: it comes in above the screen. The displacement is the window
 /// server's, not the window's — AppKit's frame still reads the spec place —
 /// so re-placing the window does not undo it.
 ///
 /// Whether the click really entered reveal mode is checked on a window of
 /// another app, not on the popup: the popup's own movement is the thing under
-/// test, and its hiding happens on any focus loss, reveal or not.
+/// test.
 #[test]
 #[ignore = "needs a GUI session + PostEvent grant; run in the guest via scripts/native-tests-macos.sh"]
-fn popup_survives_a_wallpaper_click_and_reappears_on_screen() {
+fn popup_reappears_at_its_place_after_a_reveal_desktop_sweep() {
     let display = main_display_frame();
+    let work = work_area();
     let probe = foreign_probe_window(&display).expect(
         "no on-screen window of another app to watch — the reveal-desktop sweep \
          cannot be observed without one (the guest normally has Terminal/Finder up)",
@@ -1933,7 +2142,11 @@ fn popup_survives_a_wallpaper_click_and_reappears_on_screen() {
         popup_visible(app.pid()),
         "launch popup never appeared — harness problem, not a placement problem"
     );
-    let before = window_rect(app.pid()).expect("no nudge window").rect;
+    dismiss_with_escape();
+    assert!(
+        wait_until(Duration::from_secs(1), || !popup_visible(app.pid())),
+        "Esc did not dismiss the popup — synthetic input is not reaching the app"
+    );
 
     let wallpaper = (display.x + 4.0, display.y + display.h / 2.0);
     let covering = windows_at(wallpaper);
@@ -1948,33 +2161,14 @@ fn popup_survives_a_wallpaper_click_and_reappears_on_screen() {
         wallpaper,
     };
     click_at(wallpaper);
-
-    // Sampled densely rather than read once, to catch the popup moving in the
-    // moment before it hides on the focus loss the click also causes.
-    let mut entered_reveal = false;
-    let mut popup_frames: Vec<(Rect, bool)> = Vec::new();
-    let sample_until = std::time::Instant::now() + Duration::from_secs(2);
-    while std::time::Instant::now() < sample_until {
-        entered_reveal |= window_rect_by_id(probe.0).is_some_and(|r| r != probe.1);
-        if let Some(w) = window_rect(app.pid())
-            && popup_frames.last() != Some(&(w.rect, w.on_screen))
-        {
-            popup_frames.push((w.rect, w.on_screen));
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
     assert!(
-        entered_reveal,
+        wait_until(Duration::from_secs(2), || {
+            window_rect_by_id(probe.0).is_some_and(|r| r != probe.1)
+        }),
         "guest is not in reveal-desktop mode: a wallpaper click left {:?} where it was. \
          Without the sweep this test proves nothing.",
         probe.1
     );
-    eprintln!(
-        "popup before={before:?}; (frame, on screen) after the wallpaper click: {popup_frames:?}"
-    );
-    // By centre, with a few points of slack: AppKit's order-out animation
-    // scales the window by a few points about its centre, which is not a move.
-    let swept = popup_frames.iter().any(|(r, _)| displaced(r, &before));
 
     press_chord(
         VK_SPACE,
@@ -1998,14 +2192,13 @@ fn popup_survives_a_wallpaper_click_and_reappears_on_screen() {
     assert!(shown, "⌃⇧Space did not bring the popup back at all");
     assert!(
         reshown.intersects(&display),
-        "the popup came back off-screen at {reshown:?}, where the wallpaper click \
-         swept it to — visible to the window server, invisible to the user"
+        "the popup came back off-screen at {reshown:?}, where the reveal-desktop sweep \
+         put it — visible to the window server, invisible to the user"
     );
-    use nudge_web::nudge_state::{POPUP_SIZE, window_position};
-    assert_eq!(
-        (reshown.x as i32, reshown.y as i32),
-        window_position((display.w as u32, display.h as u32), POPUP_SIZE),
-        "the popup came back on screen but not at its spec §1 place"
+    assert!(
+        reshown.same_as(&work),
+        "the popup came back on screen at {reshown:?}, not as the work area {work:?} \
+         (spec §1)"
     );
 
     // Reveal mode is still on (asserted above), so a sweep applied late would
@@ -2024,11 +2217,384 @@ fn popup_survives_a_wallpaper_click_and_reappears_on_screen() {
         drift.is_empty(),
         "the re-shown popup did not stay at its place: {drift:?}"
     );
+}
+
+/// Spec §1, §4: a click anywhere on the monitor outside the card closes the
+/// popup and reaches nothing beneath.
+///
+/// "Reaches nothing" is read off the desktop: the point is bare wallpaper
+/// under the popup's window, and a click that got through would enter
+/// reveal-desktop mode and move every other window aside — which the probe
+/// window of another app would show.
+#[test]
+#[ignore = "needs a GUI session + PostEvent grant; run in the guest via scripts/native-tests-macos.sh"]
+fn a_click_beside_the_card_closes_the_popup_and_reaches_nothing() {
+    let display = main_display_frame();
+    let work = work_area();
+    let probe = foreign_probe_window(&display).expect(
+        "no on-screen window of another app to watch — a click reaching the desktop \
+         cannot be observed without one (the guest normally has Terminal/Finder up)",
+    );
+
+    let app = SandboxedApp::launch();
+    assert!(
+        popup_visible(app.pid()),
+        "launch popup never appeared — harness problem, not a shield problem"
+    );
+    let shield = window_rect(app.pid()).expect("no nudge window found");
+
+    let point = (work.x + 4.0, work.y + work.h / 2.0);
+    let covering = windows_at(point);
+    assert!(
+        covering.iter().any(|w| w.id == shield.id),
+        "the popup's window is not under {point:?} ({covering:?}) — it does not reach \
+         the work area's edge, so a click there would reach the desktop"
+    );
+    assert!(
+        covering.iter().all(|w| w.owner == i64::from(app.pid())),
+        "another window sits under {point:?} as well ({covering:?}); a click getting \
+         past the shield would land on it rather than on the wallpaper, and the probe \
+         below could not tell"
+    );
+    let _restore = RevealDesktopGuard {
+        probe_id: probe.0,
+        home: probe.1,
+        wallpaper: point,
+    };
+    click_at(point);
 
     assert!(
-        !swept,
-        "the wallpaper click moved the popup ({popup_frames:?}) — it is still being \
-         swept as a transient window"
+        wait_until(Duration::from_secs(1), || !popup_visible(app.pid())),
+        "a click beside the card left the popup open"
+    );
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(
+        window_rect_by_id(probe.0),
+        Some(probe.1),
+        "the click reached the wallpaper: the desktop was revealed and window {} moved. \
+         Spec §1: the window covers the work area while visible so that it does not.",
+        probe.0
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Sprite overlay (spec §10)
+// ---------------------------------------------------------------------------
+
+/// The popup with the green fixture as its sprite, photographed: the window,
+/// its capture, the capture's scale, and the card's and the sprite's bboxes
+/// in capture pixels. The sprite bbox is `None` when no green is on screen.
+struct SpriteShot {
+    window: WindowInfo,
+    img: image::RgbaImage,
+    scale: f64,
+    card: (u32, u32, u32, u32),
+    sprite: Option<(u32, u32, u32, u32)>,
+}
+
+fn shoot(app: &SandboxedApp) -> SpriteShot {
+    let (window, img) = capture_card(app);
+    let scale = capture_scale(&img, &window);
+    let card = card_bbox(&img);
+    let sprite = sprite_bbox(&img);
+    eprintln!(
+        "window={:?} scale={scale} card={card:?} sprite={sprite:?}",
+        window.rect
+    );
+    SpriteShot {
+        window,
+        img,
+        scale,
+        card,
+        sprite,
+    }
+}
+
+/// The configured sprite does not change what the window is.
+#[test]
+#[ignore = "needs a GUI session + Screen Recording grant; run via --ignored"]
+fn sprite_window_is_still_the_work_area() {
+    let app = SandboxedApp::launch_with_config(&config_with_sprite(true, -41, -277, 679));
+    let window = window_rect(app.pid()).expect("no nudge window found");
+    let work = work_area();
+    eprintln!("window={:?} work={work:?}", window.rect);
+    assert!(
+        popup_visible(app.pid()),
+        "launch popup never appeared with a sprite configured"
+    );
+    assert!(
+        window.rect.same_as(&work),
+        "with a sprite the window is {:?}, not the work area {work:?} — spec §10: the \
+         window covers the work area; the card and the sprite are drawn inside it",
+        window.rect
+    );
+}
+
+/// Spec §10: the sprite is drawn over the card at its native pixels, and
+/// nothing but the card and the sprite's own pixels is opaque.
+///
+/// The fixture is a silhouette, so "over the card" is checked at one of its
+/// opaque pixels — the one nearest the middle of its body — placed 60×40 pt
+/// into the card. That leaves every card edge a stretch in the open for
+/// `card_bbox`, and the sprite's transparent surround above the card.
+#[test]
+#[ignore = "needs a GUI session + Screen Recording grant; run via --ignored"]
+fn sprite_pixels_are_drawn_over_the_card_and_transparent_outside() {
+    let (fixture, (fx0, fy0, fx1, fy1)) = sprite_fixture();
+    let (mid_x, mid_y) = ((fx0 + fx1) / 2, (fy0 + fy1) / 2);
+    let body = fixture
+        .enumerate_pixels()
+        .filter(|(_, _, p)| is_green(p))
+        .min_by_key(|(x, y, _)| x.abs_diff(mid_x) + y.abs_diff(mid_y))
+        .map(|(x, y, _)| (x, y))
+        .expect("the fixture has opaque pixels");
+    let scale = display_scale();
+    const INTO_CARD: (f64, f64) = (60.0, 40.0);
+    let x = (INTO_CARD.0 - f64::from(body.0) / scale).round() as i32;
+    let y = (INTO_CARD.1 - f64::from(body.1) / scale).round() as i32;
+    let app = SandboxedApp::launch_with_config(&config_with_sprite(true, x, y, 480));
+    let shot = shoot(&app);
+    let (cx0, cy0, cx1, cy1) = shot.card;
+    let (sx0, sy0, sx1, sy1) = shot.sprite.expect("no sprite pixels on the window at all");
+    let px = |v: f64| (v * shot.scale).round() as u32;
+
+    // The fixture's opaque pixels are exactly its size less its margins, so
+    // their bbox says whether it was drawn 1:1 or resampled — and, since the
+    // window starts at the work area's edge, whether it is on the window whole.
+    assert_eq!(
+        (sx1 - sx0, sy1 - sy0),
+        (fx1 - fx0, fy1 - fy0),
+        "the sprite's opaque pixels span {}×{} capture pixels, the fixture's {}×{} — \
+         spec §10: 1 image pixel = 1 device pixel, never resampled (or the sprite runs \
+         off the window: it starts at ({x}, {y}) from the card)",
+        sx1 - sx0 + 1,
+        sy1 - sy0 + 1,
+        fx1 - fx0 + 1,
+        fy1 - fy0 + 1
+    );
+    // A fixture pixel's place in the capture.
+    let at = |(fx, fy): (u32, u32)| (sx0 - fx0 + fx, sy0 - fy0 + fy);
+
+    // Over the card, inside both: the sprite's pixel, not the card's.
+    let (bx, by) = at(body);
+    assert!(
+        (cx0..=cx1).contains(&bx) && (cy0..=cy1).contains(&by),
+        "the probe landed at ({bx}, {by}), outside the card {:?} — the placement under \
+         test is not the one meant",
+        shot.card
+    );
+    let over = shot.img.get_pixel(bx, by);
+    assert!(
+        is_green(over),
+        "{}×{} pt into the card, under the sprite, the pixel is {over:?} — the sprite \
+         is not drawn over the card (spec §10: it is drawn in front)",
+        INTO_CARD.0,
+        INTO_CARD.1
+    );
+    // The sprite's own transparent surround, above the card: not painted.
+    let (mx, my) = at((fx0 + 20, fy0 - 3));
+    assert!(
+        my < cy0,
+        "the sprite's top is not above the card: {my} vs {cy0}"
+    );
+    let margin = shot.img.get_pixel(mx, my);
+    assert_eq!(
+        margin.0[3], 0,
+        "the sprite's transparent surround reads {margin:?} — something is painted \
+         behind the sprite (spec §10: no material and no fill beyond the card)"
+    );
+    // The card where the sprite is not: the card.
+    let bare = shot.img.get_pixel(cx1 - px(40.0), (cy0 + cy1) / 2);
+    assert!(
+        bare.0[3] > 128 && !is_green(bare),
+        "the card beside the sprite reads {bare:?} — the sprite is covering more than \
+         its own pixels"
+    );
+}
+
+/// Spec §10: a sprite that stays inside the work area leaves the card at its
+/// §1 anchor.
+///
+/// The sprite is set wholly to the left of the card, with its top 20 pt below
+/// the work area's top; on a narrow display part of it runs off the window,
+/// which the spec allows and the card does not notice.
+#[test]
+#[ignore = "needs a GUI session + Screen Recording grant; run via --ignored"]
+fn sprite_keeps_the_card_at_its_spec_anchor() {
+    let display = main_display_frame();
+    let work = work_area();
+    let (sw, _) = sprite_points();
+    let anchor = card_anchor_top(&display);
+    let y = -(anchor - work.y) as i32 + 20;
+    let app =
+        SandboxedApp::launch_with_config(&config_with_sprite(true, -(sw + 10.0) as i32, y, 480));
+    let shot = shoot(&app);
+    let card = bbox_rect(&shot.window, shot.scale, shot.card);
+    let (_, sy0, _, _) = shot.sprite.expect("no sprite pixels on the window at all");
+
+    let sprite_top = f64::from(sy0 - sprite_opaque_top()) / shot.scale;
+    assert!(
+        (sprite_top - 20.0).abs() <= 1.0,
+        "the sprite's top is {sprite_top} pt below the window's top, not 20 — the \
+         placement under test is not the one configured"
+    );
+    assert!(
+        (card.y - anchor).abs() <= 1.0,
+        "the card's top is at y={}, its §1 anchor is y={anchor} — a sprite inside the \
+         work area must not move the card (spec §10)",
+        card.y
+    );
+}
+
+/// Spec §10: a sprite that would rise above the work area moves the card down
+/// by the overhang, so the sprite is shown whole.
+#[test]
+#[ignore = "needs a GUI session + Screen Recording grant; run via --ignored"]
+fn sprite_overhanging_the_work_area_moves_the_card_down() {
+    let display = main_display_frame();
+    let work = work_area();
+    let (sw, _) = sprite_points();
+    let anchor = card_anchor_top(&display);
+    const OVERHANG: f64 = 30.0;
+    let y = -(anchor - work.y + OVERHANG) as i32;
+    let app =
+        SandboxedApp::launch_with_config(&config_with_sprite(true, -(sw + 10.0) as i32, y, 480));
+    let shot = shoot(&app);
+    let card = bbox_rect(&shot.window, shot.scale, shot.card);
+    let (_, sy0, _, _) = shot.sprite.expect("no sprite pixels on the window at all");
+
+    assert!(
+        (f64::from(sy0 - sprite_opaque_top()) / shot.scale).abs() <= 1.0,
+        "the sprite's top is {} capture pixels below the window's top; with the card \
+         moved down by the overhang it starts at the work area's top (spec §10)",
+        sy0 - sprite_opaque_top()
+    );
+    assert!(
+        (card.y - (anchor + OVERHANG)).abs() <= 1.0,
+        "the card's top is at y={}; its anchor is y={anchor} and the sprite overhangs \
+         the work area by {OVERHANG} pt, so spec §10 puts it at y={}",
+        card.y,
+        anchor + OVERHANG
+    );
+}
+
+/// `enabled: false` with a valid PNG configured: the plain card, no sprite.
+#[test]
+#[ignore = "needs a GUI session + Screen Recording grant; run via --ignored"]
+fn sprite_off_shows_the_plain_card() {
+    let app = SandboxedApp::launch_with_config(&config_with_sprite(false, -41, -277, 679));
+    let shot = shoot(&app);
+    assert_eq!(
+        shot.sprite, None,
+        "the sprite is drawn although `enabled` is false"
+    );
+    let card = bbox_rect(&shot.window, shot.scale, shot.card);
+    assert!(
+        (card.w - 480.0).abs() <= 1.0,
+        "the card is {} pt wide; with the sprite off `card_width` is ignored and §2's \
+         480 applies",
+        card.w
+    );
+}
+
+/// Spec §10: a PNG that fails the check is not a sprite. The running app says
+/// why on stderr and shows the plain card.
+#[test]
+#[ignore = "needs a GUI session + Screen Recording grant; run via --ignored"]
+fn sprite_with_a_bad_png_falls_back_and_logs() {
+    // An RGB PNG — no alpha channel — is not a sprite by §10.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let rgb = dir.path().join("rgb.png");
+    image::RgbImage::from_pixel(8, 8, image::Rgb([0, 255, 0]))
+        .save(&rgb)
+        .expect("write an RGB PNG");
+    let mut app = SandboxedApp::launch_with_config_logging(
+        &config_with_sprite(true, -41, -277, 679).replace("{sprite}", &rgb.display().to_string()),
+    );
+
+    let shot = shoot(&app);
+    assert_eq!(
+        shot.sprite, None,
+        "a PNG without alpha was drawn as a sprite"
+    );
+    let card = bbox_rect(&shot.window, shot.scale, shot.card);
+    assert!(
+        (card.w - 480.0).abs() <= 1.0,
+        "the card is {} pt wide; a sprite that failed the check counts as off, so \
+         `card_width` must not apply",
+        card.w
+    );
+
+    let log = app.stderr_after_exit();
+    assert!(
+        log.contains("sprite not shown") && log.contains("no alpha channel"),
+        "the app did not say why the sprite is not shown; stderr:\n{log}"
+    );
+}
+
+/// Spec §10 "Applying a change": a change edited into `config.json` while the
+/// popup is visible waits for the next close; the next reveal shows it.
+#[test]
+#[ignore = "needs a GUI session + Screen Recording + PostEvent grants; run in the guest via scripts/native-tests-macos.sh"]
+fn sprite_change_applies_while_hidden_and_waits_while_visible() {
+    let app = SandboxedApp::launch_with_config(&config_with_sprite(false, -41, -277, 679));
+    let before = shoot(&app);
+    assert_eq!(
+        before.sprite, None,
+        "the sprite is on before it was turned on"
+    );
+
+    let (sw, _) = sprite_points();
+    std::fs::write(
+        app.config_path(),
+        config_with_sprite(true, -(sw + 10.0) as i32, -20, 679)
+            .replace("{sprite}", &app.sprite_path().display().to_string()),
+    )
+    .expect("edit config.json in place");
+
+    // Visible: the change must wait. Photographed a few times over the next
+    // seconds, the card must stay as it was.
+    let settle_until = std::time::Instant::now() + Duration::from_secs(3);
+    while std::time::Instant::now() < settle_until {
+        let now = shoot(&app);
+        assert_eq!(
+            now.sprite, None,
+            "the sprite appeared under the user's hands — spec §10 applies a change \
+             only while the popup is hidden"
+        );
+        assert_eq!(
+            now.card, before.card,
+            "the card changed under the user's hands — spec §10 applies a change only \
+             while the popup is hidden"
+        );
+        std::thread::sleep(Duration::from_millis(300));
+    }
+
+    dismiss_with_escape();
+    assert!(
+        wait_until(Duration::from_secs(1), || !popup_visible(app.pid())),
+        "Esc did not dismiss the popup — synthetic input is not reaching the app"
+    );
+    press_chord(
+        VK_SPACE,
+        CGEventFlags::CGEventFlagControl | CGEventFlags::CGEventFlagShift,
+    );
+    assert!(
+        wait_until(Duration::from_secs(2), || popup_visible(app.pid())),
+        "⌃⇧Space did not bring the popup back"
+    );
+    std::thread::sleep(Duration::from_millis(500));
+
+    let after = shoot(&app);
+    assert!(
+        after.sprite.is_some(),
+        "the popup came back without the sprite that was saved while it was visible"
+    );
+    let card = bbox_rect(&after.window, after.scale, after.card);
+    assert!(
+        (card.w - 679.0).abs() <= 1.0,
+        "the card came back {} pt wide, not the 679 saved while the popup was visible",
+        card.w
     );
 }
 
@@ -2135,7 +2701,7 @@ fn foreign_probe_window(display: &Rect) -> Option<(u32, Rect)> {
 /// The on-screen windows at ordinary-to-floating levels that contain `p`.
 /// The Dock's full-display layer and the desktop's own windows are left out:
 /// a click there reaches the wallpaper.
-fn windows_at(p: (f64, f64)) -> Vec<(u32, i64, Rect)> {
+fn windows_at(p: (f64, f64)) -> Vec<ListedWindow> {
     list_windows()
         .into_iter()
         .filter(|w| w.on_screen && (0..20).contains(&w.layer))
@@ -2145,7 +2711,6 @@ fn windows_at(p: (f64, f64)) -> Vec<(u32, i64, Rect)> {
                 && p.1 >= w.rect.y
                 && p.1 < w.rect.y + w.rect.h
         })
-        .map(|w| (w.id, w.layer, w.rect))
         .collect()
 }
 
@@ -2156,6 +2721,7 @@ fn window_rect_by_id(id: u32) -> Option<Rect> {
         .map(|w| w.rect)
 }
 
+#[derive(Debug)]
 struct ListedWindow {
     id: u32,
     owner: i64,
