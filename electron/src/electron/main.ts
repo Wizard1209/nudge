@@ -47,6 +47,7 @@ import {
   spriteLayout,
   spritePoints,
   windowOrigin,
+  cardWidthOn,
   type Rect,
   type Size,
   type SpriteLayout,
@@ -488,7 +489,7 @@ interface SpriteSource {
 function spriteLayoutOn(source: SpriteSource, display: Electron.Display): SpriteLayout {
   const { card_width, x, y } = source.placement;
   return spriteLayout(
-    { width: card_width, height: CARD_HEIGHT },
+    { width: cardWidthOn(card_width, display.workArea), height: CARD_HEIGHT },
     { x, y, ...spritePoints(source.png, display.scaleFactor) },
   );
 }

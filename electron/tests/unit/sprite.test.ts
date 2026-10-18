@@ -6,6 +6,7 @@ import {
   spriteLayout,
   spritePoints,
   windowOrigin,
+  cardWidthOn,
   inspectPng,
   hasTransparentPixel,
   checkSpritePng,
@@ -135,12 +136,23 @@ describe("windowOrigin", () => {
 
   it("offsets the window so the card, not the window, lands on the spot", () => {
     const card = { x: 41, y: 100, width: 679, height: 130 };
-    expect(windowOrigin(display, card)).toEqual({ x: 396 - 41, y: 319 - 100 });
+    expect(windowOrigin(display, card)).toEqual({ x: 395 - 41, y: 319 - 100 });
+  });
+
+  it("floors the half point instead of rounding it (spec §10)", () => {
+    const odd = { ...display, bounds: { x: 0, y: 0, width: 1471, height: 958 } };
+    const card = { x: 0, y: 0, width: 480, height: 130 };
+    expect(windowOrigin(odd, card)).toEqual({ x: 495, y: 319 });
+  });
+
+  it("clamps card_width to the work area minus 48 pt, 24 pt free on each side (spec §10)", () => {
+    expect(cardWidthOn(679, display.workArea)).toBe(679);
+    expect(cardWidthOn(2000, display.workArea)).toBe(display.workArea.width - 48);
   });
 
   it("lets a decoration above the card rise into the menu bar strip as long as it stays on the work area", () => {
     const card = { x: 41, y: 277, width: 679, height: 130 };
-    expect(windowOrigin(display, card)).toEqual({ x: 355, y: 319 - 277 });
+    expect(windowOrigin(display, card)).toEqual({ x: 354, y: 319 - 277 });
   });
 
   it("pins the window to the top of the work area when the decoration would stick out above it", () => {
@@ -151,7 +163,7 @@ describe("windowOrigin", () => {
     const card = { x: 41, y: 277, width: 679, height: 130 };
     // 180 + 80 − 277 = −17, which is above the work area; the card then
     // sits 277 below the work area's top instead.
-    expect(windowOrigin(short, card)).toEqual({ x: 301 - 41, y: 25 });
+    expect(windowOrigin(short, card)).toEqual({ x: 300 - 41, y: 25 });
   });
 
   it("does not pin on a monitor tall enough for the decoration", () => {
@@ -160,7 +172,7 @@ describe("windowOrigin", () => {
       workArea: { x: 0, y: 25, width: 2560, height: 1415 },
     };
     const card = { x: 41, y: 277, width: 679, height: 130 };
-    expect(windowOrigin(tall, card)).toEqual({ x: 941 - 41, y: 360 + 80 - 277 });
+    expect(windowOrigin(tall, card)).toEqual({ x: 940 - 41, y: 360 + 80 - 277 });
   });
 });
 
