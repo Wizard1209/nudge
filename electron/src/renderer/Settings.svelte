@@ -69,6 +69,24 @@
 
   let recorder = $state<RecorderState>("idle");
   let banner = $state("");
+  // §9: a save that reached the file says so, until the first edit after it.
+  let saved = $state(false);
+
+  // §9: Save is live only while the form differs from the file. Compared
+  // against `persisted` — the on-disk view — rather than the form's own
+  // baseline, so the answer does not depend on when the mirrors were synced.
+  const dirty = $derived.by(() => {
+    const probe = SettingsForm.fromConfig(persisted, platform);
+    probe.hotkey = hotkey;
+    probe.intervalText = intervalText;
+    probe.autostart = autostart;
+    probe.spriteEnabled = spriteEnabled;
+    probe.spritePath = spritePath;
+    probe.spriteXText = spriteXText;
+    probe.spriteYText = spriteYText;
+    probe.cardWidthText = cardWidthText;
+    return probe.isDirty();
+  });
 
   // Electron loads its config over IPC (async), so seed the fields after mount.
   onMount(() => {
@@ -112,9 +130,9 @@
 
   const FIELD_ERROR: Record<Exclude<FormError["field"], "hotkey">, string> = {
     interval: "Interval must be a positive number of minutes",
-    sprite_x: "Sprite X must be a whole number of pixels",
-    sprite_y: "Sprite Y must be a whole number of pixels",
-    card_width: "Card width must be a positive whole number of pixels",
+    sprite_x: "Sprite X must be a whole number of points",
+    sprite_y: "Sprite Y must be a whole number of points",
+    card_width: "Card width must be a positive whole number of points",
   };
 
   async function browseSprite() {
@@ -146,6 +164,7 @@
       case "captured":
         hotkey = formatHotkeyNative(effect.hotkey, platform);
         banner = "";
+        onEdit();
         break;
       case "restoreSaved":
         hotkey = await savedHotkey();
@@ -157,8 +176,22 @@
     }
   }
 
+  /** The first edit after a save takes the `Saved` note away (§9). */
+  function onEdit() {
+    saved = false;
+  }
+
   function onWindowKeydown(e: KeyboardEvent) {
-    if (recorder !== "armed") return;
+    if (recorder !== "armed") {
+      // §9: Return anywhere in the form is Save. A focused button keeps its
+      // own Return (it is already a click there), so Cancel stays Cancel.
+      if (e.key === "Enter" && !(e.target instanceof HTMLButtonElement)) {
+        e.preventDefault();
+        void save();
+      }
+      return;
+    }
+    // While armed the key is the recorder's: Return is a press, not a save.
     // While armed the recorder owns the keyboard: nothing types into the
     // field, and ⌘C records as ⌘C instead of copying. (In the packaged app a
     // combination that matches a menu accelerator is eaten by the menu before
@@ -218,6 +251,9 @@
   }
 
   async function save() {
+    // §9: the same checks, the same write, the same messages from Return and
+    // from the button — and nothing to do while nothing differs from the file.
+    if (!dirty) return;
     syncToForm();
     const result = form.toConfig();
     if (!result.ok) {
@@ -257,7 +293,8 @@
     form.markClean();
     syncFromForm();
     spriteError = "";
-    banner = "Saved";
+    banner = "";
+    saved = true;
   }
 
   async function cancel() {
@@ -274,13 +311,14 @@
     reseed(cfg);
     banner = "";
     spriteError = "";
+    saved = false;
     settingsApi?.close();
   }
 </script>
 
 <svelte:window onkeydown={onWindowKeydown} onblur={onWindowBlur} />
 
-<main class="min-h-screen bg-zinc-950 text-white p-8">
+<main class="min-h-screen bg-zinc-950 text-white p-8" oninput={onEdit}>
   <div class="max-w-md mx-auto space-y-6">
     <h1 class="text-xl font-semibold">Nudge — Settings</h1>
 
@@ -375,7 +413,7 @@
       </div>
       <div class="grid grid-cols-3 gap-2">
         <label class="space-y-1 text-sm text-zinc-400">
-          <span class="block">X (px)</span>
+          <span class="block">X (pt)</span>
           <input
             data-testid="settings-sprite-x"
             type="text"
@@ -385,7 +423,7 @@
           />
         </label>
         <label class="space-y-1 text-sm text-zinc-400">
-          <span class="block">Y (px)</span>
+          <span class="block">Y (pt)</span>
           <input
             data-testid="settings-sprite-y"
             type="text"
@@ -395,7 +433,7 @@
           />
         </label>
         <label class="space-y-1 text-sm text-zinc-400">
-          <span class="block">Card width (px)</span>
+          <span class="block">Card width (pt)</span>
           <input
             data-testid="settings-card-width"
             type="text"
@@ -414,11 +452,12 @@
       <p data-testid="settings-banner" class="text-sm text-amber-400">{banner}</p>
     {/if}
 
-    <div class="flex gap-3 pt-2">
+    <div class="flex items-center gap-3 pt-2">
       <button
         data-testid="settings-save"
         onclick={save}
-        class="px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-500 text-sm"
+        disabled={!dirty}
+        class="px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-500 text-sm disabled:bg-zinc-800 disabled:text-zinc-500"
       >
         Save
       </button>
@@ -429,6 +468,9 @@
       >
         Cancel
       </button>
+      {#if saved}
+        <span data-testid="settings-saved" class="text-sm text-zinc-400">Saved</span>
+      {/if}
     </div>
   </div>
 </main>

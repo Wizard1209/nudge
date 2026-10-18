@@ -576,7 +576,14 @@ either way.
   success would leave the next launch silently unbound.
 - What is written is the **canonical spelling**, not the typed text, and the
   field is rehydrated with it — so what the user reads back is what is
-  stored, and a just-saved form does not read as edited.
+  stored, and a just-saved form does not read as edited. `Save` is live
+  only while the form differs from the file, so a form that reads as
+  unedited is one whose content is on disk.
+- **Return anywhere in the form is `Save`**: the same checks, the same
+  write, the same messages as the button. While the recorder is armed the
+  key is the recorder's — a press, not a save.
+- **A save that reached the file says so** — `Saved`, beside the buttons —
+  and the first edit after it takes the note away.
 - **Autostart** is applied **immediately** on a checkbox click — under the
   transactional rule: first change OS state (registry), then confirm the
   system reports the new state, and only then write `autostart: true/false`
@@ -611,10 +618,12 @@ consistency but have no active UI effect:
 - Standard OS title bar and frame (unlike the popup — this is not a
   spotlight).
 - Title: `Nudge — Settings`.
-- `Save` / `Cancel` buttons. Esc and the system close button are equivalent
-  to Cancel: the window closes without saving the fields that are saved
-  explicitly (hotkey, interval). An autostart change already applied is of
-  course not rolled back — it was committed at the moment of the click.
+- `Save` / `Cancel` buttons, with the `Saved` note beside them after a
+  save; `Save` is greyed while there is nothing to save (see Saving). Esc
+  and the system close button are equivalent to Cancel: the window closes
+  without saving the fields that are saved explicitly (hotkey, interval).
+  An autostart change already applied is of course not rolled back — it
+  was committed at the moment of the click.
 
 ## 10. Sprite overlay
 

@@ -46,7 +46,7 @@ export function parseIntervalMinutes(text: string): IntervalResult {
   return { ok: true, value: n };
 }
 
-/** A whole number of pixels, optionally signed. Strict, like the interval. */
+/** A whole number of points, optionally signed. Strict, like the interval. */
 function parseInteger(text: string): number | null {
   const trimmed = text.trim();
   return /^-?\d+$/.test(trimmed) ? Number(trimmed) + 0 : null;

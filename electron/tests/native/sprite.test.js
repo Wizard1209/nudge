@@ -222,7 +222,7 @@ describe('popup with a sprite', () => {
     await settings.fill('[data-testid="settings-sprite-y"]', '-277');
     await settings.fill('[data-testid="settings-card-width"]', '679');
     await settings.click('[data-testid="settings-save"]');
-    await expect.poll(() => settings.textContent('[data-testid="settings-banner"]').catch(() => null)).toBe('Saved');
+    await expect.poll(() => settings.textContent('[data-testid="settings-saved"]').catch(() => null)).toBe('Saved');
     expect(JSON.parse(readFileSync(path.join(dir, 'config.json'), 'utf-8')).sprite).toEqual(REAL);
   });
 });
