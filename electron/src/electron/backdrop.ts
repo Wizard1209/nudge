@@ -8,7 +8,7 @@
 import path from "node:path";
 import { createRequire } from "node:module";
 import type { BrowserWindow } from "electron";
-import { CARD_RADIUS } from "../shared/card";
+import { CARD_CONTENT_HEIGHT, CARD_RADIUS } from "../shared/card";
 import type { Rect } from "../shared/sprite";
 
 interface BackdropAddon {
@@ -41,11 +41,16 @@ function load(): BackdropAddon | null {
   return addon;
 }
 
-/** Put the glass under `card` (window content coordinates) and show it. */
+/**
+ * Put the glass under `card` (window content coordinates) and show it. `card`
+ * is the window row the card sits in, a whole number of points; the glass
+ * stops at the card's own 129.5 pt, so no bare frost shows under the bottom
+ * hairline.
+ */
 export function syncBackdrop(win: BrowserWindow, card: Rect): void {
   const backdrop = load();
   if (!backdrop || win.isDestroyed()) return;
-  backdrop.attach(win.getNativeWindowHandle(), card.x, card.y, card.width, card.height, CARD_RADIUS);
+  backdrop.attach(win.getNativeWindowHandle(), card.x, card.y, card.width, CARD_CONTENT_HEIGHT, CARD_RADIUS);
 }
 
 /** Take the glass away with the popup. */

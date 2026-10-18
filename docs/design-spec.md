@@ -66,7 +66,8 @@ explicitly. Otherwise the spec applies to all of them.
 - Fill: (24,24,27). The card reads as 95% opaque in every case; what the fill
   contributes depends on the material behind it. On macOS the fill is 120/255
   over the system's frosted material (an `NSVisualEffectView`, HUD-window
-  material, dark vibrant appearance, clipped to the card's corners). Where
+  material, dark vibrant appearance, clipped to the card: its corners and its
+  129.5 pt, not the whole-point window row that holds it). Where
   nothing frosts the window the fill is the surface and carries the 95% on
   its own; the Electron workbench on Windows instead puts the DWM's Acrylic
   behind a 0.8 fill, which measures at the same 95%.

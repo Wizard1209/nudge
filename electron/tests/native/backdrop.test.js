@@ -12,6 +12,8 @@ const REAL = { enabled: true, path: FIXTURE, x: -41, y: -277, card_width: 679 };
 // an NSVisualEffectView clipped to the card and sitting under the page. The
 // page cannot see it, so these ask the main process where it put the view,
 // in the page's own coordinates (origin top-left of the window's content).
+// The glass is the card's 129.5 pt (§2), not the 130 pt window row that
+// holds it: the half point under the bottom hairline stays bare.
 describe.skipIf(process.platform !== 'darwin')('card backdrop (macOS glass)', () => {
   let app;
   afterEach(async () => {
@@ -49,7 +51,7 @@ describe.skipIf(process.platform !== 'darwin')('card backdrop (macOS glass)', ()
     expect(await backdrop()).toMatchObject({
       loaded: true,
       hidden: false,
-      frame: { x: 0, y: 0, width: 480, height: 130 },
+      frame: { x: 0, y: 0, width: 480, height: 129.5 },
       radius: 16,
     });
   });
@@ -58,7 +60,7 @@ describe.skipIf(process.platform !== 'darwin')('card backdrop (macOS glass)', ()
     await launch({ sprite: REAL });
     expect(await backdrop()).toMatchObject({
       hidden: false,
-      frame: { x: 41, y: 277, width: 679, height: 130 },
+      frame: { x: 41, y: 277, width: 679, height: 129.5 },
     });
   });
 
@@ -74,9 +76,9 @@ describe.skipIf(process.platform !== 'darwin')('card backdrop (macOS glass)', ()
     const { popup, dir } = await launch({ sprite: REAL });
     await hide(popup);
     writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ sprite: { ...REAL, x: 0, y: 130, card_width: 480 } }));
-    await expect.poll(async () => (await backdrop()).frame, { timeout: 10_000 }).toEqual({ x: 0, y: 0, width: 480, height: 130 });
+    await expect.poll(async () => (await backdrop()).frame, { timeout: 10_000 }).toEqual({ x: 0, y: 0, width: 480, height: 129.5 });
     await show();
-    expect(await backdrop()).toMatchObject({ hidden: false, frame: { x: 0, y: 0, width: 480, height: 130 } });
+    expect(await backdrop()).toMatchObject({ hidden: false, frame: { x: 0, y: 0, width: 480, height: 129.5 } });
   });
 
   it('survives the window being recreated when the sprite is turned off', async () => {
@@ -85,7 +87,7 @@ describe.skipIf(process.platform !== 'darwin')('card backdrop (macOS glass)', ()
     writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ sprite: { ...REAL, enabled: false } }));
     await expect.poll(async () => (await popupState(app))?.contentBounds.height, { timeout: 10_000 }).toBe(130);
     await show();
-    expect(await backdrop()).toMatchObject({ hidden: false, frame: { x: 0, y: 0, width: 480, height: 130 } });
+    expect(await backdrop()).toMatchObject({ hidden: false, frame: { x: 0, y: 0, width: 480, height: 129.5 } });
     expect(await popupPage().$('[data-testid="sprite"]')).toBeNull();
   });
 });
