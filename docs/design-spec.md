@@ -60,9 +60,10 @@ explicitly. Otherwise the spec applies to all of them.
   window — desktop or other apps — shows through blurred. The blur has to come
   from the OS compositor, since the renderer cannot sample pixels behind its
   own window: macOS supplies it, and there the fill is correspondingly lighter
-  because its job is only to tint the frost. **Windows and the browser build
-  have no blur today** and carry a near-opaque fill instead — without one, a
-  translucent card leaves the desktop legible straight through it.
+  because its job is only to tint the frost. On Windows the Electron
+  workbench has the DWM's Acrylic; **the native Windows build and the browser
+  build have no blur today** and carry a near-opaque fill instead — without
+  one, a translucent card leaves the desktop legible straight through it.
 - Fill: (24,24,27). The card reads as 95% opaque in every case; what the fill
   contributes depends on the material behind it. On macOS the fill is 120/255
   over the system's frosted material (an `NSVisualEffectView`, HUD-window
@@ -71,8 +72,9 @@ explicitly. Otherwise the spec applies to all of them.
   nothing frosts the window the fill is the surface and carries the 95% on
   its own — the browser build, and a macOS build whose material is missing:
   the fill follows whether the material is actually under the card, never
-  the platform alone. The Electron workbench on Windows instead puts the
-  DWM's Acrylic behind a 0.8 fill, which measures at the same 95%.
+  the platform alone. Windows has two ways to the same 95%: the Electron
+  workbench puts a 0.8 fill over the DWM's Acrylic, the native build a
+  220/255 fill with its own shadow under it.
 - Width is around 480 pt; height grows with content. The three rows and the
   two separators between them make 129.5 pt. While a sprite is on, its
   `card_width` sets the width instead (§10).
@@ -87,8 +89,10 @@ explicitly. Otherwise the spec applies to all of them.
   none; elsewhere the renderer draws it, because nothing else will. Both at
   once is not "a stronger shadow": the compositor traces the alpha silhouette,
   which with a renderer shadow in it is larger than the card, so its edge falls
-  in open space as a dark ring detached from the contour. The window's alpha
-  is the card and nothing else, so the shadow traces the card.
+  in open space as a dark ring detached from the contour. The compositor's
+  shadow follows the window's alpha silhouette, whatever that is: the card
+  alone, or, with a sprite on (§10), the card and the sprite's opaque pixels
+  together — the sprite then casts a shadow the same way the card does.
 - Contour: a light hairline runs the full perimeter — 1 pt of white at
   60/255, inside the edge, at the card's radius. It is what separates the
   card from the desktop when the shadow cannot — the shadow is dark, so over a
@@ -653,10 +657,13 @@ sprite were off.
   decide it — and the app never pushes it off the card. It takes no clicks:
   the fields under it stay reachable.
 - The window is the union of the card and the sprite, rounded up to whole
-  points, and is fully transparent outside the card: no material, no fill,
-  no shadow around the sprite. On Windows the Acrylic material §2 mentions
-  needs a window that is not transparent, so it is off while a sprite is
-  on and the card's fill carries the 95% alone.
+  points, and is fully transparent outside the card and the sprite's own
+  pixels: no material and no fill there. The renderer draws no shadow around
+  the sprite; the compositor's shadow (§2) traces the window's alpha
+  silhouette, so on macOS the sprite's opaque pixels cast one the way the
+  card does. On Windows the Acrylic material §2 mentions needs a window
+  that is not transparent, so it is off while a sprite is on and the card's
+  fill carries the 95% alone.
 
 ### Position on screen
 
