@@ -106,6 +106,26 @@ pub struct LoadedSprite {
     cfg: SpriteConfig,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+impl LoadedSprite {
+    fn upload(
+        ctx: &egui::Context,
+        sprite: crate::sprite_png::DecodedSprite,
+        cfg: SpriteConfig,
+    ) -> Self {
+        let image = egui::ColorImage::from_rgba_unmultiplied(
+            [sprite.px[0] as usize, sprite.px[1] as usize],
+            &sprite.rgba,
+        );
+        let tex = ctx.load_texture("nudge_sprite", image, egui::TextureOptions::NEAREST);
+        Self {
+            tex,
+            px: sprite.px,
+            cfg,
+        }
+    }
+}
+
 /// Everything the window's geometry was last derived from: the screen it is
 /// on, that screen's scale, and the sprite's pixel size, offset and card
 /// width. The window is laid out again when any of it changes — a display
@@ -119,6 +139,13 @@ pub struct Placement {
 
 pub fn placement_is_stale(placed: Option<&Placement>, now: &Placement) -> bool {
     placed != Some(now)
+}
+
+/// Spec §10 "Applying a change": a sprite change is applied while the popup
+/// is hidden, never under the user's hands. One that arrives while the popup
+/// is visible waits for the next close.
+pub fn sprite_apply(pending: Option<&SpriteConfig>, popup_visible: bool) -> Option<&SpriteConfig> {
+    pending.filter(|_| !popup_visible)
 }
 
 pub struct NudgeApp {
@@ -140,6 +167,11 @@ pub struct NudgeApp {
     /// The sprite painted over the card, when the config asks for one and
     /// its PNG passed the check (spec §10).
     sprite: Option<LoadedSprite>,
+    /// A sprite change waiting for the popup to be hidden (spec §10). The
+    /// config watcher parks it on the platform seam; the kittest tier sets
+    /// it directly (`set_pending_sprite`).
+    #[cfg(not(target_arch = "wasm32"))]
+    pending_sprite: Option<SpriteConfig>,
     /// The screen the popup is laid out on, injected by the kittest tier,
     /// which has no OS window; the real window reads its own screen
     /// (`platform::screen_geometry`).
@@ -230,6 +262,8 @@ impl NudgeApp {
             error_message: None,
             card_rect: None,
             sprite: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_sprite: None,
             geometry_override: None,
             placed: None,
             layout: None,
@@ -252,17 +286,42 @@ impl NudgeApp {
         sprite: crate::sprite_png::DecodedSprite,
         cfg: SpriteConfig,
     ) -> Self {
-        let image = egui::ColorImage::from_rgba_unmultiplied(
-            [sprite.px[0] as usize, sprite.px[1] as usize],
-            &sprite.rgba,
-        );
-        let tex = ctx.load_texture("nudge_sprite", image, egui::TextureOptions::NEAREST);
-        self.sprite = Some(LoadedSprite {
-            tex,
-            px: sprite.px,
-            cfg,
-        });
+        self.sprite = Some(LoadedSprite::upload(ctx, sprite, cfg));
         self
+    }
+
+    /// Park a sprite change as the config watcher would. The kittest tier's
+    /// hook; the bin crate's changes arrive through the platform seam.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[allow(dead_code)]
+    pub fn set_pending_sprite(&mut self, cfg: SpriteConfig) {
+        self.pending_sprite = Some(cfg);
+    }
+
+    /// Apply the parked sprite change if the popup is hidden (spec §10
+    /// "Applying a change"). Decoding happens here, once per change; the
+    /// window is then laid out again by `place_window`, nothing is recreated.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn apply_pending_sprite(&mut self, ctx: &egui::Context) {
+        if let Some(cfg) = crate::platform::take_pending_sprite() {
+            self.pending_sprite = Some(cfg);
+        }
+        let Some(cfg) = sprite_apply(self.pending_sprite.as_ref(), self.popup_visible).cloned()
+        else {
+            return;
+        };
+        self.pending_sprite = None;
+        // A PNG that fails the check counts as off (§10): say why, show the
+        // plain card. Dropping the old handle frees its texture.
+        self.sprite = match crate::sprite_png::load_sprite(&cfg) {
+            Some(Ok(decoded)) => Some(LoadedSprite::upload(ctx, decoded, cfg)),
+            Some(Err(reason)) => {
+                eprintln!("[nudge] sprite not shown: {reason}");
+                None
+            }
+            None => None,
+        };
+        self.placed = None;
     }
 
     /// Lay the popup out on this screen instead of asking the window for
@@ -632,6 +691,10 @@ impl NudgeApp {
                 crate::platform::set_timer_state(deadline, interval);
             }
             crate::platform::set_popup_visible(false);
+            // Hidden now: a change that waited for this close goes in before
+            // the next reveal, which on Windows the tray thread may do
+            // before another frame runs.
+            self.apply_pending_sprite(ctx);
         }
     }
 
@@ -895,6 +958,7 @@ impl eframe::App for NudgeApp {
     #[cfg(not(target_arch = "wasm32"))]
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         crate::platform::tick(ctx);
+        self.apply_pending_sprite(ctx);
         self.place_window(ctx, frame);
     }
 
@@ -1077,6 +1141,26 @@ mod tests {
             ppp: 2.0,
             sprite: Some(([720, 430], (-41, -277), 679)),
         }
+    }
+
+    /// Spec §10 "Applying a change": a sprite change is applied while the
+    /// popup is hidden, never under the user's hands.
+    #[test]
+    fn a_pending_sprite_is_applied_only_while_hidden() {
+        let cfg = SpriteConfig {
+            enabled: true,
+            path: "/tmp/sprite.png".to_string(),
+            x: -41,
+            y: -277,
+            card_width: 679,
+        };
+        assert_eq!(sprite_apply(Some(&cfg), true), None, "visible: it waits");
+        assert_eq!(
+            sprite_apply(Some(&cfg), false),
+            Some(&cfg),
+            "hidden: applied"
+        );
+        assert_eq!(sprite_apply(None, false), None, "nothing pending");
     }
 
     #[test]

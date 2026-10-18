@@ -137,6 +137,11 @@ static POPUP_VISIBLE: AtomicBool = AtomicBool::new(true);
 /// What [`start`] recorded for [`start_on_event_loop`] to build. Taken once.
 static PENDING_START: Mutex<Option<(Option<Hotkey>, PathBuf, config::Config)>> = Mutex::new(None);
 
+/// A sprite change from a config reload, waiting for the app to apply it
+/// while the popup is hidden (spec §10). The newest change replaces an
+/// older one still waiting.
+static PENDING_SPRITE: Mutex<Option<config::SpriteConfig>> = Mutex::new(None);
+
 /// A clone of the egui context, so an AppKit / Carbon callback on the main
 /// thread can wake the event loop. `egui::Context` is `Send + Sync` and
 /// `request_repaint` is the documented way to do this from anywhere.
@@ -369,6 +374,11 @@ pub fn request_config_reload() {
     // The hotkey is live-reloadable, so a reload must not sit unapplied until
     // the timer happens to wake us.
     wake();
+}
+
+/// The sprite change parked by the last reload, if any; `NudgeApp` drains it.
+pub fn take_pending_sprite() -> Option<config::SpriteConfig> {
+    PENDING_SPRITE.lock().unwrap().take()
 }
 
 /// One pass of the OS integration, called from `NudgeApp::logic` on every tick.
@@ -801,9 +811,10 @@ fn reload_config(state: &mut ReloadState) {
                  (settings process owns the LaunchAgent)",
                 state.previous_cfg.autostart, new_cfg.autostart
             ),
-            // TODO: apply the sprite while the popup is hidden (spec §10).
             ConfigChange::Sprite { to } => {
-                eprintln!("[nudge] config reload: sprite → {to:?} (no live effect yet)")
+                eprintln!("[nudge] config reload: sprite → {to:?} (applied while hidden)");
+                *PENDING_SPRITE.lock().unwrap() = Some(to);
+                wake();
             }
         }
     }
@@ -1331,7 +1342,13 @@ mod tests {
             hotkey: "Ctrl+F21".to_string(),
             default_interval_minutes: 25.0,
             autostart: true,
-            ..config::Config::default()
+            sprite: config::SpriteConfig {
+                enabled: true,
+                path: "/tmp/sprite.png".to_string(),
+                x: -41,
+                y: -277,
+                card_width: 679,
+            },
         };
         config::save(&path, &after).expect("write the edited config");
 
@@ -1340,7 +1357,14 @@ mod tests {
             config_path: path.clone(),
             previous_cfg: before,
         };
+        let _guard = tick_globals();
         reload_config(&mut state);
+
+        assert_eq!(
+            take_pending_sprite(),
+            Some(after.sprite.clone()),
+            "the sprite block is parked for the app to apply while hidden (§10)"
+        );
 
         assert_eq!(
             state.previous_cfg, after,
@@ -1379,6 +1403,58 @@ mod tests {
         reload_config(&mut state);
 
         assert_eq!(state.previous_cfg, before);
+        assert_eq!(
+            take_pending_sprite(),
+            None,
+            "nothing changed, nothing parked"
+        );
+    }
+
+    /// The app drains the parked sprite from `logic`, which only runs when
+    /// the event loop does. A reload arriving while the popup is hidden must
+    /// not sit unapplied until the interval timer happens to wake us.
+    #[test]
+    fn a_sprite_change_wakes_the_event_loop() {
+        let _guard = tick_globals();
+        reset_globals();
+        let ctx = egui::Context::default();
+        start_on_event_loop(&ctx);
+        let mut settled = false;
+        for _ in 0..8 {
+            ctx.begin_pass(egui::RawInput::default());
+            let _ = ctx.end_pass();
+            if !ctx.has_requested_repaint() {
+                settled = true;
+                break;
+            }
+        }
+        assert!(settled, "the context must start with nothing pending");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.json");
+        let before = config::Config::default();
+        let after = config::Config {
+            sprite: config::SpriteConfig {
+                enabled: true,
+                path: "/tmp/sprite.png".to_string(),
+                ..config::SpriteConfig::default()
+            },
+            ..config::Config::default()
+        };
+        config::save(&path, &after).expect("write the edited config");
+        let mut state = ReloadState {
+            registered: None,
+            config_path: path,
+            previous_cfg: before,
+        };
+        reload_config(&mut state);
+
+        assert!(
+            ctx.has_requested_repaint(),
+            "a parked sprite change must ask for the frame that applies it"
+        );
+        assert_eq!(take_pending_sprite(), Some(after.sprite));
+        *WAKE_CTX.lock().unwrap() = None;
     }
 
     // === spawned settings processes ==========================================

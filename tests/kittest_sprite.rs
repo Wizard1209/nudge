@@ -19,6 +19,10 @@ use nudge_web::sprite_png::{DecodedSprite, decode_rgba};
 
 const PPP: f32 = 2.0;
 
+const GREEN_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/electron/tests/e2e/fixtures/sprite-green.png"
+);
 const GREEN: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/electron/tests/e2e/fixtures/sprite-green.png"
@@ -137,4 +141,25 @@ fn without_injected_geometry_the_card_is_in_the_box() {
     let field = first_field(&harness);
     assert_eq!(field.min, pos2(24.0, 80.0));
     assert_eq!(field.width(), 472.0);
+}
+
+#[test]
+fn a_sprite_change_that_fails_the_check_turns_the_sprite_off() {
+    // A PNG that fails the check counts as off (§10): the texture goes and
+    // the card is laid out plain again. The change is applied on close.
+    let mut harness = harness(vec2(1470.0, 833.0), |cc| {
+        NudgeApp::new(cc, 10.0)
+            .with_screen_geometry(g1())
+            .with_sprite(&cc.egui_ctx, green_sprite(), green_config())
+    });
+    assert_eq!(first_field(&harness).min.x, 395.0);
+
+    harness.state_mut().set_pending_sprite(SpriteConfig {
+        path: GREEN_PATH.replace("sprite-green", "no-such-file"),
+        ..green_config()
+    });
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+
+    assert_eq!(sprite_textures(&harness), vec![], "the sprite is off");
 }

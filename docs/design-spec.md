@@ -684,8 +684,8 @@ hang off there.
 
 A sprite change — saved from the settings window or edited by hand — is
 applied while the popup is hidden, never under the user's hands: a change
-that arrives while the popup is visible waits for the next close. When the
-change turns the sprite on or off (a PNG that fails the check counts as
-off) the popup window is recreated, because whether a window is transparent
-is fixed when it is created; any other change resizes the window and
-redraws.
+that arrives while the popup is visible waits for the next close. Turning
+the sprite on or off (a PNG that fails the check counts as off) and moving
+or resizing it alike end in a re-laid-out, redrawn window; nothing is
+recreated. The window is always transparent (§1), so there is nothing a
+toggle would have to create anew.

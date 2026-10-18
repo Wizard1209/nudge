@@ -43,6 +43,10 @@ pub fn set_popup_visible(_visible: bool) {}
 
 pub fn request_config_reload() {}
 
+pub fn take_pending_sprite() -> Option<config::SpriteConfig> {
+    None
+}
+
 pub fn focus_popup(_ctx: &egui::Context) {}
 
 pub fn tick(_ctx: &egui::Context) {}

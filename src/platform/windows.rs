@@ -17,7 +17,8 @@ use crate::hotkey::Hotkey;
 use crate::sprite::ScreenGeometry;
 
 pub use crate::tray_bridge::{
-    request_config_reload, set_popup_visible, set_timer_state, take_timer_fired, take_tray_clicked,
+    request_config_reload, set_popup_visible, set_timer_state, take_pending_sprite,
+    take_timer_fired, take_tray_clicked,
 };
 
 /// The raise side of `take_tray_clicked`. No caller goes through the seam for
