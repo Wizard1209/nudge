@@ -57,10 +57,19 @@ explicitly. Otherwise the spec applies to both.
   because its job is only to tint the frost. **Windows and the browser build
   have no blur today** and carry a near-opaque fill instead — without one, a
   translucent card leaves the desktop legible straight through it.
-- Width is around 480px; height grows with content.
+- Fill: (24,24,27). The card reads as 95% opaque in every case; what the fill
+  contributes depends on the material behind it. On macOS the fill is 120/255
+  over the system's frosted material (an `NSVisualEffectView`, HUD-window
+  material, dark vibrant appearance, clipped to the card's corners). Where
+  nothing frosts the window the fill is the surface and carries the 95% on
+  its own; the Electron workbench on Windows instead puts the DWM's Acrylic
+  behind a 0.8 fill, which measures at the same 95%.
+- Width is around 480 pt; height grows with content. The three rows and the
+  two separators between them make 129.5 pt.
 - Typeface: Ubuntu Light at 16 pt, the egui default; every build bundles the
   face rather than taking whatever the system has.
-- Corner radius is noticeable and soft.
+- Corner radius: 16 pt, circular, the same for the fill, the contour and the
+  frosted material under them, so the three stay concentric.
 - Shadow: minimal by baseline; slightly softer is acceptable for aesthetics.
   Exactly one layer draws it. Where the compositor can — macOS, from the
   window's alpha mask — it is the compositor's, so the card casts the same
@@ -68,15 +77,19 @@ explicitly. Otherwise the spec applies to both.
   none; elsewhere the renderer draws it, because nothing else will. Both at
   once is not "a stronger shadow": the compositor traces the alpha silhouette,
   which with a renderer shadow in it is larger than the card, so its edge falls
-  in open space as a dark ring detached from the contour.
-- Contour: a light hairline runs the full perimeter. It is what separates the
+  in open space as a dark ring detached from the contour. The window's alpha
+  is the card and nothing else, so the shadow traces the card.
+- Contour: a light hairline runs the full perimeter — 1 pt of white at
+  60/255, inside the edge, at the card's radius. It is what separates the
   card from the desktop when the shadow cannot — the shadow is dark, so over a
   dark window behind the popup it contributes nothing and the card would lose
   its boundary. Anything drawn inside the card stays well clear of the
   hairline: a second curve running next to it at a different radius reads as
   a misaligned double outline at the corners.
-- Three rows of equal height, separated by thin horizontal lines. The margin
-  between the outer rows and the card edges matches the margin between fields.
+- Three rows of equal height, separated by thin horizontal lines: a row is
+  42.5 pt — its 16 pt type inset 12 pt above and below and 20 pt sideways —
+  and a separator is 1 pt of white at 50/255. The margin between the outer
+  rows and the card edges matches the margin between fields.
 
 ## 3. Input fields
 
@@ -86,6 +99,7 @@ explicitly. Otherwise the spec applies to both.
   - Field 1: `Что я делаю?`
   - Field 2: `Хуйня?`
   - Field 3: `Следующий через (мин)`
+- Colours: the placeholder is gray 170; typed text is (235,235,240).
 - Focus is on the first field on open.
 - Navigation: Tab forward, Shift+Tab backward.
 - The active (focused) row shows a subtle rounded tint around its text: a

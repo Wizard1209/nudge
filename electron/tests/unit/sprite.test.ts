@@ -20,23 +20,23 @@ import {
 } from "../fixtures/png.js";
 
 const GREEN = readFileSync(join(__dirname, "../e2e/fixtures/sprite-green.png"));
-const card = { width: 480, height: 170 };
+const card = { width: 480, height: 130 };
 
 describe("spriteLayout", () => {
   it("our sprite: hangs above and left of a 679px card", () => {
     expect(
-      spriteLayout({ width: 679, height: 170 }, { x: -41, y: -277, width: 720, height: 430 }),
+      spriteLayout({ width: 679, height: 130 }, { x: -41, y: -277, width: 720, height: 430 }),
     ).toEqual({
-      window: { width: 720, height: 447 },
-      card: { x: 41, y: 277, width: 679, height: 170 },
+      window: { width: 720, height: 430 },
+      card: { x: 41, y: 277, width: 679, height: 130 },
       sprite: { x: 0, y: 0, width: 720, height: 430 },
     });
   });
 
   it("sprite fully above the card", () => {
     expect(spriteLayout(card, { x: 100, y: -60, width: 50, height: 40 })).toEqual({
-      window: { width: 480, height: 230 },
-      card: { x: 0, y: 60, width: 480, height: 170 },
+      window: { width: 480, height: 190 },
+      card: { x: 0, y: 60, width: 480, height: 130 },
       sprite: { x: 100, y: 0, width: 50, height: 40 },
     });
   });
@@ -44,7 +44,7 @@ describe("spriteLayout", () => {
   it("sprite below the card", () => {
     expect(spriteLayout(card, { x: 10, y: 200, width: 50, height: 40 })).toEqual({
       window: { width: 480, height: 240 },
-      card: { x: 0, y: 0, width: 480, height: 170 },
+      card: { x: 0, y: 0, width: 480, height: 130 },
       sprite: { x: 10, y: 200, width: 50, height: 40 },
     });
   });
@@ -52,23 +52,23 @@ describe("spriteLayout", () => {
   it("sprite left of the card", () => {
     expect(spriteLayout(card, { x: -80, y: 20, width: 60, height: 300 })).toEqual({
       window: { width: 560, height: 320 },
-      card: { x: 80, y: 0, width: 480, height: 170 },
+      card: { x: 80, y: 0, width: 480, height: 130 },
       sprite: { x: 0, y: 20, width: 60, height: 300 },
     });
   });
 
   it("sprite right of the card", () => {
     expect(spriteLayout(card, { x: 500, y: -10, width: 60, height: 50 })).toEqual({
-      window: { width: 560, height: 180 },
-      card: { x: 0, y: 10, width: 480, height: 170 },
+      window: { width: 560, height: 140 },
+      card: { x: 0, y: 10, width: 480, height: 130 },
       sprite: { x: 500, y: 0, width: 60, height: 50 },
     });
   });
 
   it("sprite fully inside the card leaves the window at card size", () => {
     expect(spriteLayout(card, { x: 20, y: 30, width: 100, height: 100 })).toEqual({
-      window: { width: 480, height: 170 },
-      card: { x: 0, y: 0, width: 480, height: 170 },
+      window: { width: 480, height: 130 },
+      card: { x: 0, y: 0, width: 480, height: 130 },
       sprite: { x: 20, y: 30, width: 100, height: 100 },
     });
   });
@@ -76,15 +76,15 @@ describe("spriteLayout", () => {
   it("sprite overlapping the bottom-right corner", () => {
     expect(spriteLayout(card, { x: 450, y: 150, width: 100, height: 60 })).toEqual({
       window: { width: 550, height: 210 },
-      card: { x: 0, y: 0, width: 480, height: 170 },
+      card: { x: 0, y: 0, width: 480, height: 130 },
       sprite: { x: 450, y: 150, width: 100, height: 60 },
     });
   });
 
   it("sprite overlapping the top-left corner", () => {
     expect(spriteLayout(card, { x: -30, y: -20, width: 100, height: 60 })).toEqual({
-      window: { width: 510, height: 190 },
-      card: { x: 30, y: 20, width: 480, height: 170 },
+      window: { width: 510, height: 150 },
+      card: { x: 30, y: 20, width: 480, height: 130 },
       sprite: { x: 0, y: 0, width: 100, height: 60 },
     });
   });
@@ -106,10 +106,10 @@ describe("spritePoints", () => {
 
 describe("spriteLayout with a sprite measured in half points", () => {
   it("rounds the window up to whole points so the sprite is never clipped", () => {
-    expect(spriteLayout(card, { x: 0, y: 170, width: 360.5, height: 215.5 })).toEqual({
-      window: { width: 480, height: 386 },
-      card: { x: 0, y: 0, width: 480, height: 170 },
-      sprite: { x: 0, y: 170, width: 360.5, height: 215.5 },
+    expect(spriteLayout(card, { x: 0, y: 130, width: 360.5, height: 215.5 })).toEqual({
+      window: { width: 480, height: 346 },
+      card: { x: 0, y: 0, width: 480, height: 130 },
+      sprite: { x: 0, y: 130, width: 360.5, height: 215.5 },
     });
   });
 });
@@ -123,23 +123,23 @@ describe("windowOrigin", () => {
   };
 
   it("centres the card on the monitor and puts its top at 25% of its height + 80", () => {
-    const card = { x: 0, y: 0, width: 480, height: 170 };
+    const card = { x: 0, y: 0, width: 480, height: 130 };
     expect(windowOrigin(display, card)).toEqual({ x: 495, y: 319 });
   });
 
   it("anchors on the monitor, not the work area: a Dock on the left and the menu bar move nothing", () => {
     const docked = { ...display, workArea: { x: 70, y: 33, width: 1400, height: 833 } };
-    const card = { x: 0, y: 0, width: 480, height: 170 };
+    const card = { x: 0, y: 0, width: 480, height: 130 };
     expect(windowOrigin(docked, card)).toEqual({ x: 495, y: 319 });
   });
 
   it("offsets the window so the card, not the window, lands on the spot", () => {
-    const card = { x: 41, y: 100, width: 679, height: 170 };
+    const card = { x: 41, y: 100, width: 679, height: 130 };
     expect(windowOrigin(display, card)).toEqual({ x: 396 - 41, y: 319 - 100 });
   });
 
   it("lets a decoration above the card rise into the menu bar strip as long as it stays on the work area", () => {
-    const card = { x: 41, y: 277, width: 679, height: 170 };
+    const card = { x: 41, y: 277, width: 679, height: 130 };
     expect(windowOrigin(display, card)).toEqual({ x: 355, y: 319 - 277 });
   });
 
@@ -148,7 +148,7 @@ describe("windowOrigin", () => {
       bounds: { x: 0, y: 0, width: 1280, height: 720 },
       workArea: { x: 0, y: 25, width: 1280, height: 695 },
     };
-    const card = { x: 41, y: 277, width: 679, height: 170 };
+    const card = { x: 41, y: 277, width: 679, height: 130 };
     // 180 + 80 − 277 = −17, which is above the work area; the card then
     // sits 277 below the work area's top instead.
     expect(windowOrigin(short, card)).toEqual({ x: 301 - 41, y: 25 });
@@ -159,7 +159,7 @@ describe("windowOrigin", () => {
       bounds: { x: 0, y: 0, width: 2560, height: 1440 },
       workArea: { x: 0, y: 25, width: 2560, height: 1415 },
     };
-    const card = { x: 41, y: 277, width: 679, height: 170 };
+    const card = { x: 41, y: 277, width: 679, height: 130 };
     expect(windowOrigin(tall, card)).toEqual({ x: 941 - 41, y: 360 + 80 - 277 });
   });
 });

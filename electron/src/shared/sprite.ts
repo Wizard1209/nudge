@@ -4,9 +4,15 @@
  * supply a decoder (nativeImage in Electron, canvas in the browser).
  */
 
-/** The popup card without a sprite. Height is fixed in both cases. */
+import { CARD_CONTENT_HEIGHT } from "./card";
+
+/**
+ * The popup card without a sprite. The height is the whole number of points
+ * that holds the card's three rows and two separators; it is the same with a
+ * sprite, which changes only the width.
+ */
 export const CARD_WIDTH = 480;
-export const CARD_HEIGHT = 170;
+export const CARD_HEIGHT = Math.ceil(CARD_CONTENT_HEIGHT);
 
 export interface Size {
   width: number;

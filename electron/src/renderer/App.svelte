@@ -13,6 +13,8 @@
     spritePoints,
     type SpriteView,
   } from "../shared/sprite";
+  import { cardFillAlpha, cardMaterial } from "../shared/card";
+  import { detectPlatform } from "../shared/platform";
 
   let doing = $state("");
   let bullshit = $state("");
@@ -46,6 +48,14 @@
   // = 1 device pixel). Electron: the main process validates config.sprite and
   // pushes the layout. Browser (tests): `?sprite=<url>&x=<pt>&y=<pt>&cardWidth=<pt>`.
   let sprite: SpriteView | null = $state(null);
+
+  // Spec §2: the fill only tints whatever material the OS puts behind the
+  // card, so its alpha follows the platform and whether a sprite made the
+  // window transparent (which rules Acrylic out).
+  const platform = detectPlatform();
+  const cardAlpha = $derived(
+    cardFillAlpha(cardMaterial({ electron: isElectron, platform, sprite: !!sprite })),
+  );
 
   async function browserSprite(): Promise<SpriteView | null> {
     const query = new URLSearchParams(location.search);
@@ -264,29 +274,31 @@
     <form
       onkeydown={handleKeydown}
       onsubmit={(e) => e.preventDefault()}
-      class="absolute z-10 {sprite ? '' : `left-1/2 -translate-x-1/2 w-[480px] ${isElectron ? 'top-0' : 'top-[calc(25vh+80px)]'}`} card bg-zinc-900/80 backdrop-blur-md text-white rounded-lg shadow-2xl overflow-hidden"
+      class="absolute z-10 {sprite ? '' : `left-1/2 -translate-x-1/2 w-[480px] ${isElectron ? 'top-0' : 'top-[calc(25vh+80px)]'}`} card overflow-hidden"
+      class:card-browser={!isElectron}
+      style:--card-alpha={cardAlpha}
       style:left={sprite ? `calc(${stageLeft(sprite)} + ${sprite.layout.card.x}px)` : undefined}
       style:top={sprite ? `calc(${stageTop(sprite)} + ${sprite.layout.card.y}px)` : undefined}
       style:width={sprite ? `${sprite.layout.card.width}px` : undefined}
       data-testid="nudge"
     >
-      <div class="row border-b border-zinc-700">
+      <div class="row separated">
         <input
           bind:this={doingInput}
           bind:value={doing}
           type="text"
           placeholder="Что я делаю?"
           data-testid="field-doing"
-          class="w-full bg-transparent text-white px-5 py-4 text-base outline-none placeholder-zinc-500 transition-none"
+          class="transition-none"
         />
       </div>
-      <div class="row border-b border-zinc-700">
+      <div class="row separated">
         <input
           bind:value={bullshit}
           type="text"
           placeholder="Хуйня?"
           data-testid="field-bullshit"
-          class="w-full bg-transparent text-white px-5 py-4 text-base outline-none placeholder-zinc-500 transition-none"
+          class="transition-none"
         />
       </div>
       <div class="row">
@@ -297,7 +309,7 @@
           inputmode="decimal"
           placeholder="Следующий через (мин)"
           data-testid="field-minutes"
-          class="w-full bg-transparent text-white px-5 py-4 text-base outline-none placeholder-zinc-500 transition-none"
+          class="transition-none"
         />
       </div>
     </form>

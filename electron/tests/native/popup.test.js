@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { launchApp } from './fixtures/electron.js';
+import { launchApp, popupState } from './fixtures/electron.js';
 
 // Bug 2: "after three Tabs the window closes."
 // The popup is a frameless, always-on-top window with exactly three fields.
@@ -62,7 +62,7 @@ describe('popup — Tab navigation must keep focus inside the window', () => {
 // Bug 1 (the real one): "on first open only half is visible." The card is
 // positioned `top-[calc(25vh+80px)]` — correct for the browser build where the
 // window IS the full screen, but in Electron the window is sized to the card
-// (480×170) and the main process already places it at its spec spot. So the
+// (480×130) and the main process already places it at its spec spot. So the
 // offset pushes the card down INSIDE its own window: a transparent strip
 // appears above it (the blurred-desktop band) and the last field is clipped
 // below the fold. The card must fill its window in Electron.
@@ -82,7 +82,7 @@ describe('popup — the card fills its window (nothing clipped)', () => {
     const g = await popup.evaluate(() => {
       const r = (sel) => {
         const b = document.querySelector(sel).getBoundingClientRect();
-        return { top: b.top, bottom: b.bottom };
+        return { top: b.top, bottom: b.bottom, height: b.height };
       };
       return {
         innerH: window.innerHeight,
@@ -93,6 +93,11 @@ describe('popup — the card fills its window (nothing clipped)', () => {
       };
     });
 
+    // The window is the card: 480 wide, and the whole number of points that
+    // holds three 42.5 rows and two 1px separators (129.5).
+    const { contentBounds } = await popupState(app);
+    expect([contentBounds.width, contentBounds.height]).toEqual([480, 130]);
+    expect(Math.abs(g.card.height - 129.5)).toBeLessThanOrEqual(0.5);
     // Card flush with the top of its card-sized window — no viewport-relative
     // offset leaking in from the browser layout.
     expect(g.card.top).toBeLessThanOrEqual(4);

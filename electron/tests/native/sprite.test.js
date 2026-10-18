@@ -61,9 +61,15 @@ describe('popup with a sprite', () => {
     await expect.poll(async () => (await popupState(app))?.visible).toBe(true);
   }
 
+  /** card ∪ sprite for REAL: the sprite's point size depends on the display scale. */
+  async function realSize() {
+    const scale = await scaleFactor();
+    return [Math.max(41 + 679, 720 / scale), Math.max(277 + 130, 430 / scale)];
+  }
+
   it('sizes the window to card ∪ sprite', async () => {
     await launch({ sprite: REAL });
-    expect(await size()).toEqual([720, 447]);
+    expect(await size()).toEqual(await realSize());
   });
 
   /** Scale factor of the display the popup goes on (the cursor's). */
@@ -97,9 +103,9 @@ describe('popup with a sprite', () => {
 
   it('sizes the window from the sprite\'s point size, so it follows the display scale', async () => {
     // Below a default card nothing but the sprite sets the height.
-    await launch({ sprite: { ...REAL, x: 0, y: 170, card_width: 480 } });
+    await launch({ sprite: { ...REAL, x: 0, y: 130, card_width: 480 } });
     const scale = await scaleFactor();
-    expect(await size()).toEqual([Math.max(480, 720 / scale), 170 + 430 / scale]);
+    expect(await size()).toEqual([Math.max(480, 720 / scale), 130 + 430 / scale]);
   });
 
   it('keeps the card at its spec screen spot, or as close as the sprite lets it', async () => {
@@ -122,15 +128,15 @@ describe('popup with a sprite', () => {
     ]);
   });
 
-  it('shows the plain 480×170 popup when the sprite is disabled', async () => {
+  it('shows the plain 480×130 popup when the sprite is disabled', async () => {
     const { popup } = await launch({ sprite: { ...REAL, enabled: false } });
-    expect(await size()).toEqual([480, 170]);
+    expect(await size()).toEqual([480, 130]);
     expect(await popup.$('[data-testid="sprite"]')).toBeNull();
   });
 
   it('falls back to the plain popup on a missing file', async () => {
     const { popup } = await launch({ sprite: { ...REAL, path: path.join(os.tmpdir(), 'no-such-sprite.png') } });
-    expect(await size()).toEqual([480, 170]);
+    expect(await size()).toEqual([480, 130]);
     expect(await popup.$('[data-testid="sprite"]')).toBeNull();
   });
 
@@ -139,7 +145,7 @@ describe('popup with a sprite', () => {
     const opaque = path.join(dir, 'opaque.png');
     writeFileSync(opaque, opaqueRgbaPng());
     const { popup } = await launch({ sprite: { ...REAL, path: opaque } });
-    expect(await size()).toEqual([480, 170]);
+    expect(await size()).toEqual([480, 130]);
     expect(await popup.$('[data-testid="sprite"]')).toBeNull();
   });
 
@@ -154,14 +160,14 @@ describe('popup with a sprite', () => {
     const { popup, dir } = await launch(null);
     await hide(popup);
     writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ sprite: REAL }));
-    await expect.poll(size, { timeout: 10_000 }).toEqual([720, 447]);
+    await expect.poll(size, { timeout: 10_000 }).toEqual(await realSize());
     await show();
     await popupPage().waitForSelector('[data-testid="sprite"]');
     expect((await geometry(popupPage())).card.width).toBe(679);
 
     await hide(popupPage());
     writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ sprite: { ...REAL, enabled: false } }));
-    await expect.poll(size, { timeout: 10_000 }).toEqual([480, 170]);
+    await expect.poll(size, { timeout: 10_000 }).toEqual([480, 130]);
     await show();
     expect(await popupPage().$('[data-testid="sprite"]')).toBeNull();
   });
@@ -171,27 +177,27 @@ describe('popup with a sprite', () => {
     writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ sprite: REAL }));
     // Give the watcher time to fire; the open popup must not change under the user.
     await new Promise((r) => setTimeout(r, 1000));
-    expect(await size()).toEqual([480, 170]);
+    expect(await size()).toEqual([480, 130]);
     // Hiding applies the sprite by recreating the window, which can close the
     // page between keydown and keyup: the outcome is checked below instead.
     await popupPage().keyboard.press('Escape').catch(() => {});
     await expect.poll(async () => (await popupState(app))?.visible).toBe(false);
-    await expect.poll(size, { timeout: 10_000 }).toEqual([720, 447]);
+    await expect.poll(size, { timeout: 10_000 }).toEqual(await realSize());
   });
 
   it('moves the sprite when only its placement changes', async () => {
     const { popup, dir } = await launch({ sprite: REAL });
     await hide(popup);
-    writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ sprite: { ...REAL, x: 0, y: 170, card_width: 480 } }));
+    writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ sprite: { ...REAL, x: 0, y: 130, card_width: 480 } }));
     // Sprite hangs below a default card: as wide as the wider of the two,
     // card plus sprite tall, the sprite measured in points.
     const scale = await scaleFactor();
-    await expect.poll(size, { timeout: 10_000 }).toEqual([Math.max(480, 720 / scale), 170 + 430 / scale]);
+    await expect.poll(size, { timeout: 10_000 }).toEqual([Math.max(480, 720 / scale), 130 + 430 / scale]);
     await show();
     await expect.poll(async () => {
       const g = await geometry(popupPage());
       return g.sprite && [g.sprite.left, g.sprite.top, g.card.left, g.card.top, g.card.width];
-    }).toEqual([0, 170, 0, 0, 480]);
+    }).toEqual([0, 130, 0, 0, 480]);
   });
 
   it('Settings blocks saving an enabled sprite that is not a cut-out PNG', async () => {

@@ -437,7 +437,10 @@ function createWindow() {
     backgroundColor: "#00000000",
     backgroundMaterial: acrylic ? "acrylic" : undefined,
     roundedCorners: true,
-    hasShadow: false,
+    // macOS shadows the window's alpha silhouette, and the page draws no
+    // shadow of its own, so what AppKit traces is the card (spec §2). On
+    // Windows the Acrylic window keeps no shadow, as before.
+    hasShadow: isMac,
     paintWhenInitiallyHidden: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
