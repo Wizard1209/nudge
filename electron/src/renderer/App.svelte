@@ -264,7 +264,7 @@
     <form
       onkeydown={handleKeydown}
       onsubmit={(e) => e.preventDefault()}
-      class="absolute z-10 {sprite ? '' : `left-1/2 -translate-x-1/2 w-[480px] ${isElectron ? 'top-0' : 'top-[calc(25vh+80px)]'}`} bg-zinc-900/80 backdrop-blur-md text-white rounded-lg shadow-2xl overflow-hidden"
+      class="absolute z-10 {sprite ? '' : `left-1/2 -translate-x-1/2 w-[480px] ${isElectron ? 'top-0' : 'top-[calc(25vh+80px)]'}`} card bg-zinc-900/80 backdrop-blur-md text-white rounded-lg shadow-2xl overflow-hidden"
       style:left={sprite ? `calc(${stageLeft(sprite)} + ${sprite.layout.card.x}px)` : undefined}
       style:top={sprite ? `calc(${stageTop(sprite)} + ${sprite.layout.card.y}px)` : undefined}
       style:width={sprite ? `${sprite.layout.card.width}px` : undefined}

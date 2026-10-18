@@ -1,5 +1,19 @@
 @import "tailwindcss";
 
+/* The popup card is set in Ubuntu Light 16px — egui's bundled default face,
+   so the Electron and Rust surfaces shape text alike. Licence: fonts/UFL.txt. */
+@font-face {
+  font-family: "Ubuntu";
+  font-weight: 300;
+  font-style: normal;
+  src: url("./fonts/Ubuntu-Light.ttf") format("truetype");
+}
+.card {
+  font-family: "Ubuntu", system-ui, sans-serif;
+  font-weight: 300;
+  font-size: 16px;
+}
+
 /* Spec §3: the focused row shows a rounded tint around its text — a field
    inside the row (inset 10px sideways, 5px vertically, radius 8), not a
    fill of the whole row and not a plate hugging the card's contour. The

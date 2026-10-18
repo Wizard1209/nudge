@@ -362,6 +362,30 @@ describe('popup visual', () => {
         expect(filter).toMatch(/blur\(/);
     });
 
+    it('card text is set in Ubuntu Light 16px, the egui default face', async () => {
+        // The reference app renders with egui's bundled Ubuntu Light; the
+        // renderer bundles the same file so both surfaces shape text alike.
+        const { face, checked, family, size, weight } = await page.evaluate(async () => {
+            await document.fonts.ready;
+            const face = [...document.fonts].find(
+                (f) => f.family.replace(/"/g, '') === 'Ubuntu',
+            );
+            const s = getComputedStyle(document.querySelector('[data-testid="nudge"] input'));
+            return {
+                face: face ? { status: face.status, weight: face.weight } : null,
+                checked: document.fonts.check('300 16px Ubuntu'),
+                family: s.fontFamily,
+                size: s.fontSize,
+                weight: s.fontWeight,
+            };
+        });
+        expect(face).toEqual({ status: 'loaded', weight: '300' });
+        expect(checked).toBe(true);
+        expect(family).toMatch(/^"?Ubuntu"?/);
+        expect(size).toBe('16px');
+        expect(weight).toBe('300');
+    });
+
     it('focused row has a visible background tint distinct from unfocused rows', async () => {
         // First field is auto-focused on mount. The tint is the row's
         // `::before` field (spec §3), not the input's own background.

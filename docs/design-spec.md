@@ -58,6 +58,8 @@ explicitly. Otherwise the spec applies to both.
   have no blur today** and carry a near-opaque fill instead — without one, a
   translucent card leaves the desktop legible straight through it.
 - Width is around 480px; height grows with content.
+- Typeface: Ubuntu Light at 16 pt, the egui default; every build bundles the
+  face rather than taking whatever the system has.
 - Corner radius is noticeable and soft.
 - Shadow: minimal by baseline; slightly softer is acceptable for aesthetics.
   Exactly one layer draws it. Where the compositor can — macOS, from the
