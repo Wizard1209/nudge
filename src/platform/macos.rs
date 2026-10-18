@@ -63,9 +63,9 @@ use eframe::egui;
 use muda::{Menu, MenuEvent, MenuId, MenuItem};
 use objc2::rc::Retained;
 use objc2_app_kit::{
-    NSAppearance, NSAppearanceCustomization, NSAppearanceNameVibrantDark, NSApplication, NSView,
-    NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
-    NSWindowCollectionBehavior, NSWindowOrderingMode,
+    NSAppearance, NSAppearanceCustomization, NSAppearanceNameVibrantDark, NSApplication, NSScreen,
+    NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
+    NSVisualEffectView, NSWindowCollectionBehavior, NSWindowOrderingMode,
 };
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -75,6 +75,7 @@ use crate::config_watcher::{self, ConfigChange};
 use crate::daisy;
 use crate::hotkey::{self, Hotkey};
 use crate::nudge_state;
+use crate::sprite::ScreenGeometry;
 
 pub mod hotkey_carbon;
 pub mod key_monitor;
@@ -132,11 +133,6 @@ static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// by `App::hide_popup`. Both raise sites matter — see [`reveal`] for what the
 /// gap between them used to cost.
 static POPUP_VISIBLE: AtomicBool = AtomicBool::new(true);
-
-/// One-shot: the spotlight window has been moved to its spec §1 position.
-/// See [`apply_window_position`] for why this cannot happen in the viewport
-/// builder.
-static POSITION_APPLIED: AtomicBool = AtomicBool::new(false);
 
 /// What [`start`] recorded for [`start_on_event_loop`] to build. Taken once.
 static PENDING_START: Mutex<Option<(Option<Hotkey>, PathBuf, config::Config)>> = Mutex::new(None);
@@ -384,8 +380,6 @@ pub fn request_config_reload() {
 /// flag routes expiry into the same `ui()` branch Windows uses, so there is one
 /// definition of what a timer-fired open does.
 pub fn tick(ctx: &egui::Context) {
-    apply_window_position(ctx);
-
     if QUIT_REQUESTED.swap(false, Ordering::SeqCst) {
         std::process::exit(0);
     }
@@ -510,36 +504,53 @@ pub fn focus_popup(ctx: &egui::Context) {
 
 // ---------- window placement -----------------------------------------------
 
-/// Move the spotlight window to its spec §1 position, once.
+/// The monitor the spotlight window is on, in egui points with a top-left
+/// origin: its whole frame and the part the menu bar and the Dock leave
+/// free. `NudgeApp::place_window` makes the window the latter (spec §1).
 ///
-/// This cannot happen in the `ViewportBuilder` the way it does on Windows,
-/// because the screen size is not knowable before the event loop exists — and
+/// This cannot be known in the `ViewportBuilder` the way the position is on
+/// Windows, because no screen is knowable before the event loop exists — and
 /// the Win32 answer is the wrong shape anyway: `GetSystemMetrics` returns
-/// physical pixels while `with_position` takes logical points, so a literal
-/// port would double the offset on a Retina display. `monitor_size` comes out
-/// of winit already divided by the scale factor, so the arithmetic below is
-/// points throughout, which is what `window_position` (and the tests that pin
-/// it) assume.
+/// physical pixels while egui wants points, so a literal port would double
+/// the offset on a Retina display. AppKit's points carry the backing scale
+/// already; only the zoom factor separates them from egui's.
 ///
-/// Costs one frame at winit's default placement on launch, since the first
-/// tick is the earliest the monitor is known.
-fn apply_window_position(ctx: &egui::Context) {
-    if POSITION_APPLIED.load(Ordering::SeqCst) {
-        return;
-    }
-    let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) else {
-        // Not known yet (or no monitor at all, under kittest). Try again next
-        // tick; the visible launch popup is repainting at 1 Hz.
-        return;
+/// `None` off the main thread (kittest) and before the window has a handle.
+pub fn screen_geometry(ctx: &egui::Context, frame: &eframe::Frame) -> Option<ScreenGeometry> {
+    let mtm = MainThreadMarker::new()?;
+    let Ok(handle) = frame.window_handle() else {
+        return None;
     };
-    let (x, y) = nudge_state::window_position(
-        (monitor.x as u32, monitor.y as u32),
-        nudge_state::POPUP_SIZE,
-    );
-    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
-        x as f32, y as f32,
-    )));
-    POSITION_APPLIED.store(true, Ordering::SeqCst);
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        return None;
+    };
+    // SAFETY: the handle is winit's own content view, alive for as long as the
+    // window is, and we are on the thread that owns it.
+    let content: &NSView = unsafe { &*appkit.ns_view.as_ptr().cast::<NSView>() };
+    // A window off every screen has none; the main one is where it will show.
+    let screen = content
+        .window()
+        .and_then(|w| w.screen())
+        .or_else(|| NSScreen::mainScreen(mtm))?;
+    // AppKit's screen space has its origin at the primary screen's bottom
+    // left, y up. winit flips through the primary screen's height too, so
+    // what goes back out through `ViewportCommand::OuterPosition` lands where
+    // this read it.
+    // SAFETY: the array is a fresh retained copy; `firstObject` only reads it.
+    let primary = unsafe { NSScreen::screens(mtm).firstObject() }?;
+    let primary_height = primary.frame().size.height;
+    let zoom = f64::from(ctx.zoom_factor());
+    let flip = |r: NSRect| {
+        let top = primary_height - (r.origin.y + r.size.height);
+        egui::Rect::from_min_size(
+            egui::pos2((r.origin.x / zoom) as f32, (top / zoom) as f32),
+            egui::vec2((r.size.width / zoom) as f32, (r.size.height / zoom) as f32),
+        )
+    };
+    Some(ScreenGeometry {
+        monitor: flip(screen.frame()),
+        work: flip(screen.visibleFrame()),
+    })
 }
 
 // ---------- status item ----------------------------------------------------
@@ -1422,22 +1433,5 @@ mod tests {
 
         let _ = children[0].kill();
         let _ = children[0].wait();
-    }
-
-    // === window placement ====================================================
-
-    #[test]
-    fn position_is_computed_in_points_not_pixels() {
-        // The Retina trap: `monitor_size` is already logical, so a 1470x956
-        // built-in display must produce the 1470x956 answer — not the 2940x1912
-        // one a `GetSystemMetrics`-shaped port would compute.
-        let (x, y) = nudge_state::window_position((1470, 956), nudge_state::POPUP_SIZE);
-        assert_eq!((x, y), (475, 239));
-        let (x2, y2) = nudge_state::window_position((2940, 1912), nudge_state::POPUP_SIZE);
-        assert_ne!(
-            (x, y),
-            (x2, y2),
-            "if these agreed the test could not see the doubling it exists to catch"
-        );
     }
 }

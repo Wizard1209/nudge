@@ -176,16 +176,16 @@ pub fn repaint_interval(popup_visible: bool) -> Option<Duration> {
 /// The spotlight window's size at creation, in points — the `(width, height)`
 /// [`window_position`] centres. The visible size is the work area of the
 /// monitor the popup is on (`sprite::shield_layout`, spec §1); this box is
-/// only what the window is born as. One constant because the two platforms
-/// compute the position at different moments (Windows before the event loop,
-/// macOS on the first tick, once winit can say which monitor the window
-/// landed on) and a disagreement between them would show up as a window that
-/// is centred on one platform and not the other.
+/// only what the window is born as, and on Windows, where the shield is
+/// still pending, what it stays.
 pub const POPUP_SIZE: (u32, u32) = (520, 320);
 
 /// Screen position for the spotlight window: horizontally centered; the top
 /// of the window sits at 25% of screen height (spec §1 — upper third, at
 /// natural eye level). Window height is irrelevant to the y anchor.
+// Only Windows still positions a box at creation; the macOS window is the
+// work area (`sprite::shield_layout`), and the tests tie the two paths together.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub fn window_position(screen: (u32, u32), window: (u32, u32)) -> (i32, i32) {
     let (sw, sh) = (screen.0 as i32, screen.1 as i32);
     let (ww, _wh) = (window.0 as i32, window.1 as i32);

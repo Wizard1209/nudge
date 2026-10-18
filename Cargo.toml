@@ -74,6 +74,7 @@ objc2-app-kit = { version = "0.2", features = [
     "NSResponder",
     "NSGraphics",         # NSWindowOrderingMode, for inserting below the GL view
     "NSWindow",
+    "NSScreen",           # the monitor the popup is on: frame and visibleFrame, the window's size while visible
     "NSAppearance",       # pin the material dark — the card is dark in every theme
     "objc2-quartz-core",  # NSView::layer(), to clip the blur to the card's radius
     "NSEvent",            # the app-local key-down monitor the recorder reads, and the click the status item's action tells apart

@@ -420,6 +420,7 @@ function createWindow() {
   // out (see above): with a sprite the window is transparent everywhere.
   // TODO: the transparent area around the card still eats clicks — toggle
   // setIgnoreMouseEvents(…, { forward: true }) on card hover.
+  // TODO: spec §1 click shield — while visible the window should cover the work area, transparent outside the card and sprite, so a click beside the card closes the popup and reaches nothing beneath.
   const acrylic = isWindows && !sprite;
   const size = windowSize();
   win = new BrowserWindow({

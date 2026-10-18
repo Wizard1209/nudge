@@ -2,7 +2,7 @@ use eframe::egui;
 
 use crate::config::SpriteConfig;
 use crate::nudge_state::{self, Action, TriggerSource};
-use crate::sprite::{self, PopupLayout, ScreenGeometry, SpritePlacement};
+use crate::sprite::{self, PopupLayout, ScreenGeometry};
 use crate::timer::Timer;
 use crate::word_jump;
 
@@ -106,13 +106,19 @@ pub struct LoadedSprite {
     cfg: SpriteConfig,
 }
 
-impl LoadedSprite {
-    fn placement(&self, pixels_per_point: f32) -> SpritePlacement {
-        SpritePlacement {
-            xy: (self.cfg.x, self.cfg.y),
-            size: sprite::sprite_points(self.px, pixels_per_point),
-        }
-    }
+/// Everything the window's geometry was last derived from: the screen it is
+/// on, that screen's scale, and the sprite's pixel size, offset and card
+/// width. The window is laid out again when any of it changes — a display
+/// change under a visible popup included (§10).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Placement {
+    pub geometry: ScreenGeometry,
+    pub ppp: f32,
+    pub sprite: Option<([u32; 2], (i32, i32), u32)>,
+}
+
+pub fn placement_is_stale(placed: Option<&Placement>, now: &Placement) -> bool {
+    placed != Some(now)
 }
 
 pub struct NudgeApp {
@@ -135,9 +141,11 @@ pub struct NudgeApp {
     /// its PNG passed the check (spec §10).
     sprite: Option<LoadedSprite>,
     /// The screen the popup is laid out on, injected by the kittest tier,
-    /// which has no OS window.
-    // TODO(U4b): the real window reads its own screen and covers the work area.
+    /// which has no OS window; the real window reads its own screen
+    /// (`platform::screen_geometry`).
     geometry_override: Option<ScreenGeometry>,
+    /// What the window was last placed for (`place_window`).
+    placed: Option<Placement>,
     /// Where the card and the sprite go, in window coordinates. `None`
     /// while there is no screen to lay out on: then the card sits in the
     /// window as a box (`sprite::card_in_box`).
@@ -223,6 +231,7 @@ impl NudgeApp {
             card_rect: None,
             sprite: None,
             geometry_override: None,
+            placed: None,
             layout: None,
             #[cfg(target_arch = "wasm32")]
             pill_rect: None,
@@ -264,18 +273,60 @@ impl NudgeApp {
         self
     }
 
-    fn relayout(&mut self, ctx: &egui::Context) {
-        self.layout = self.geometry_override.map(|geometry| {
-            let card_width = self
+    /// Make the window the work area of the monitor it is on (spec §1) and
+    /// lay the card and the sprite out in it. Runs every frame, hidden ones
+    /// included, so the window is already right when it is revealed; it
+    /// only talks to the OS when something it was placed for has changed.
+    ///
+    /// With no screen to read — the kittest harness, the browser canvas —
+    /// the card stays in the window as a box.
+    fn place_window(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        #[cfg(not(target_arch = "wasm32"))]
+        let screen = self
+            .geometry_override
+            .or_else(|| crate::platform::screen_geometry(ctx, frame));
+        #[cfg(target_arch = "wasm32")]
+        let screen = {
+            let _ = frame;
+            self.geometry_override
+        };
+        let Some(geometry) = screen else {
+            self.layout = None;
+            self.placed = None;
+            return;
+        };
+
+        let now = Placement {
+            geometry,
+            ppp: ctx.pixels_per_point(),
+            sprite: self
                 .sprite
                 .as_ref()
-                .map_or(crate::config::DEFAULT_CARD_WIDTH, |s| s.cfg.card_width);
-            let placement = self
-                .sprite
-                .as_ref()
-                .map(|s| s.placement(ctx.pixels_per_point()));
-            sprite::shield_layout(&geometry, card_width as f32, placement)
-        });
+                .map(|s| (s.px, (s.cfg.x, s.cfg.y), s.cfg.card_width)),
+        };
+        if !placement_is_stale(self.placed.as_ref(), &now) {
+            return;
+        }
+
+        // TODO: a second monitor is not shielded.
+        // TODO: invalidateShadow() after a resize if AppKit's cached shadow
+        // goes stale (check in the guest).
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(geometry.work.min));
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(geometry.work.size()));
+
+        let (card_width, placement) = match &self.sprite {
+            Some(s) => (
+                s.cfg.card_width,
+                sprite::placement_of(&s.cfg, Some(s.px), now.ppp),
+            ),
+            None => (crate::config::DEFAULT_CARD_WIDTH, None),
+        };
+        self.layout = Some(sprite::shield_layout(
+            &geometry,
+            card_width as f32,
+            placement,
+        ));
+        self.placed = Some(now);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -842,12 +893,11 @@ impl eframe::App for NudgeApp {
     /// Drawing, and the state transitions that depend on what was drawn,
     /// stay in `ui()`.
     #[cfg(not(target_arch = "wasm32"))]
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         crate::platform::tick(ctx);
+        self.place_window(ctx, frame);
     }
 
-    // `frame` only feeds the card backdrop, which has no web counterpart.
-    #[cfg_attr(target_arch = "wasm32", expect(unused_variables))]
     fn ui(&mut self, root_ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         // eframe 0.34 replaced `App::update(ctx)` with `App::ui(ui)`. The
         // `ui` we're handed is the central panel (transparent, no margin); we
@@ -983,7 +1033,9 @@ impl eframe::App for NudgeApp {
         // central panel — wallpaper/desktop shows through around the card.
         // We paint only the floating card Area on top of it.
         if self.popup_visible {
-            self.relayout(ctx);
+            // `logic` placed the window already on native; here for the
+            // builds that have no `logic` frame: the harness and the browser.
+            self.place_window(ctx, frame);
             self.draw_card(ctx);
             // The blur behind the card is an OS-side panel, so it has to be
             // told where the card ended up — every frame, because the card's
@@ -1004,9 +1056,71 @@ impl eframe::App for NudgeApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use eframe::egui::{Rect, pos2, vec2};
 
     #[test]
     fn clear_color_is_fully_transparent() {
         assert_eq!(CLEAR_COLOR_TRANSPARENT, [0.0, 0.0, 0.0, 0.0]);
+    }
+
+    fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect {
+        Rect::from_min_size(pos2(x, y), vec2(w, h))
+    }
+
+    /// This host, 2x, with our sprite on a 679 pt card.
+    fn placement() -> Placement {
+        Placement {
+            geometry: ScreenGeometry {
+                monitor: rect(0.0, 0.0, 1470.0, 956.0),
+                work: rect(0.0, 33.0, 1470.0, 833.0),
+            },
+            ppp: 2.0,
+            sprite: Some(([720, 430], (-41, -277), 679)),
+        }
+    }
+
+    #[test]
+    fn a_window_never_placed_is_stale() {
+        assert!(placement_is_stale(None, &placement()));
+    }
+
+    #[test]
+    fn the_same_placement_is_not_stale() {
+        assert!(!placement_is_stale(Some(&placement()), &placement()));
+    }
+
+    #[test]
+    fn any_changed_input_makes_the_placement_stale() {
+        let base = placement();
+        let mut cases = Vec::new();
+        // The Dock came back: the work area shrank.
+        let mut c = base;
+        c.geometry.work = rect(0.0, 33.0, 1470.0, 760.0);
+        cases.push(("work area", c));
+        // The window is on another display now.
+        let mut c = base;
+        c.geometry.monitor = rect(1470.0, 0.0, 1920.0, 1080.0);
+        cases.push(("monitor", c));
+        let mut c = base;
+        c.ppp = 1.0;
+        cases.push(("scale", c));
+        let mut c = base;
+        c.sprite = Some(([721, 430], (-41, -277), 679));
+        cases.push(("sprite pixels", c));
+        let mut c = base;
+        c.sprite = Some(([720, 430], (-40, -277), 679));
+        cases.push(("sprite x", c));
+        let mut c = base;
+        c.sprite = Some(([720, 430], (-41, -276), 679));
+        cases.push(("sprite y", c));
+        let mut c = base;
+        c.sprite = Some(([720, 430], (-41, -277), 680));
+        cases.push(("card width", c));
+        let mut c = base;
+        c.sprite = None;
+        cases.push(("sprite off", c));
+        for (what, now) in cases {
+            assert!(placement_is_stale(Some(&base), &now), "{what}");
+        }
     }
 }

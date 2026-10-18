@@ -33,6 +33,12 @@ explicitly. Otherwise the spec applies to all of them.
 
 - No system title bar or frame.
 - Always on top of other windows while visible.
+- While visible the window covers the whole work area of the monitor it is
+  on — the part the menu bar, the Dock and the taskbar leave free —
+  transparent except the card and the sprite (§10). A click anywhere else on
+  that monitor closes the popup (§4) and reaches nothing beneath. The menu
+  bar and the Dock / taskbar stay above it. Only the popup's own monitor is
+  covered.
 - On macOS the popup appears on whichever Space is current, full-screen
   ones included; Mission Control and the click-wallpaper-to-reveal-desktop
   gesture leave it where it is. It takes the keyboard when shown even if
@@ -151,7 +157,7 @@ starts.
 | **Deadline** | The interval elapses. |
 | **Summon** | Tray/menu-bar left click, the `Show Nudge` menu item, or the global hotkey (§5). Three triggers, one event — they are indistinguishable downstream. |
 | **Submit** | `Enter`. |
-| **Leave** | `Esc`, a click outside the card, or the window losing focus **after having held it**. Three triggers, one event: the transition table treats them identically. |
+| **Leave** | `Esc`, a click anywhere on the monitor outside the card (the window covers the work area while visible, §1, so the click reaches nothing beneath), or the window losing focus **after having held it**. Three triggers, one event: the transition table treats them identically. |
 
 The focus trigger carries its condition in its own definition rather than as
 a guard: if this open of the popup never received the keyboard — a
@@ -656,24 +662,23 @@ sprite were off.
   sprite's own business — its transparent margins and the configured `x`/`y`
   decide it — and the app never pushes it off the card. It takes no clicks:
   the fields under it stay reachable.
-- The window is the union of the card and the sprite, rounded up to whole
-  points, and is fully transparent outside the card and the sprite's own
-  pixels: no material and no fill there. The renderer draws no shadow around
-  the sprite; the compositor's shadow (§2) traces the window's alpha
+- The window covers the work area while the popup is visible (§1). The
+  card and the sprite's own pixels are the only opaque content: no material
+  and no fill anywhere else. The renderer draws no shadow around the
+  sprite; the compositor's shadow (§2) traces the window's alpha
   silhouette, so on macOS the sprite's opaque pixels cast one the way the
   card does. On Windows the Acrylic material §2 mentions needs a window
   that is not transparent, so it is off while a sprite is on and the card's
-  fill carries the 95% alone.
+  fill carries the 95% alone; the Windows port of the shield is pending.
 
 ### Position on screen
 
 The card keeps its §1 anchor: centred on the monitor, top edge at 25% of
 the monitor height plus 80 pt. The sprite may rise above the card; when it
 would rise past the top of the work area (the strip the menu bar or taskbar
-takes), the window is pinned to the top of the work area instead and the
-card moves down by the overhang, so the sprite is shown whole, as high as
-the screen allows. Nothing is pinned at the bottom: the card may hang off
-there.
+takes), the card moves down by the overhang, so the sprite is shown whole,
+as high as the screen allows. Nothing is pinned at the bottom: the card may
+hang off there.
 
 ### Applying a change
 

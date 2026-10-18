@@ -3,6 +3,8 @@
 
 use eframe::egui::{Rect, Vec2, pos2, vec2};
 
+use crate::config::SpriteConfig;
+
 /// The card's height: the whole number of points that holds its three rows
 /// and two separators (§2). A sprite changes only the width.
 pub const CARD_HEIGHT: f32 = 130.0;
@@ -40,6 +42,19 @@ pub struct PopupLayout {
 /// pixel: its size in points is its pixel size over the display's scale.
 pub fn sprite_points(px: [u32; 2], pixels_per_point: f32) -> Vec2 {
     vec2(px[0] as f32, px[1] as f32) / pixels_per_point
+}
+
+/// The sprite as the config places it, at this display's scale. `None`
+/// without a decoded picture: the sprite is off, or its PNG failed the check.
+pub fn placement_of(
+    cfg: &SpriteConfig,
+    px: Option<[u32; 2]>,
+    pixels_per_point: f32,
+) -> Option<SpritePlacement> {
+    px.map(|px| SpritePlacement {
+        xy: (cfg.x, cfg.y),
+        size: sprite_points(px, pixels_per_point),
+    })
 }
 
 /// The card's top edge on a monitor of this height (§1). Floored so it
@@ -89,6 +104,7 @@ pub fn shield_layout(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::SpriteConfig;
     use crate::nudge_state::{POPUP_SIZE, window_position};
     use eframe::egui::{Rect, pos2, vec2};
 
@@ -135,6 +151,27 @@ mod tests {
         assert_eq!(super::sprite_points([720, 430], 2.0), vec2(360.0, 215.0));
         assert_eq!(super::sprite_points([720, 430], 1.0), vec2(720.0, 430.0));
         assert_eq!(super::sprite_points([721, 431], 2.0), vec2(360.5, 215.5));
+    }
+
+    #[test]
+    fn placement_of_the_green_fixture() {
+        let cfg = SpriteConfig {
+            enabled: true,
+            path: String::new(),
+            x: -41,
+            y: -277,
+            card_width: 679,
+        };
+        assert_eq!(
+            placement_of(&cfg, Some([720, 430]), 2.0),
+            Some(placed(-41, -277, 360.0, 215.0))
+        );
+        assert_eq!(
+            placement_of(&cfg, Some([720, 430]), 1.0),
+            Some(placed(-41, -277, 720.0, 430.0))
+        );
+        // No picture, no placement: the sprite is off or failed its check.
+        assert_eq!(placement_of(&cfg, None, 2.0), None);
     }
 
     #[test]
@@ -267,5 +304,20 @@ mod tests {
             assert_eq!(card_in_box(rect(0.0, 0.0, w, 600.0)).top(), 150.0);
         }
         assert_eq!(card_in_box(rect(0.0, 0.0, 600.0, 600.0)).width(), 480.0);
+    }
+
+    #[test]
+    fn position_is_computed_in_points_not_pixels() {
+        // The Retina trap: a screen size that is already logical, so a
+        // 1470x956 built-in display must produce the 1470x956 answer — not
+        // the 2940x1912 one a `GetSystemMetrics`-shaped port would compute.
+        let (x, y) = window_position((1470, 956), POPUP_SIZE);
+        assert_eq!((x, y), (475, 239));
+        let (x2, y2) = window_position((2940, 1912), POPUP_SIZE);
+        assert_ne!(
+            (x, y),
+            (x2, y2),
+            "if these agreed the test could not see the doubling it exists to catch"
+        );
     }
 }

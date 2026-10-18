@@ -432,8 +432,9 @@ fn main() -> eframe::Result {
         }
     };
 
-    // Spotlight window: horizontally centered, vertical center at 40% of screen
-    // per spec §1. Computed once at launch from primary monitor dimensions.
+    // The window's creation size. Windows also positions it here, once, from
+    // the primary monitor; on macOS `NudgeApp::place_window` makes it the
+    // work area on the first frame (spec §1).
     let win_size = [
         nudge_state::POPUP_SIZE.0 as f32,
         nudge_state::POPUP_SIZE.1 as f32,
@@ -464,9 +465,10 @@ fn main() -> eframe::Result {
     // macOS: same chrome as Windows minus the two Win32-shaped calls.
     // `with_taskbar(false)` has no macOS meaning — the Dock is an *app*
     // property, set through the activation policy below — and the position
-    // cannot be set here at all, because the screen size is not knowable
-    // before the event loop exists (`platform::macos::apply_window_position`
-    // sends it on the first tick, in points).
+    // cannot be set here at all, because no screen is knowable before the
+    // event loop exists (`NudgeApp::place_window` reads it through
+    // `platform::screen_geometry` on the first frame, in points, and makes
+    // the window the work area).
     //
     // The rest is measured to work: transparency composites (the window's own
     // surface reads 0,0,0,0 at the corners while the card is opaque at the
