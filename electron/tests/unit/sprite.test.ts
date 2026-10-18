@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import {
   spriteLayout,
+  windowOrigin,
   inspectPng,
   hasTransparentPixel,
   checkSpritePng,
@@ -85,6 +86,31 @@ describe("spriteLayout", () => {
       card: { x: 30, y: 20, width: 480, height: 170 },
       sprite: { x: 0, y: 0, width: 100, height: 60 },
     });
+  });
+});
+
+describe("windowOrigin", () => {
+  const workArea = { x: 0, y: 33, width: 1470, height: 833 };
+
+  it("centres the card and puts its top at 25% of the work area", () => {
+    const card = { x: 0, y: 0, width: 480, height: 170 };
+    expect(windowOrigin(workArea, card)).toEqual({ x: 495, y: 33 + 208 });
+  });
+
+  it("offsets the window so the card, not the window, lands on the spot", () => {
+    const card = { x: 41, y: 100, width: 679, height: 170 };
+    expect(windowOrigin(workArea, card)).toEqual({ x: 396 - 41, y: 33 + 208 - 100 });
+  });
+
+  it("pins the window to the top of the work area when the sprite would stick out above it", () => {
+    const card = { x: 41, y: 277, width: 679, height: 170 };
+    expect(windowOrigin(workArea, card)).toEqual({ x: 355, y: 33 });
+  });
+
+  it("does not pin on a work area tall enough for the sprite", () => {
+    const tall = { x: 0, y: 25, width: 2560, height: 1415 };
+    const card = { x: 41, y: 277, width: 679, height: 170 };
+    expect(windowOrigin(tall, card)).toEqual({ x: 941 - 41, y: 25 + 354 - 277 });
   });
 });
 

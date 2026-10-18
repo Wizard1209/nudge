@@ -36,7 +36,11 @@ explicitly. Otherwise the spec applies to both.
 - Card position: horizontally centered. Vertically — the top edge of the card
   sits at 25% of screen height from the top (the upper third, at natural eye
   level, noticeably above the geometric center). The card grows downward
-  from this anchor.
+  from this anchor. When the window is taller than the card (a decoration
+  above it) and that anchor would put the window's top above the work area,
+  the window is pinned to the top of the work area instead and the card
+  moves down by the overhang: the decoration is shown whole, as high as the
+  screen allows. Nothing is pinned at the bottom.
 
 ## 2. Card
 

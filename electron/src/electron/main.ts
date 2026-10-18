@@ -45,6 +45,7 @@ import {
   SPRITE_ERROR,
   checkSpritePng,
   spriteLayout,
+  windowOrigin,
   type Rect,
   type Size,
   type SpriteView,
@@ -220,16 +221,14 @@ function becameFocused(w: BrowserWindow): Promise<boolean> {
 
 // Spec §1: horizontally centered, top edge at 25% of screen height — card
 // grows downward from there (upper third, eye level; clearly above the
-// geometric centre).
+// geometric centre). With a sprite the window spans card ∪ sprite and the
+// card sits inside it at its layout offset; a sprite too tall for the work
+// area pins the window to its top and the card moves down (`windowOrigin`).
 function positionCard() {
   if (!win) return;
   const cursor = screen.getCursorScreenPoint();
   const { workArea } = screen.getDisplayNearestPoint(cursor);
-  // With a sprite the window spans card ∪ sprite and the card sits inside it
-  // at its layout offset; the card keeps its screen spot either way.
-  const card = cardRect();
-  const x = Math.round(workArea.x + (workArea.width - card.width) / 2) - card.x;
-  const y = Math.round(workArea.y + workArea.height * 0.25) - card.y;
+  const { x, y } = windowOrigin(workArea, cardRect());
   win.setPosition(x, y);
 }
 

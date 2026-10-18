@@ -74,10 +74,14 @@ describe('popup with a sprite', () => {
     expect([g.card.left, g.card.top, g.card.width]).toEqual([41, 277, 679]);
   });
 
-  it('keeps the card at its spec screen spot (centred, top at 25%)', async () => {
+  it('keeps the card at its spec screen spot, or as close as the sprite lets it', async () => {
     await launch({ sprite: REAL });
     const workArea = await app.evaluate(({ screen }) =>
       screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea);
+    // The sprite rises 277px above the card. On a work area shorter than
+    // 1108px that is above the top edge, and the window is pinned there
+    // instead: the card then sits 277px below the top.
+    const specTop = Math.round(workArea.y + workArea.height * 0.25);
     // WSLg reports a placeholder position until the window manager places
     // the freshly mapped window, so wait for it to settle.
     await expect.poll(async () => {
@@ -85,7 +89,7 @@ describe('popup with a sprite', () => {
       return [b.x + 41, b.y + 277];
     }).toEqual([
       Math.round(workArea.x + (workArea.width - 679) / 2),
-      Math.round(workArea.y + workArea.height * 0.25),
+      Math.max(specTop, workArea.y + 277),
     ]);
   });
 
