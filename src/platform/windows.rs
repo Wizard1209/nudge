@@ -65,8 +65,11 @@ pub fn sync_card_backdrop(_ctx: &egui::Context, _frame: &eframe::Frame, _card: e
 
 /// No screen to report on Windows yet, so the popup keeps its 520×320 box at
 /// the position `main.rs` computed at creation; the card sits in the box as
-/// it always has. The spec's click shield (§1) is pending here.
+/// it always has. The spec's click shield (§1) is pending here, and so is
+/// the sprite (§10): without a layout there is no sprite rect, so the
+/// texture `main.rs` uploads is never drawn and `card_width` is ignored.
 // TODO: MonitorFromWindow + GetMonitorInfoW rcMonitor/rcWork, in points.
+// TODO: sprite drawing pending — no layout without screen geometry.
 pub fn screen_geometry(_ctx: &egui::Context, _frame: &eframe::Frame) -> Option<ScreenGeometry> {
     None
 }

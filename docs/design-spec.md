@@ -620,7 +620,8 @@ consistency but have no active UI effect:
 
 An optional PNG — a character, a mascot — drawn in front of the popup card.
 Both implementations follow this section. Pending on Windows: the window
-covering the work area (§1) and `Browse…`.
+covering the work area (§1), drawing the sprite at all (the card stays plain
+and `card_width` is ignored there today) and `Browse…`.
 
 ### Config
 
