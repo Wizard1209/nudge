@@ -12,16 +12,43 @@ static NSVisualEffectView *backdrop = nil;
 // apart from one still in place.
 static __weak NSView *attachedTo = nil;
 
+// Electron's getNativeWindowHandle(): a Buffer holding the NSView* of the
+// window's content view. Throws, and answers nil, for anything else — a
+// wrong type cast with NAPI_DISABLE_CPP_EXCEPTIONS would leave a pending
+// exception and a garbage pointer, so the check comes before the cast.
 static NSView *ContentView(const Napi::CallbackInfo &info) {
-  // Electron's getNativeWindowHandle(): a Buffer holding the NSView* of the
-  // window's content view.
+  if (!info[0].IsBuffer()) {
+    Napi::TypeError::New(info.Env(), "handle: expected an NSView* buffer")
+        .ThrowAsJavaScriptException();
+    return nil;
+  }
   Napi::Buffer<uint8_t> handle = info[0].As<Napi::Buffer<uint8_t>>();
   if (handle.Length() < sizeof(void *)) {
     Napi::TypeError::New(info.Env(), "handle: expected an NSView* buffer")
         .ThrowAsJavaScriptException();
     return nil;
   }
-  return (__bridge NSView *)(*reinterpret_cast<void **>(handle.Data()));
+  NSView *view = (__bridge NSView *)(*reinterpret_cast<void **>(handle.Data()));
+  if (!view) {
+    Napi::TypeError::New(info.Env(), "handle: holds no NSView")
+        .ThrowAsJavaScriptException();
+    return nil;
+  }
+  return view;
+}
+
+// The rect arguments at `first`..`first + 3`, all numbers, or a thrown
+// TypeError and false.
+static bool RectArgs(const Napi::CallbackInfo &info, size_t first, double out[4],
+                     const char *usage) {
+  for (size_t i = 0; i < 4; i++) {
+    if (!info[first + i].IsNumber()) {
+      Napi::TypeError::New(info.Env(), usage).ThrowAsJavaScriptException();
+      return false;
+    }
+    out[i] = info[first + i].As<Napi::Number>().DoubleValue();
+  }
+  return true;
 }
 
 // A rect given in the page's coordinates — origin at the content view's top
@@ -62,11 +89,13 @@ static void SetFrame(NSView *content, double x, double y, double w, double h) {
 // window's content view at the card's rect (page coordinates, points).
 static Napi::Value Attach(const Napi::CallbackInfo &info) {
   Napi::Env env = info.Env();
-  if (info.Length() < 6) {
-    Napi::TypeError::New(env, "attach(handle, x, y, width, height, radius)")
-        .ThrowAsJavaScriptException();
+  static const char *usage = "attach(handle, x, y, width, height, radius)";
+  if (info.Length() < 6 || !info[5].IsNumber()) {
+    Napi::TypeError::New(env, usage).ThrowAsJavaScriptException();
     return env.Undefined();
   }
+  double rect[4];
+  if (!RectArgs(info, 1, rect, usage)) return env.Undefined();
   NSView *content = ContentView(info);
   if (!content) return env.Undefined();
   NSView *parent = content.superview;
@@ -89,33 +118,26 @@ static Napi::Value Attach(const Napi::CallbackInfo &info) {
   }
   backdrop.layer.cornerRadius = info[5].As<Napi::Number>().DoubleValue();
   backdrop.hidden = NO;
-  SetFrame(content,
-           info[1].As<Napi::Number>().DoubleValue(),
-           info[2].As<Napi::Number>().DoubleValue(),
-           info[3].As<Napi::Number>().DoubleValue(),
-           info[4].As<Napi::Number>().DoubleValue());
+  SetFrame(content, rect[0], rect[1], rect[2], rect[3]);
   return env.Undefined();
 }
 
 // setFrame(x, y, width, height): move the glass under a card that moved.
 static Napi::Value SetFrameJs(const Napi::CallbackInfo &info) {
   Napi::Env env = info.Env();
+  double rect[4];
+  if (!RectArgs(info, 0, rect, "setFrame(x, y, width, height)")) return env.Undefined();
   NSView *content = attachedTo;
   if (!backdrop || !content) return env.Undefined();
-  if (info.Length() < 4) {
-    Napi::TypeError::New(env, "setFrame(x, y, width, height)").ThrowAsJavaScriptException();
-    return env.Undefined();
-  }
-  SetFrame(content,
-           info[0].As<Napi::Number>().DoubleValue(),
-           info[1].As<Napi::Number>().DoubleValue(),
-           info[2].As<Napi::Number>().DoubleValue(),
-           info[3].As<Napi::Number>().DoubleValue());
+  SetFrame(content, rect[0], rect[1], rect[2], rect[3]);
   return env.Undefined();
 }
 
 // detach(): take the glass away with the popup; attach brings it back.
 static Napi::Value Detach(const Napi::CallbackInfo &info) {
+  // A view whose window is gone has nothing to hide; drop it rather than
+  // keep answering for a window that no longer exists.
+  if (backdrop && !attachedTo) backdrop = nil;
   if (backdrop) backdrop.hidden = YES;
   return info.Env().Undefined();
 }
