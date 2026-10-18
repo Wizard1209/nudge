@@ -1,6 +1,8 @@
 use eframe::egui;
 
+use crate::config::SpriteConfig;
 use crate::nudge_state::{self, Action, TriggerSource};
+use crate::sprite::{self, PopupLayout, ScreenGeometry, SpritePlacement};
 use crate::timer::Timer;
 use crate::word_jump;
 
@@ -96,6 +98,23 @@ const CARD_STROKE: egui::Stroke = egui::Stroke {
     color: egui::Color32::from_rgba_premultiplied(60, 60, 60, 60),
 };
 
+/// The sprite as drawn (spec §10): its texture, its size in pixels and the
+/// config block that places it.
+pub struct LoadedSprite {
+    tex: egui::TextureHandle,
+    px: [u32; 2],
+    cfg: SpriteConfig,
+}
+
+impl LoadedSprite {
+    fn placement(&self, pixels_per_point: f32) -> SpritePlacement {
+        SpritePlacement {
+            xy: (self.cfg.x, self.cfg.y),
+            size: sprite::sprite_points(self.px, pixels_per_point),
+        }
+    }
+}
+
 pub struct NudgeApp {
     // Form fields
     doing: String,
@@ -112,6 +131,17 @@ pub struct NudgeApp {
     /// Last known card bounding rect, used to detect clicks outside the card.
     /// Populated by `draw_card` once per frame.
     card_rect: Option<egui::Rect>,
+    /// The sprite painted over the card, when the config asks for one and
+    /// its PNG passed the check (spec §10).
+    sprite: Option<LoadedSprite>,
+    /// The screen the popup is laid out on, injected by the kittest tier,
+    /// which has no OS window.
+    // TODO(U4b): the real window reads its own screen and covers the work area.
+    geometry_override: Option<ScreenGeometry>,
+    /// Where the card and the sprite go, in window coordinates. `None`
+    /// while there is no screen to lay out on: then the card sits in the
+    /// window as a box (`sprite::card_in_box`).
+    layout: Option<PopupLayout>,
     #[cfg(target_arch = "wasm32")]
     pill_rect: Option<egui::Rect>,
     /// Did this open of the popup ever actually get the keyboard? While true,
@@ -191,6 +221,9 @@ impl NudgeApp {
             popup_visible: false,
             error_message: None,
             card_rect: None,
+            sprite: None,
+            geometry_override: None,
+            layout: None,
             #[cfg(target_arch = "wasm32")]
             pill_rect: None,
             armed: false,
@@ -199,6 +232,50 @@ impl NudgeApp {
             #[cfg(target_os = "windows")]
             hwnd: None,
         }
+    }
+
+    /// Paint this sprite over the card. Uploaded once, here; drawn at its
+    /// native pixel density, so the texture is never filtered.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_sprite(
+        mut self,
+        ctx: &egui::Context,
+        sprite: crate::sprite_png::DecodedSprite,
+        cfg: SpriteConfig,
+    ) -> Self {
+        let image = egui::ColorImage::from_rgba_unmultiplied(
+            [sprite.px[0] as usize, sprite.px[1] as usize],
+            &sprite.rgba,
+        );
+        let tex = ctx.load_texture("nudge_sprite", image, egui::TextureOptions::NEAREST);
+        self.sprite = Some(LoadedSprite {
+            tex,
+            px: sprite.px,
+            cfg,
+        });
+        self
+    }
+
+    /// Lay the popup out on this screen instead of asking the window for
+    /// one. The kittest tier's hook; the bin crate has no caller.
+    #[allow(dead_code)]
+    pub fn with_screen_geometry(mut self, geometry: ScreenGeometry) -> Self {
+        self.geometry_override = Some(geometry);
+        self
+    }
+
+    fn relayout(&mut self, ctx: &egui::Context) {
+        self.layout = self.geometry_override.map(|geometry| {
+            let card_width = self
+                .sprite
+                .as_ref()
+                .map_or(crate::config::DEFAULT_CARD_WIDTH, |s| s.cfg.card_width);
+            let placement = self
+                .sprite
+                .as_ref()
+                .map(|s| s.placement(ctx.pixels_per_point()));
+            sprite::shield_layout(&geometry, card_width as f32, placement)
+        });
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -527,13 +604,14 @@ impl NudgeApp {
 
     fn draw_card(&mut self, ctx: &egui::Context) {
         // egui 0.34 split screen_rect() into viewport_rect()/content_rect();
-        // content_rect() is the in-window content area we size the card against.
-        let screen = ctx.content_rect();
-        let card_width = (crate::config::DEFAULT_CARD_WIDTH as f32).min(screen.width() - 48.0);
-        let top_offset = screen.height() * 0.25;
+        // content_rect() is the in-window content area the box is sized against.
+        let card = self
+            .layout
+            .map_or_else(|| sprite::card_in_box(ctx.content_rect()), |l| l.card);
+        let card_width = card.width();
 
         let inner = egui::Area::new(egui::Id::new("nudge_card"))
-            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, top_offset))
+            .fixed_pos(card.min)
             // Without this the Area itself registers a focusable click widget
             // (Sense::click() implies FOCUSABLE) and shows up as a phantom
             // 4th Tab stop between row_minutes and row_doing.
@@ -558,6 +636,21 @@ impl NudgeApp {
         );
 
         self.card_rect = Some(inner.inner);
+
+        // The sprite is a painting, not a widget (§10): a click on it goes to
+        // the field beneath, or past the card to the "outside" branch.
+        if let (Some(sprite), Some(rect)) = (&self.sprite, self.layout.and_then(|l| l.sprite)) {
+            ctx.layer_painter(egui::LayerId::new(
+                egui::Order::Foreground,
+                egui::Id::new("nudge_sprite"),
+            ))
+            .image(
+                sprite.tex.id(),
+                rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+        }
     }
 
     fn row_field(ui: &mut egui::Ui, value: &mut String, hint: &str, key: &str) -> egui::Response {
@@ -890,6 +983,7 @@ impl eframe::App for NudgeApp {
         // central panel — wallpaper/desktop shows through around the card.
         // We paint only the floating card Area on top of it.
         if self.popup_visible {
+            self.relayout(ctx);
             self.draw_card(ctx);
             // The blur behind the card is an OS-side panel, so it has to be
             // told where the card ended up — every frame, because the card's

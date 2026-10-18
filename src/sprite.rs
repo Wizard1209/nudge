@@ -1,9 +1,6 @@
 //! Where the card and the sprite go (spec §1, §10): pure arithmetic in egui
 //! points, top-left origin. No window and no I/O, so it builds on every target.
 
-// TODO(U4a): `draw_card` reads the layout; until then the bin crate has no caller.
-#![allow(dead_code)]
-
 use eframe::egui::{Rect, Vec2, pos2, vec2};
 
 /// The card's height: the whole number of points that holds its three rows

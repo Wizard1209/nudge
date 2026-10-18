@@ -381,6 +381,16 @@ fn main() -> eframe::Result {
             config.default_interval_minutes
         );
     }
+    // A PNG that fails the check is not a sprite (spec §10): say why, show
+    // the plain card.
+    let sprite = match sprite_png::load_sprite(&config.sprite) {
+        Some(Ok(decoded)) => Some((decoded, config.sprite.clone())),
+        Some(Err(reason)) => {
+            eprintln!("[nudge] sprite not shown: {reason}");
+            None
+        }
+        None => None,
+    };
 
     // Whatever OS integration this platform has, started before the event
     // loop takes the main thread.
@@ -512,7 +522,11 @@ fn main() -> eframe::Result {
             // The half of the OS integration that needs the main thread to
             // already be the event loop: the status item and the hotkey.
             platform::start_on_event_loop(&cc.egui_ctx);
-            Ok(Box::new(NudgeApp::new(cc, default_minutes)))
+            let mut app = NudgeApp::new(cc, default_minutes);
+            if let Some((decoded, cfg)) = sprite {
+                app = app.with_sprite(&cc.egui_ctx, decoded, cfg);
+            }
+            Ok(Box::new(app))
         }),
     )
 }

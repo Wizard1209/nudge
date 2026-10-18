@@ -2,7 +2,7 @@
 //! background" is a PNG that can carry transparency and has at least one
 //! fully transparent pixel. Native only: the browser tier has no file access.
 
-// TODO(U4a): main.rs loads the sprite; until then the bin crate has no caller.
+// TODO(U5): the settings window runs `check_sprite_file`; until then the bin crate has no caller.
 #![allow(dead_code)]
 
 use std::fmt;
