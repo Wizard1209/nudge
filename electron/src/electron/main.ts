@@ -321,6 +321,24 @@ function createTray() {
 
 // --- Settings window (spec §9) ---
 
+// Three candidate layouts of the settings form, for the owner to pick one of.
+// NUDGE_SETTINGS_LAYOUT=a|b|c reaches Settings.svelte as ?layout= and picks
+// the window's content size here; each is the size of its rendered form, so
+// nothing is clipped and no empty band sits below the buttons. Unset, or any
+// other value, is the shipped layout at its shipped size.
+const SETTINGS_SIZE: Record<string, { width: number; height: number }> = {
+  // Measured against the rendered forms (form bottom + 20px margin); retune
+  // if a variant's markup changes.
+  a: { width: 560, height: 432 },
+  b: { width: 460, height: 600 },
+  c: { width: 560, height: 462 },
+};
+
+function settingsLayout(): string | undefined {
+  const v = process.env.NUDGE_SETTINGS_LAYOUT;
+  return v && v in SETTINGS_SIZE ? v : undefined;
+}
+
 // Framed, standard-chrome window. Single instance: focus the existing one
 // rather than opening a second.
 function openSettings() {
@@ -328,15 +346,17 @@ function openSettings() {
     settingsWin.focus();
     return;
   }
+  const layout = settingsLayout();
+  const size = layout ? SETTINGS_SIZE[layout] : { width: 460, height: 740 };
   settingsWin = new BrowserWindow({
     // useContentSize: the 460×640 is the *client* area, so the OS title bar
     // doesn't eat into it and clip the form (the bug was the title bar
     // shrinking a frame-inclusive height on Windows).
-    width: 460,
+    width: size.width,
     // Tall enough for the vocabulary line under the hotkey field (§9): it is
     // standing information, so it must fit without scrolling — and for the
     // sprite section below "Launch at login".
-    height: 740,
+    height: size.height,
     useContentSize: true,
     title: "Nudge — Settings",
     resizable: false,
@@ -357,10 +377,16 @@ function openSettings() {
   settingsWin.setMenuBarVisibility(false);
   settingsWin.once("ready-to-show", () => settingsWin?.show());
 
+  const query = layout ? { layout } : undefined;
   if (isDev) {
-    settingsWin.loadURL("http://localhost:5173/settings.html");
+    settingsWin.loadURL(
+      "http://localhost:5173/settings.html" +
+        (query ? `?${new URLSearchParams(query)}` : ""),
+    );
   } else {
-    settingsWin.loadFile(path.join(__dirname, "../renderer/settings.html"));
+    settingsWin.loadFile(path.join(__dirname, "../renderer/settings.html"), {
+      query,
+    });
   }
 
   // The window's own focus loss, from the OS. The renderer also listens for a
