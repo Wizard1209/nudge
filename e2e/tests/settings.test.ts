@@ -59,33 +59,65 @@ async function readPersistedConfig(page: any): Promise<{
     return JSON.parse(raw)
 }
 
-test("settings page boots and seeds localStorage on Save", async ({ settings }) => {
+/** Put the caret in the interval field and replace its text. */
+async function retypeInterval(page: any, text: string): Promise<void> {
+    await clickAt(page, INTERVAL_INPUT_X, ROW_INTERVAL_Y)
+    await page.keyboard.down("Control")
+    await page.keyboard.press("a")
+    await page.keyboard.up("Control")
+    await page.keyboard.type(text, { delay: 30 })
+    await wait(200)
+}
+
+test("settings page boots and writes the whole config on the first Save", async ({ settings }) => {
     // Fresh load: localStorage is empty, the form's baseline is Config::default().
     await settings.page.evaluate(() => localStorage.clear())
 
-    // Click Save once with no edits — this exercises the save path end-to-end
-    // and writes the default config to localStorage. The key "nudge-config"
-    // is the contract the native config::load_from_localstorage reads back.
+    // One edit, then Save: §9 greys Save while the form matches the file, so
+    // a no-edit click would write nothing. The write carries the whole
+    // config, defaults included. The key "nudge-config" is the contract the
+    // native config::load_from_localstorage reads back.
+    await retypeInterval(settings.page, "15")
     await settings.page.mouse.click(SAVE_BUTTON_X, BUTTON_ROW_Y)
     await wait(500)
 
     const persisted = await readPersistedConfig(settings.page)
     expect(persisted).not.toBeNull()
     expect(persisted!.hotkey).toBe("Ctrl+Shift+Space")
-    expect(persisted!.default_interval_minutes).toBe(10)
+    expect(persisted!.default_interval_minutes).toBe(15)
     expect(persisted!.autostart).toBe(false)
+})
+
+// §9 Saving: "Return anywhere in the form is `Save`: the same checks, the
+// same write, the same messages as the button."
+test("Return in a field saves", async ({ settings }) => {
+    await settings.page.evaluate(() => localStorage.clear())
+
+    await retypeInterval(settings.page, "7")
+    await settings.page.keyboard.press("Enter")
+    await wait(500)
+
+    const persisted = await readPersistedConfig(settings.page)
+    expect(persisted).not.toBeNull()
+    expect(persisted!.default_interval_minutes).toBe(7)
+})
+
+// §9 Saving: "`Save` is live only while the form differs from the file".
+test("Return on an unedited form writes nothing", async ({ settings }) => {
+    await settings.page.evaluate(() => localStorage.clear())
+
+    await clickAt(settings.page, INTERVAL_INPUT_X, ROW_INTERVAL_Y)
+    await settings.page.keyboard.press("Enter")
+    await wait(500)
+
+    expect(await readPersistedConfig(settings.page)).toBeNull()
 })
 
 test("editing interval and saving persists the new value", async ({ settings }) => {
     await settings.page.evaluate(() => localStorage.clear())
 
     // Focus interval field, replace contents with 7, Save.
-    await clickAt(settings.page, INTERVAL_INPUT_X, ROW_INTERVAL_Y)
-    await settings.page.keyboard.down("Control")
-    await settings.page.keyboard.press("a")
-    await settings.page.keyboard.up("Control")
-    await settings.page.keyboard.type("7", { delay: 30 })
-    await wait(200)
+    await retypeInterval(settings.page, "7")
 
     await settings.page.mouse.click(SAVE_BUTTON_X, BUTTON_ROW_Y)
     await wait(500)

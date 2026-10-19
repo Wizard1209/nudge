@@ -432,4 +432,204 @@ fn settings_save_with_a_bad_sprite_shows_the_reason_and_persists_nothing() {
         persisted.lock().unwrap().is_empty(),
         "a refused save writes nothing"
     );
+    // §9 Saving: only "a save that reached the file says so".
+    assert!(
+        harness.query_by_label("Saved").is_none(),
+        "a refused save must not say Saved"
+    );
+}
+
+// -----------------------------------------------------------------------------
+// §9 Saving — Return, the `Saved` note, and a Save that is live only while
+// the form differs from the file.
+// -----------------------------------------------------------------------------
+
+/// A settings window over a recording persist closure: what Save wrote, in
+/// order, so a case can assert on the write rather than on the window alone.
+fn settings_harness<'a>(
+    config: Config,
+) -> (
+    Harness<'a, SettingsApp>,
+    std::sync::Arc<std::sync::Mutex<Vec<Config>>>,
+) {
+    let persisted: std::sync::Arc<std::sync::Mutex<Vec<Config>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let writer = std::sync::Arc::clone(&persisted);
+    let persist: PersistFn = Box::new(move |cfg: &Config| {
+        writer.lock().unwrap().push(cfg.clone());
+        Ok(())
+    });
+    let provider: Box<dyn AutostartProvider> = Box::new(RecordingProvider::new(false));
+    let mut harness = Harness::new_eframe(move |cc| {
+        SettingsApp::new(cc, config, provider, persist, accept_any_sprite())
+    });
+    harness.run();
+    (harness, persisted)
+}
+
+/// Put the caret in the n-th text input and type into it.
+fn type_into(harness: &mut Harness<'_, SettingsApp>, nth: usize, text: &str) {
+    harness
+        .get_all_by_role(Role::TextInput)
+        .nth(nth)
+        .unwrap()
+        .focus();
+    harness.run();
+    harness
+        .get_all_by_role(Role::TextInput)
+        .nth(nth)
+        .unwrap()
+        .type_text(text);
+    harness.run();
+}
+
+fn save_is_disabled(harness: &Harness<'_, SettingsApp>) -> bool {
+    harness.get_by_label("Save").accesskit_node().is_disabled()
+}
+
+fn says_saved(harness: &Harness<'_, SettingsApp>) -> bool {
+    harness.query_by_label("Saved").is_some()
+}
+
+/// §9 Saving: "Return anywhere in the form is `Save`: the same checks, the
+/// same write, the same messages as the button."
+#[test]
+fn settings_return_in_a_field_saves() {
+    let (mut harness, persisted) = settings_harness(cfg("Alt+J", 7.0, false));
+
+    // The interval field: "7" becomes "75" (the caret lands at the end).
+    type_into(&mut harness, 1, "5");
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    assert_eq!(
+        persisted
+            .lock()
+            .unwrap()
+            .last()
+            .map(|c| c.default_interval_minutes),
+        Some(75.0),
+        "Return in the interval field did not write the form"
+    );
+    assert!(says_saved(&harness), "a save from Return says Saved too");
+
+    // A sprite field: the same key, the same write.
+    type_into(&mut harness, 3, "4");
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    assert_eq!(
+        persisted.lock().unwrap().last().map(|c| c.sprite.x),
+        Some(4),
+        "Return in the sprite X field did not write the form"
+    );
+}
+
+/// §9 Saving: "the same checks, the same write, the same messages as the
+/// button" — a Return that fails the checks shows the button's message and
+/// writes nothing.
+#[test]
+fn settings_return_runs_the_same_checks_and_shows_the_same_message() {
+    let (mut harness, persisted) = settings_harness(cfg("Alt+J", 7.0, false));
+
+    type_into(&mut harness, 1, "x");
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+
+    assert!(
+        harness
+            .query_by_label("Interval must be a positive number of minutes (got: \"7x\")")
+            .is_some(),
+        "the message line does not carry the interval check's reason"
+    );
+    assert!(
+        persisted.lock().unwrap().is_empty(),
+        "a refused save from Return wrote something"
+    );
+    assert!(!says_saved(&harness), "a refused save must not say Saved");
+}
+
+/// §9 Saving: "`Save` is live only while the form differs from the file" —
+/// so Return on a form that matches the file has nothing to do.
+#[test]
+fn settings_return_on_a_clean_form_does_nothing() {
+    let (mut harness, persisted) = settings_harness(cfg("Alt+J", 7.0, false));
+
+    harness
+        .get_all_by_role(Role::TextInput)
+        .nth(1)
+        .unwrap()
+        .focus();
+    harness.run();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+
+    assert!(
+        persisted.lock().unwrap().is_empty(),
+        "Return on an unedited form wrote the file"
+    );
+    assert!(!says_saved(&harness));
+}
+
+/// §9 Saving: "A save that reached the file says so — `Saved`, beside the
+/// buttons — and the first edit after it takes the note away."
+#[test]
+fn settings_says_saved_after_a_save_until_the_first_edit() {
+    let (mut harness, _persisted) = settings_harness(cfg("Alt+J", 7.0, false));
+    assert!(!says_saved(&harness), "nothing has been saved yet");
+
+    type_into(&mut harness, 1, "5");
+    harness.get_by_label("Save").click();
+    harness.run();
+    assert!(says_saved(&harness), "a save that reached the file says so");
+
+    type_into(&mut harness, 1, "0");
+    assert!(
+        !says_saved(&harness),
+        "the first edit after a save must take the note away"
+    );
+}
+
+/// §9 Saving: "`Save` is live only while the form differs from the file, so
+/// a form that reads as unedited is one whose content is on disk."
+#[test]
+fn settings_save_is_greyed_while_the_form_matches_the_file() {
+    let (mut harness, persisted) = settings_harness(cfg("Alt+J", 7.0, false));
+    assert!(
+        save_is_disabled(&harness),
+        "a freshly-loaded form has nothing to save"
+    );
+
+    // "7" -> "75": differs from the file.
+    type_into(&mut harness, 1, "5");
+    assert!(!save_is_disabled(&harness), "an edit makes Save live");
+
+    // Backspace over the "5": the stored value is back, so nothing differs.
+    harness.key_press(egui::Key::Backspace);
+    harness.run();
+    assert_eq!(
+        harness
+            .get_all_by_role(Role::TextInput)
+            .nth(1)
+            .unwrap()
+            .value()
+            .as_deref(),
+        Some("7")
+    );
+    assert!(
+        save_is_disabled(&harness),
+        "typing the stored value back is no edit"
+    );
+
+    type_into(&mut harness, 1, "5");
+    harness.get_by_label("Save").click();
+    harness.run();
+    assert_eq!(persisted.lock().unwrap().len(), 1);
+    assert!(
+        save_is_disabled(&harness),
+        "a just-saved form reads as unedited, and its content is on disk"
+    );
+
+    // A greyed button is not a button: a click on it writes nothing.
+    harness.get_by_label("Save").click();
+    harness.run();
+    assert_eq!(persisted.lock().unwrap().len(), 1);
 }

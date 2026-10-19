@@ -43,7 +43,7 @@ where
 
 /// The pure (no-eframe, no-I/O) settings form state. The render shell holds
 /// one of these and asks it questions; the form never touches the disk.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SettingsForm {
     /// Hotkey label as a free-text string. v3 has no recorder widget — the
     /// user types the label; we validate via [`crate::hotkey::parse`] only
@@ -502,6 +502,25 @@ fn pick_sprite_file() -> Option<String> {
         .map(|p| p.display().to_string())
 }
 
+/// The form's text fields, by egui id. §9 "Return anywhere in the form is
+/// Save" is decided against this list: the focus is in the form when it is in
+/// one of these or nowhere at all, and a focused button keeps its own Return,
+/// which egui already makes a click.
+const ID_HOTKEY: &str = "settings_hotkey";
+const ID_INTERVAL: &str = "settings_interval";
+const ID_SPRITE_PATH: &str = "settings_sprite_path";
+const ID_SPRITE_X: &str = "settings_sprite_x";
+const ID_SPRITE_Y: &str = "settings_sprite_y";
+const ID_CARD_WIDTH: &str = "settings_card_width";
+const FIELD_IDS: [&str; 6] = [
+    ID_HOTKEY,
+    ID_INTERVAL,
+    ID_SPRITE_PATH,
+    ID_SPRITE_X,
+    ID_SPRITE_Y,
+    ID_CARD_WIDTH,
+];
+
 /// The settings window as an eframe::App. Owns the form state, the provider,
 /// and the persistence closure; renders three rows + Save/Cancel + an error
 /// banner.
@@ -514,6 +533,9 @@ pub struct SettingsApp {
     recorder: HotkeyRecorder,
     /// Surfaced to the user above the buttons. Cleared on the next interaction.
     banner: Option<String>,
+    /// §9: a save that reached the file says so, beside the buttons, until
+    /// the first edit after it.
+    saved: bool,
     /// When set, the next frame ends the eframe loop. On native this exits
     /// the dedicated settings process; on WASM it's a no-op (no process).
     quit_requested: bool,
@@ -555,6 +577,7 @@ impl SettingsApp {
             sprite_check,
             recorder: HotkeyRecorder::new(source),
             banner: None,
+            saved: false,
             quit_requested: false,
         }
     }
@@ -569,27 +592,30 @@ impl SettingsApp {
         }
     }
 
-    /// Save path: [`save_form`], then the banner. On error → banner.
+    /// Save path, for the button and for Return alike: [`save_form`], then
+    /// the `Saved` note or the banner.
     fn save(&mut self) {
-        self.banner = Some(
-            match save_form(&mut self.form, &self.sprite_check, &mut self.persist) {
-                Ok(saved) => {
-                    // Who else holds it is a warning next to a successful
-                    // save, never a refusal: the OS accepts a taken
-                    // combination and registers it, it simply never fires.
-                    // That is a different thing from the *unregistrable* one
-                    // §5 blocks the save on, which never gets this far.
-                    let conflict = hotkey::parse(&saved.hotkey)
-                        .ok()
-                        .and_then(|hk| conflict_warning(&hk));
-                    match conflict {
-                        Some(warning) => format!("Saved — but this combination is {warning}"),
-                        None => "Saved".to_string(),
-                    }
-                }
-                Err(line) => line,
-            },
-        );
+        // §9: Save is live only while the form differs from the file — the
+        // one gate for the button and the key, so a greyed button and a
+        // Return on a clean form mean the same nothing.
+        if !self.form.is_dirty() {
+            return;
+        }
+        match save_form(&mut self.form, &self.sprite_check, &mut self.persist) {
+            Ok(saved) => {
+                self.saved = true;
+                // Who else holds it is a warning next to a successful save,
+                // never a refusal: the OS accepts a taken combination and
+                // registers it, it simply never fires. That is a different
+                // thing from the *unregistrable* one §5 blocks the save on,
+                // which never gets this far.
+                self.banner = hotkey::parse(&saved.hotkey)
+                    .ok()
+                    .and_then(|hk| conflict_warning(&hk))
+                    .map(|warning| format!("This combination is {warning}"));
+            }
+            Err(line) => self.banner = Some(line),
+        }
     }
 
     /// Autostart checkbox: route through apply_autostart so the system
@@ -621,6 +647,12 @@ impl eframe::App for SettingsApp {
 
         let ctx_owned = root_ui.ctx().clone();
         let ctx = &ctx_owned;
+
+        // What the form held when the frame began: §9 takes the `Saved` note
+        // away on the first edit after a save, and an edit is the form
+        // differing at the end of the frame from this — whichever row, key,
+        // click or capture made it differ.
+        let before = self.form.clone();
 
         // Everything the keyboard did since the last frame, before anything is
         // drawn — so a press and the field it changes land in the same frame.
@@ -658,7 +690,7 @@ impl eframe::App for SettingsApp {
             } else {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.form.hotkey)
-                        .id(egui::Id::new("settings_hotkey"))
+                        .id(egui::Id::new(ID_HOTKEY))
                         .desired_width(220.0)
                         .hint_text(hotkey::format_native(&hotkey::default_hotkey())),
                 );
@@ -689,7 +721,7 @@ impl eframe::App for SettingsApp {
             ui.label("Default interval (min):");
             ui.add(
                 egui::TextEdit::singleline(&mut self.form.interval_text)
-                    .id(egui::Id::new("settings_interval"))
+                    .id(egui::Id::new(ID_INTERVAL))
                     .desired_width(120.0)
                     .hint_text("10"),
             );
@@ -721,7 +753,7 @@ impl eframe::App for SettingsApp {
             ui.label("PNG:");
             ui.add(
                 egui::TextEdit::singleline(&mut self.form.sprite_path)
-                    .id(egui::Id::new("settings_sprite_path"))
+                    .id(egui::Id::new(ID_SPRITE_PATH))
                     .desired_width(300.0)
                     .hint_text("Path to a PNG with a transparent background"),
             );
@@ -741,21 +773,21 @@ impl eframe::App for SettingsApp {
             ui.label("X (pt):");
             ui.add(
                 egui::TextEdit::singleline(&mut self.form.sprite_x_text)
-                    .id(egui::Id::new("settings_sprite_x"))
+                    .id(egui::Id::new(ID_SPRITE_X))
                     .desired_width(60.0)
                     .hint_text("0"),
             );
             ui.label("Y (pt):");
             ui.add(
                 egui::TextEdit::singleline(&mut self.form.sprite_y_text)
-                    .id(egui::Id::new("settings_sprite_y"))
+                    .id(egui::Id::new(ID_SPRITE_Y))
                     .desired_width(60.0)
                     .hint_text("0"),
             );
             ui.label("Card width (pt):");
             ui.add(
                 egui::TextEdit::singleline(&mut self.form.card_width_text)
-                    .id(egui::Id::new("settings_card_width"))
+                    .id(egui::Id::new(ID_CARD_WIDTH))
                     .desired_width(60.0)
                     .hint_text(crate::config::DEFAULT_CARD_WIDTH.to_string()),
             );
@@ -768,14 +800,36 @@ impl eframe::App for SettingsApp {
             ui.add_space(8.0);
         }
 
+        if self.form != before {
+            self.saved = false;
+        }
+
+        // §9: Return anywhere in the form is Save. "In the form" is the focus
+        // in one of the fields or nowhere; a focused button or checkbox keeps
+        // its own Return, which egui already makes a click. While the recorder
+        // is armed the key is the recorder's — a press, not a save.
+        let return_in_the_form = !armed
+            && ctx.input(|i| i.key_pressed(egui::Key::Enter))
+            && ctx
+                .memory(|m| m.focused())
+                .is_none_or(|id| FIELD_IDS.iter().any(|name| egui::Id::new(name) == id));
+
+        let mut save_clicked = false;
         ui.horizontal(|ui| {
-            if ui.button("Save").clicked() {
-                self.save();
-            }
+            // Greyed while nothing differs from the file (§9).
+            save_clicked = ui
+                .add_enabled(self.form.is_dirty(), egui::Button::new("Save"))
+                .clicked();
             if ui.button("Cancel").clicked() {
                 self.quit_requested = true;
             }
+            if self.saved {
+                ui.label(egui::RichText::new("Saved").weak());
+            }
         });
+        if save_clicked || return_in_the_form {
+            self.save();
+        }
 
         if self.quit_requested {
             #[cfg(not(target_arch = "wasm32"))]
@@ -1356,5 +1410,52 @@ mod tests {
         assert_eq!(persisted.lock().unwrap().len(), 1, "written once");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert!(!f.is_dirty());
+    }
+
+    // === §9 Saving: Save is live only while the form differs from the file ==
+
+    /// §9 Saving: "a form that reads as unedited is one whose content is on
+    /// disk" — what the form compares against after a save is what the
+    /// closure was handed, not what was typed.
+    #[test]
+    fn a_save_that_reached_the_file_leaves_nothing_to_save() {
+        let check: SpriteCheckFn = Box::new(|_: &Path| Ok(()));
+        let (mut persist, persisted) = recording_persist();
+        let mut f = SettingsForm::from_config(cfg_with("Alt+J", 7.0, false));
+        f.interval_text = " 12 ".to_string();
+        assert!(f.is_dirty());
+
+        let written = save_form(&mut f, &check, &mut persist).expect("a plain save");
+
+        assert_eq!(
+            persisted.lock().unwrap().as_slice(),
+            std::slice::from_ref(&written)
+        );
+        assert!(!f.is_dirty(), "the form now reads as unedited");
+        assert_eq!(
+            f.to_config().unwrap(),
+            written,
+            "and its content is on disk"
+        );
+    }
+
+    /// §9 Saving: "`Save` is live only while the form differs from the file"
+    /// — a refused save changes nothing on disk, so the form still differs
+    /// and Save stays live.
+    #[test]
+    fn a_refused_save_leaves_the_form_dirty() {
+        let check: SpriteCheckFn = Box::new(|_: &Path| Ok(()));
+        let (mut persist, persisted) = recording_persist();
+        let mut f = SettingsForm::from_config(cfg_with("Alt+J", 7.0, false));
+        f.interval_text = "x".to_string();
+
+        let outcome = save_form(&mut f, &check, &mut persist);
+
+        assert!(outcome.is_err());
+        assert!(persisted.lock().unwrap().is_empty());
+        assert!(
+            f.is_dirty(),
+            "nothing reached the file, so the form still differs"
+        );
     }
 }
