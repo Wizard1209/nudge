@@ -123,7 +123,7 @@ describe('popup with a sprite', () => {
       const { contentBounds: b } = await popupState(app);
       return [b.x + 41, b.y + 277];
     }).toEqual([
-      Math.round(bounds.x + (bounds.width - 679) / 2),
+      Math.floor(bounds.x + (bounds.width - 679) / 2),
       Math.max(specTop, workArea.y + 277),
     ]);
   });
