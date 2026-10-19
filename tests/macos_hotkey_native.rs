@@ -1649,8 +1649,6 @@ fn cmd_space_registers_and_is_still_reported_as_the_systems() {
 ///
 /// Each window is edited before `Save` is clicked: §9 greys the button while
 /// the form matches the file.
-// TODO: unverified since the §9 Saved note landed — this tier re-records the
-// keystream fixtures, so it was not run for that change.
 #[test]
 #[ignore = "needs a real desktop; run via scripts/native-tests-macos.sh"]
 fn saving_cmd_space_says_the_system_holds_it() {
