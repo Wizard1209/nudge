@@ -581,8 +581,9 @@ either way.
   unedited is one whose content is on disk.
 - **Return anywhere in the form is `Save`**: the same checks, the same
   write, the same messages as the button. A focused button or checkbox
-  keeps its own Return — `Cancel` stays `Cancel`. While the recorder is
-  armed the key is the recorder's — a press, not a save.
+  keeps its own Return — `Cancel` stays `Cancel`. A Return that ends an
+  input-method composition is the composition's, not a save. While the
+  recorder is armed the key is the recorder's — a press, not a save.
 - **A save that reached the file says so** — `Saved`, beside the buttons —
   and the first edit after it takes the note away. The note is the
   button's: an autostart click, committed on its own, takes it away like

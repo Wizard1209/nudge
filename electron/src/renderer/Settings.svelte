@@ -195,8 +195,9 @@
     if (recorder !== "armed") {
       // §9: Return anywhere in the form is Save. A focused button or
       // checkbox keeps its own Return (the same rule as the Rust window,
-      // where egui makes it a click), so Cancel stays Cancel.
-      if (e.key === "Enter" && !keepsItsOwnReturn(e.target)) {
+      // where egui makes it a click), so Cancel stays Cancel. A Return that
+      // ends an input-method composition is the composition's.
+      if (e.key === "Enter" && !e.isComposing && !keepsItsOwnReturn(e.target)) {
         e.preventDefault();
         void save();
       }

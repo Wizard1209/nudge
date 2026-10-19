@@ -203,6 +203,19 @@ describe('settings sub-app', () => {
             expect(await page.$eval('[data-testid="settings-interval"]', (el) => el.value)).toBe('10');
         });
 
+        // §9 Saving: "A Return that ends an input-method composition is the
+        // composition's, not a save."
+        it('leaves a composition-ending Return to the field', async () => {
+            await retype(page, 'settings-interval', '15');
+            // Puppeteer cannot drive an IME; the event it would deliver is
+            // dispatched by hand, at the field, with the composing flag up.
+            await page.$eval('[data-testid="settings-interval"]', (el) =>
+                el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true, cancelable: true })));
+            expect(await readStored(page)).toBeNull();
+            expect(await savedNote(page)).toBeNull();
+            expect(await saveDisabled(page)).toBe(false);
+        });
+
         // §9 Saving: "While the recorder is armed the key is the recorder's —
         // a press, not a save."
         it('leaves Return to an armed recorder', async () => {

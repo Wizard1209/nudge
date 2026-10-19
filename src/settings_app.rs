@@ -805,6 +805,10 @@ impl eframe::App for SettingsApp {
         // in one of the fields or nowhere; a focused button or checkbox keeps
         // its own Return, which egui already makes a click. While the recorder
         // is armed the key is the recorder's — a press, not a save.
+        // TODO: §9 "a Return that ends an input-method composition is the
+        // composition's" is unverified here — whether winit reports that
+        // Return as a key press at all is unmeasured; the Electron window
+        // pins it.
         let return_in_the_form = !armed
             && ctx.input(|i| i.key_pressed(egui::Key::Enter))
             && ctx
