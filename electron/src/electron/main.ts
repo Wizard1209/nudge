@@ -330,7 +330,7 @@ const SETTINGS_SIZE: Record<string, { width: number; height: number }> = {
   // Measured against the rendered forms (form bottom + 20px margin); retune
   // if a variant's markup changes.
   a: { width: 560, height: 432 },
-  b: { width: 460, height: 600 },
+  b: { width: 460, height: 596 },
   c: { width: 560, height: 462 },
 };
 

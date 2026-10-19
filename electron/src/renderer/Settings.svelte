@@ -393,12 +393,12 @@
             type="text"
             inputmode="decimal"
             bind:value={intervalText}
-            class="w-[72px] bg-zinc-900 rounded px-3 py-2 outline-none border border-zinc-700"
+            class="w-[72px] bg-zinc-900 text-base rounded px-3 py-2 outline-none border border-zinc-700"
           />
           <span>min</span>
         </div>
-        <span class="text-right text-sm text-zinc-400">Startup:</span>
-        <label class="flex items-center gap-3 text-sm">
+        <span class="text-right text-sm leading-4 text-zinc-400">Startup:</span>
+        <label class="flex items-center gap-3 text-sm leading-4">
           <input
             data-testid="settings-autostart"
             type="checkbox"
@@ -410,7 +410,7 @@
       </div>
 
       <div class="grid grid-cols-[150px_1fr] gap-x-3 gap-y-2 items-center">
-        <label class="col-start-2 flex items-center gap-3 text-sm">
+        <label class="col-start-2 flex items-center gap-3 text-sm leading-4">
           <input
             data-testid="settings-sprite-enabled"
             type="checkbox"
@@ -418,8 +418,10 @@
           />
           Sprite
         </label>
+        <!-- The path and position rows are the checkbox's: indented a step
+             past the field column so they read as its subordinates. -->
         <span class="text-right text-sm text-zinc-400">PNG:</span>
-        <div class="flex gap-2">
+        <div class="flex gap-2 pl-6">
           <input
             data-testid="settings-sprite-path"
             type="text"
@@ -439,7 +441,7 @@
           {/if}
         </div>
         <span class="text-right text-sm text-zinc-400">Position:</span>
-        <div class="flex items-center gap-3">
+        <div class="flex items-center justify-between pl-6">
           <label class="flex items-center gap-1.5 text-sm text-zinc-400">
             <span>X</span>
             <input
@@ -447,7 +449,7 @@
               type="text"
               inputmode="numeric"
               bind:value={spriteXText}
-              class="w-[72px] bg-zinc-900 text-white rounded px-3 py-2 outline-none border border-zinc-700"
+              class="w-[72px] bg-zinc-900 text-base text-white rounded px-3 py-2 outline-none border border-zinc-700"
             />
           </label>
           <label class="flex items-center gap-1.5 text-sm text-zinc-400">
@@ -457,7 +459,7 @@
               type="text"
               inputmode="numeric"
               bind:value={spriteYText}
-              class="w-[72px] bg-zinc-900 text-white rounded px-3 py-2 outline-none border border-zinc-700"
+              class="w-[72px] bg-zinc-900 text-base text-white rounded px-3 py-2 outline-none border border-zinc-700"
             />
           </label>
           <label class="flex items-center gap-1.5 text-sm text-zinc-400">
@@ -467,14 +469,14 @@
               type="text"
               inputmode="numeric"
               bind:value={cardWidthText}
-              class="w-[72px] bg-zinc-900 text-white rounded px-3 py-2 outline-none border border-zinc-700"
+              class="w-[72px] bg-zinc-900 text-base text-white rounded px-3 py-2 outline-none border border-zinc-700"
             />
           </label>
         </div>
         {#if spriteError}
           <p
             data-testid="settings-sprite-error"
-            class="col-start-2 text-sm text-red-400"
+            class="col-start-2 pl-6 text-sm text-red-400"
           >
             {spriteError}
           </p>
@@ -500,7 +502,7 @@
           data-testid="settings-save"
           onclick={save}
           disabled={!dirty}
-          class="px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-500 text-sm disabled:bg-zinc-800 disabled:text-zinc-500"
+          class="px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-500 text-sm disabled:opacity-40"
         >
           Save
         </button>
@@ -516,9 +518,9 @@
     <div>
       <h2 class="text-sm font-semibold text-zinc-300">Hotkey</h2>
       <div class="mt-2 space-y-2">
-        <label class="block text-sm text-zinc-400" for="settings-hotkey">
-          Global hotkey
-        </label>
+        <!-- The section header is this field's visible label; the spec's
+             name stays on the field for assistive tech. -->
+        <label class="sr-only" for="settings-hotkey">Global hotkey</label>
         <div class="flex gap-2">
           <input
             id="settings-hotkey"
@@ -545,10 +547,11 @@
           </button>
         </div>
         <!-- §9: the accepted vocabulary is standing information under the
-             field. -->
+             field — it wraps at the hotkey row's width (200 field + gap +
+             Record), not the window's. -->
         <p
           data-testid="settings-hotkey-vocabulary"
-          class="text-xs text-zinc-500"
+          class="max-w-[278px] text-xs text-zinc-500"
         >
           {vocabulary(platform)}
         </p>
@@ -565,9 +568,9 @@
           type="text"
           inputmode="decimal"
           bind:value={intervalText}
-          class="w-[72px] bg-zinc-900 rounded px-3 py-2 outline-none border border-zinc-700"
+          class="w-[72px] bg-zinc-900 text-base rounded px-3 py-2 outline-none border border-zinc-700"
         />
-        <label class="flex items-center gap-3 pt-1 text-sm">
+        <label class="flex items-center gap-3 text-sm leading-4">
           <input
             data-testid="settings-autostart"
             type="checkbox"
@@ -580,7 +583,7 @@
 
       <h2 class="mt-6 text-sm font-semibold text-zinc-300">Sprite</h2>
       <div class="mt-2 space-y-2">
-        <label class="flex items-center gap-3 text-sm">
+        <label class="flex items-center gap-3 text-sm leading-4">
           <input
             data-testid="settings-sprite-enabled"
             type="checkbox"
@@ -616,7 +619,7 @@
                 type="text"
                 inputmode="numeric"
                 bind:value={spriteXText}
-                class="w-[72px] bg-zinc-900 text-white rounded px-3 py-2 outline-none border border-zinc-700"
+                class="w-[72px] bg-zinc-900 text-base text-white rounded px-3 py-2 outline-none border border-zinc-700"
               />
             </label>
             <label class="space-y-1 text-sm text-zinc-400">
@@ -626,7 +629,7 @@
                 type="text"
                 inputmode="numeric"
                 bind:value={spriteYText}
-                class="w-[72px] bg-zinc-900 text-white rounded px-3 py-2 outline-none border border-zinc-700"
+                class="w-[72px] bg-zinc-900 text-base text-white rounded px-3 py-2 outline-none border border-zinc-700"
               />
             </label>
             <label class="space-y-1 text-sm text-zinc-400">
@@ -636,7 +639,7 @@
                 type="text"
                 inputmode="numeric"
                 bind:value={cardWidthText}
-                class="w-[72px] bg-zinc-900 text-white rounded px-3 py-2 outline-none border border-zinc-700"
+                class="w-[72px] bg-zinc-900 text-base text-white rounded px-3 py-2 outline-none border border-zinc-700"
               />
             </label>
           </div>
@@ -655,7 +658,7 @@
             data-testid="settings-save"
             onclick={save}
             disabled={!dirty}
-            class="px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-500 text-sm disabled:bg-zinc-800 disabled:text-zinc-500"
+            class="px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-500 text-sm disabled:opacity-40"
           >
             Save
           </button>
@@ -676,8 +679,9 @@
 {:else if layout === "c"}
   <!-- Variant C — "System Settings": macOS 13+ grouped rows. Each group is a
        rounded box one step lighter than the window, rows 44px tall separated
-       by hairlines, label left and control right-aligned; the vocabulary is
-       the first group's footnote; buttons bottom-right (Cancel, Save). -->
+       by hairlines, label left and control right-aligned; the controls are
+       the compact (py-1) size so a row keeps air around them; the vocabulary
+       is the first group's footnote; buttons bottom-right (Cancel, Save). -->
   <main class="min-h-screen bg-zinc-950 text-white p-5" oninput={onEdit}>
     <div class="space-y-5">
       <div>
@@ -695,7 +699,7 @@
                   { ctrl: true, alt: false, shift: true, win: false, key: "SPACE" },
                   platform,
                 )}
-                class="w-[200px] bg-zinc-900 rounded px-3 py-2 outline-none border {recorder ===
+                class="w-[200px] bg-zinc-900 rounded px-3 py-1 outline-none border {recorder ===
                 'armed'
                 ? 'border-indigo-500'
                 : 'border-zinc-700'}"
@@ -704,7 +708,7 @@
                 data-testid="settings-hotkey-record"
                 data-recorder={recorder}
                 onclick={onRecordClick}
-                class="px-3 py-2 rounded bg-zinc-800 hover:bg-zinc-700 text-sm"
+                class="px-3 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-sm"
               >
                 {recorder === "armed" ? "Press a key…" : "Record"}
               </button>
@@ -731,7 +735,7 @@
               type="text"
               inputmode="decimal"
               bind:value={intervalText}
-              class="w-[72px] bg-zinc-900 rounded px-3 py-2 outline-none border border-zinc-700"
+              class="w-[72px] bg-zinc-900 text-base rounded px-3 py-1 outline-none border border-zinc-700"
             />
             <span>min</span>
           </div>
@@ -766,13 +770,13 @@
                 aria-label="Sprite PNG path"
                 bind:value={spritePath}
                 placeholder="Path to a PNG with a transparent background"
-                class="flex-1 min-w-0 bg-zinc-900 rounded px-3 py-2 outline-none border border-zinc-700"
+                class="flex-1 min-w-0 bg-zinc-900 rounded px-3 py-1 outline-none border border-zinc-700"
               />
               {#if settingsApi}
                 <button
                   data-testid="settings-sprite-browse"
                   onclick={browseSprite}
-                  class="px-3 py-2 rounded bg-zinc-800 hover:bg-zinc-700 text-sm"
+                  class="px-3 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-sm"
                 >
                   Browse…
                 </button>
@@ -789,7 +793,7 @@
                   type="text"
                   inputmode="numeric"
                   bind:value={spriteXText}
-                  class="w-[72px] bg-zinc-900 text-white rounded px-3 py-2 outline-none border border-zinc-700"
+                  class="w-[72px] bg-zinc-900 text-base text-white rounded px-3 py-1 outline-none border border-zinc-700"
                 />
               </label>
               <label class="flex items-center gap-1.5 text-sm text-zinc-400">
@@ -799,7 +803,7 @@
                   type="text"
                   inputmode="numeric"
                   bind:value={spriteYText}
-                  class="w-[72px] bg-zinc-900 text-white rounded px-3 py-2 outline-none border border-zinc-700"
+                  class="w-[72px] bg-zinc-900 text-base text-white rounded px-3 py-1 outline-none border border-zinc-700"
                 />
               </label>
               <label class="flex items-center gap-1.5 text-sm text-zinc-400">
@@ -809,7 +813,7 @@
                   type="text"
                   inputmode="numeric"
                   bind:value={cardWidthText}
-                  class="w-[72px] bg-zinc-900 text-white rounded px-3 py-2 outline-none border border-zinc-700"
+                  class="w-[72px] bg-zinc-900 text-base text-white rounded px-3 py-1 outline-none border border-zinc-700"
                 />
               </label>
             </div>
@@ -844,7 +848,7 @@
           data-testid="settings-save"
           onclick={save}
           disabled={!dirty}
-          class="px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-500 text-sm disabled:bg-zinc-800 disabled:text-zinc-500"
+          class="px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-500 text-sm disabled:opacity-40"
         >
           Save
         </button>
