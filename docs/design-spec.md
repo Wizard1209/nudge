@@ -580,8 +580,9 @@ either way.
   only while the form differs from the file, so a form that reads as
   unedited is one whose content is on disk.
 - **Return anywhere in the form is `Save`**: the same checks, the same
-  write, the same messages as the button. While the recorder is armed the
-  key is the recorder's — a press, not a save.
+  write, the same messages as the button. A focused button or checkbox
+  keeps its own Return — `Cancel` stays `Cancel`. While the recorder is
+  armed the key is the recorder's — a press, not a save.
 - **A save that reached the file says so** — `Saved`, beside the buttons —
   and the first edit after it takes the note away.
 - **Autostart** is applied **immediately** on a checkbox click — under the

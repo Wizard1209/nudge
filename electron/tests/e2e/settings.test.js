@@ -175,6 +175,22 @@ describe('settings sub-app', () => {
             expect(await savedNote(page)).toBeNull();
         });
 
+        // §9 Saving: "A focused button or checkbox keeps its own Return —
+        // `Cancel` stays `Cancel`."
+        it('leaves Return to a focused button or checkbox', async () => {
+            await retype(page, 'settings-interval', '15');
+            await page.focus('[data-testid="settings-autostart"]');
+            await page.keyboard.press('Enter');
+            expect(await readStored(page)).toBeNull();
+            expect(await savedNote(page)).toBeNull();
+            expect(await saveDisabled(page)).toBe(false);
+
+            await page.focus('[data-testid="settings-cancel"]');
+            await page.keyboard.press('Enter');
+            expect(await readStored(page)).toBeNull();
+            expect(await page.$eval('[data-testid="settings-interval"]', (el) => el.value)).toBe('10');
+        });
+
         // §9 Saving: "While the recorder is armed the key is the recorder's —
         // a press, not a save."
         it('leaves Return to an armed recorder', async () => {

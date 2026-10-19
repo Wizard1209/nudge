@@ -184,11 +184,19 @@
     saved = false;
   }
 
+  function keepsItsOwnReturn(target: EventTarget | null): boolean {
+    return (
+      target instanceof HTMLButtonElement ||
+      (target instanceof HTMLInputElement && target.type === "checkbox")
+    );
+  }
+
   function onWindowKeydown(e: KeyboardEvent) {
     if (recorder !== "armed") {
-      // §9: Return anywhere in the form is Save. A focused button keeps its
-      // own Return (it is already a click there), so Cancel stays Cancel.
-      if (e.key === "Enter" && !(e.target instanceof HTMLButtonElement)) {
+      // §9: Return anywhere in the form is Save. A focused button or
+      // checkbox keeps its own Return (the same rule as the Rust window,
+      // where egui makes it a click), so Cancel stays Cancel.
+      if (e.key === "Enter" && !keepsItsOwnReturn(e.target)) {
         e.preventDefault();
         void save();
       }

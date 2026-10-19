@@ -569,6 +569,31 @@ fn settings_return_on_a_clean_form_does_nothing() {
     assert!(!says_saved(&harness));
 }
 
+/// §9 Saving: "A focused button or checkbox keeps its own Return" — on the
+/// autostart checkbox the key is the checkbox's click, and the edited
+/// interval stays unsaved.
+#[test]
+fn settings_return_on_a_focused_checkbox_is_the_checkbox_s() {
+    let (mut harness, persisted) = settings_harness(cfg("Alt+J", 7.0, false));
+
+    type_into(&mut harness, 1, "5");
+    harness.get_by_label(AUTOSTART_LABEL).focus();
+    harness.run();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+
+    assert!(
+        persisted
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|c| c.default_interval_minutes == 7.0),
+        "Return on the checkbox saved the form"
+    );
+    assert!(!says_saved(&harness));
+    assert!(!save_is_disabled(&harness), "the edit is still unsaved");
+}
+
 /// §9 Saving: "A save that reached the file says so — `Saved`, beside the
 /// buttons — and the first edit after it takes the note away."
 #[test]
