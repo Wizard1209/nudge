@@ -99,7 +99,7 @@ pub fn inspect_png(bytes: &[u8]) -> Result<PngInfo, SpriteError> {
 
 /// True if any pixel of a 4-bytes-per-pixel bitmap has alpha 0.
 pub fn has_transparent_pixel(pixels: &[u8]) -> bool {
-    pixels.chunks_exact(4).any(|p| p[3] == 0)
+    pixels.as_chunks::<4>().0.iter().any(|p| p[3] == 0)
 }
 
 /// The check, keeping the pixels: `decode` runs only once the header passes,
@@ -462,8 +462,8 @@ mod tests {
         let (rgba, px) = decode_rgba(GREEN).unwrap();
         assert_eq!(px, [720, 430]);
         let mut seen = std::collections::BTreeSet::new();
-        for p in rgba.chunks_exact(4) {
-            seen.insert([p[0], p[1], p[2], p[3]]);
+        for p in rgba.as_chunks::<4>().0 {
+            seen.insert(*p);
         }
         assert_eq!(
             seen.into_iter().collect::<Vec<_>>(),
