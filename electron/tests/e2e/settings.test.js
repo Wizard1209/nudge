@@ -139,6 +139,18 @@ describe('settings sub-app', () => {
             expect(await savedNote(page)).toBeNull();
         });
 
+        // §9 Saving: "The note is the button's: an autostart click, committed
+        // on its own, takes it away like any other edit and raises none."
+        it('an autostart click after a save takes the note away and raises none', async () => {
+            await retype(page, 'settings-interval', '15');
+            await page.click('[data-testid="settings-save"]');
+            await page.waitForSelector('[data-testid="settings-saved"]');
+            await page.click('[data-testid="settings-autostart"]');
+            expect(await savedNote(page)).toBeNull();
+            expect((await readStored(page)).autostart).toBe(true);
+            expect(await saveDisabled(page)).toBe(true);
+        });
+
         it('does not say Saved for a save that was refused', async () => {
             await retype(page, 'settings-hotkey', 'Ctrl+Numpad5');
             await page.click('[data-testid="settings-save"]');

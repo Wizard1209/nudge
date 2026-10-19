@@ -613,6 +613,34 @@ fn settings_says_saved_after_a_save_until_the_first_edit() {
     );
 }
 
+/// §9 Saving: "The note is the button's: an autostart click, committed on
+/// its own, takes it away like any other edit and raises none."
+#[test]
+fn settings_autostart_click_after_a_save_takes_the_note_away_and_raises_none() {
+    let (mut harness, persisted) = settings_harness(cfg("Alt+J", 7.0, false));
+
+    type_into(&mut harness, 1, "5");
+    harness.get_by_label("Save").click();
+    harness.run();
+    assert!(says_saved(&harness));
+
+    harness.get_by_label(AUTOSTART_LABEL).click();
+    harness.run();
+    assert!(
+        !says_saved(&harness),
+        "an autostart click is an edit: the note must go"
+    );
+    assert_eq!(
+        persisted.lock().unwrap().last().map(|c| c.autostart),
+        Some(true),
+        "the click itself was committed"
+    );
+    assert!(
+        save_is_disabled(&harness),
+        "nothing differs from the file after the click"
+    );
+}
+
 /// §9 Saving: "`Save` is live only while the form differs from the file, so
 /// a form that reads as unedited is one whose content is on disk."
 #[test]

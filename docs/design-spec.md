@@ -584,7 +584,9 @@ either way.
   keeps its own Return — `Cancel` stays `Cancel`. While the recorder is
   armed the key is the recorder's — a press, not a save.
 - **A save that reached the file says so** — `Saved`, beside the buttons —
-  and the first edit after it takes the note away.
+  and the first edit after it takes the note away. The note is the
+  button's: an autostart click, committed on its own, takes it away like
+  any other edit and raises none.
 - **Autostart** is applied **immediately** on a checkbox click — under the
   transactional rule: first change OS state (registry), then confirm the
   system reports the new state, and only then write `autostart: true/false`
