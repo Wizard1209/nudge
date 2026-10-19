@@ -137,7 +137,10 @@
 
   async function browseSprite() {
     const picked = await settingsApi?.browseSprite();
-    if (picked) spritePath = picked;
+    if (picked) {
+      spritePath = picked;
+      onEdit(); // a pick is an edit, though it fires no input event
+    }
   }
 
   // --- The recorder (docs/TASK-hotkey-native.md) ---

@@ -677,7 +677,16 @@ ipcMain.handle("settings:save", async (_event, raw) => {
   return { ok: true as const };
 });
 
+// Native e2e affordance (NUDGE_E2E): the next Browse… answers with this path
+// instead of raising the OS dialog, which no test can drive.
+let queuedBrowsePick: string | null = null;
+
 ipcMain.handle("settings:browse-sprite", async () => {
+  if (process.env.NUDGE_E2E && queuedBrowsePick !== null) {
+    const picked = queuedBrowsePick;
+    queuedBrowsePick = null;
+    return picked;
+  }
   const options: Electron.OpenDialogOptions = {
     title: "Choose a sprite",
     filters: [{ name: "PNG image", extensions: ["png"] }],
@@ -756,6 +765,9 @@ app.on("will-quit", () => {
 if (process.env.NUDGE_E2E) {
   (globalThis as Record<string, unknown>).__nudgeTest = {
     openSettings: () => openSettings(),
+    queueBrowsePick: (p: string) => {
+      queuedBrowsePick = p;
+    },
     show: () => showNudge("manual"),
     // Hide the popup (so the refresh does not early-out), take the tray down
     // the way quit does, then tick the refresh once: it must be a no-op.

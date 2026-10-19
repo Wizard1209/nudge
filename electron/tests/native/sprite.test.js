@@ -225,4 +225,22 @@ describe('popup with a sprite', () => {
     await expect.poll(() => settings.textContent('[data-testid="settings-saved"]').catch(() => null)).toBe('Saved');
     expect(JSON.parse(readFileSync(path.join(dir, 'config.json'), 'utf-8')).sprite).toEqual(REAL);
   });
+
+  // §9 Saving: "A save that reached the file says so — `Saved`, beside the
+  // buttons — and the first edit after it takes the note away." A path picked
+  // through Browse… is an edit like a typed one.
+  it('a Browse… pick after a save takes the Saved note away', async () => {
+    const { dir } = await launch(null);
+    const settings = await openSettingsWindow(app);
+    await settings.fill('[data-testid="settings-interval"]', '15');
+    await settings.click('[data-testid="settings-save"]');
+    await expect.poll(() => settings.textContent('[data-testid="settings-saved"]').catch(() => null)).toBe('Saved');
+    expect(JSON.parse(readFileSync(path.join(dir, 'config.json'), 'utf-8')).default_interval_minutes).toBe(15);
+
+    await app.evaluate(({}, p) => globalThis.__nudgeTest.queueBrowsePick(p), FIXTURE);
+    await settings.click('[data-testid="settings-sprite-browse"]');
+    await expect.poll(() => settings.inputValue('[data-testid="settings-sprite-path"]')).toBe(FIXTURE);
+    expect(await settings.locator('[data-testid="settings-save"]').isDisabled()).toBe(false);
+    expect(await settings.locator('[data-testid="settings-saved"]').count()).toBe(0);
+  });
 });
