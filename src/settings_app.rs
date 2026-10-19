@@ -104,11 +104,8 @@ impl SettingsForm {
         parse_interval_minutes(&self.interval_text)
     }
 
-    /// Whether any field differs from the original loaded config. Test-only
-    /// today (it's the canonical assertion that `mark_clean` reset the
-    /// baseline); a future iteration may also surface a "discard changes?"
-    /// confirmation, so we keep the API + its tests.
-    #[allow(dead_code)]
+    /// Whether any field differs from the file — what greys `Save` and gates
+    /// [`SettingsApp::save`] (§9).
     pub fn is_dirty(&self) -> bool {
         self.hotkey != self.original.hotkey
             || self.interval_text != format_interval(self.original.default_interval_minutes)
