@@ -914,7 +914,10 @@ impl NudgeApp {
         egui::Frame::NONE
             .fill(fill)
             .corner_radius(egui::CornerRadius::same(14))
-            .stroke(egui::Stroke::new(1.0, egui::Color32::from_white_alpha(12)))
+            .stroke(egui::Stroke::new(
+                1.0_f32,
+                egui::Color32::from_white_alpha(12),
+            ))
             .shadow(egui::epaint::Shadow {
                 offset: [0, 4],
                 blur: 12,
