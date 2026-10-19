@@ -18,10 +18,10 @@ Release.
    with a live desktop. Skip only if they already ran on the same code
    recently.
 4. **macOS ignored tests** — run `scripts/native-tests-macos.sh`, which drives
-   `tests/macos_native.rs` inside a Tart guest. All five must pass. They stay
-   out of CI for the same reason as the Windows pair, plus one of their own:
-   Screen Recording and Accessibility are baked into a runner image ahead of
-   time and cannot be granted during a job.
+   `tests/macos_native.rs` inside a Tart guest. Every test in it must pass.
+   They stay out of CI for the same reason as the Windows pair, plus one of
+   their own: Screen Recording and Accessibility are baked into a runner
+   image ahead of time and cannot be granted during a job.
 
    Run them in the guest even when your own screen is unlocked. Behind a lock
    screen they cannot run at all — synthetic input, application activation and

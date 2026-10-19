@@ -25,7 +25,8 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use nudge_web::app::NudgeApp;
 use nudge_web::autostart::AutostartProvider;
 use nudge_web::config::Config;
-use nudge_web::settings_app::{PersistFn, SettingsApp, SettingsForm};
+use nudge_web::recorder::{self, EdgeSource, PhysicalKey, PressEdge, Verdict};
+use nudge_web::settings_app::{PersistFn, SettingsApp, SettingsForm, SpriteCheckFn};
 
 // =============================================================================
 // NudgeApp — the spotlight card
@@ -222,6 +223,7 @@ fn cfg(hotkey: &str, minutes: f64, autostart: bool) -> Config {
         hotkey: hotkey.to_string(),
         default_interval_minutes: minutes,
         autostart,
+        ..Config::default()
     }
 }
 
@@ -229,20 +231,42 @@ fn no_op_persist() -> PersistFn {
     Box::new(|_cfg: &Config| Ok(()))
 }
 
+/// A PNG check that passes everything: no test here reads a file.
+fn accept_any_sprite() -> SpriteCheckFn {
+    Box::new(|_path: &std::path::Path| Ok(()))
+}
+
+/// The autostart checkbox, by its platform label — there are two checkboxes
+/// in the window now, and the sprite's is the other one.
+#[cfg(target_os = "macos")]
+const AUTOSTART_LABEL: &str = "Open at login";
+#[cfg(not(target_os = "macos"))]
+const AUTOSTART_LABEL: &str = "Launch with Windows";
+
 #[test]
 fn settings_form_populates_from_a_config() {
     let provider: Box<dyn AutostartProvider> = Box::new(RecordingProvider::new(true));
     let mut harness = Harness::new_eframe(|cc| {
-        SettingsApp::new(cc, cfg("Alt+J", 7.0, true), provider, no_op_persist())
+        SettingsApp::new(
+            cc,
+            cfg("Alt+J", 7.0, true),
+            provider,
+            no_op_persist(),
+            accept_any_sprite(),
+        )
     });
     harness.run();
 
-    // Hotkey row, then interval row: both TextEdit::singleline with
-    // hint_text only, same unlabelled shape as the spotlight card's fields
-    // (row 1: "Global hotkey:", row 2: "Default interval (min):" are
-    // separate ui.label()s, not wired via .labelled_by()).
+    // Hotkey row, then interval row, then the sprite's path, X, Y and card
+    // width: all TextEdit::singleline with hint_text only, same unlabelled
+    // shape as the spotlight card's fields (the row labels are separate
+    // ui.label()s, not wired via .labelled_by()).
     let inputs: Vec<_> = harness.get_all_by_role(Role::TextInput).collect();
-    assert_eq!(inputs.len(), 2, "hotkey field + interval field");
+    assert_eq!(
+        inputs.len(),
+        6,
+        "hotkey, interval, sprite path, X, Y, card width"
+    );
     // The stored spelling is the cross-platform one; the field shows this
     // platform's — `⌥J` on macOS. Deriving the expectation the same way the
     // window does would assert nothing, so this states both forms.
@@ -252,7 +276,7 @@ fn settings_form_populates_from_a_config() {
     assert_eq!(inputs[0].value().as_deref(), Some("Alt+J"));
     assert_eq!(inputs[1].value().as_deref(), Some("7"));
 
-    let checkbox = harness.get_by_role(Role::CheckBox);
+    let checkbox = harness.get_by_label(AUTOSTART_LABEL);
     assert_eq!(
         checkbox.accesskit_node().toggled(),
         Some(eframe::egui::accesskit::Toggled::True),
@@ -283,7 +307,13 @@ fn settings_form_editing_marks_it_dirty() {
 fn settings_app_editing_a_field_round_trips_through_the_ui() {
     let provider: Box<dyn AutostartProvider> = Box::new(RecordingProvider::new(false));
     let mut harness = Harness::new_eframe(|cc| {
-        SettingsApp::new(cc, cfg("Alt+J", 7.0, false), provider, no_op_persist())
+        SettingsApp::new(
+            cc,
+            cfg("Alt+J", 7.0, false),
+            provider,
+            no_op_persist(),
+            accept_any_sprite(),
+        )
     });
     harness.run();
 
@@ -324,7 +354,13 @@ fn toggling_autostart_goes_through_the_injected_provider_not_the_os() {
 
     let boxed_provider: Box<dyn AutostartProvider> = Box::new(provider);
     let mut harness = Harness::new_eframe(|cc| {
-        SettingsApp::new(cc, cfg("Alt+J", 7.0, false), boxed_provider, persist)
+        SettingsApp::new(
+            cc,
+            cfg("Alt+J", 7.0, false),
+            boxed_provider,
+            persist,
+            accept_any_sprite(),
+        )
     });
     harness.run();
 
@@ -334,7 +370,7 @@ fn toggling_autostart_goes_through_the_injected_provider_not_the_os() {
         "unclicked checkbox never touches the provider"
     );
 
-    harness.get_by_role(Role::CheckBox).click();
+    harness.get_by_label(AUTOSTART_LABEL).click();
     harness.run();
 
     assert_eq!(
@@ -348,4 +384,403 @@ fn toggling_autostart_goes_through_the_injected_provider_not_the_os() {
         Some(true),
         "the confirmed autostart change is persisted through the injected closure"
     );
+}
+
+/// §9: an enabled sprite must pass the §10 PNG check or Save refuses it,
+/// naming the reason on the window's message line and writing nothing.
+#[test]
+fn settings_save_with_a_bad_sprite_shows_the_reason_and_persists_nothing() {
+    const REASON: &str = "Sprite PNG has no transparent pixels — it needs a transparent background";
+
+    let persisted: std::sync::Arc<std::sync::Mutex<Vec<Config>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let persisted_writer = std::sync::Arc::clone(&persisted);
+    let persist: PersistFn = Box::new(move |cfg: &Config| {
+        persisted_writer.lock().unwrap().push(cfg.clone());
+        Ok(())
+    });
+    let refuse: SpriteCheckFn = Box::new(|_path: &std::path::Path| Err(REASON.to_string()));
+
+    let provider: Box<dyn AutostartProvider> = Box::new(RecordingProvider::new(false));
+    let mut harness = Harness::new_eframe(|cc| {
+        SettingsApp::new(cc, cfg("Alt+J", 7.0, false), provider, persist, refuse)
+    });
+    harness.run();
+
+    // Type a path into the sprite row's third input, tick Sprite, Save.
+    harness
+        .get_all_by_role(Role::TextInput)
+        .nth(2)
+        .unwrap()
+        .focus();
+    harness.run();
+    harness
+        .get_all_by_role(Role::TextInput)
+        .nth(2)
+        .unwrap()
+        .type_text("/art/s.png");
+    harness.run();
+    harness.get_by_label("Sprite").click();
+    harness.run();
+    harness.get_by_label("Save").click();
+    harness.run();
+
+    assert!(
+        harness.query_by_label(REASON).is_some(),
+        "the message line carries the check's reason"
+    );
+    assert!(
+        persisted.lock().unwrap().is_empty(),
+        "a refused save writes nothing"
+    );
+    // §9 Saving: only "a save that reached the file says so".
+    assert!(
+        harness.query_by_label("Saved").is_none(),
+        "a refused save must not say Saved"
+    );
+}
+
+// -----------------------------------------------------------------------------
+// §9 Saving — Return, the `Saved` note, and a Save that is live only while
+// the form differs from the file.
+// -----------------------------------------------------------------------------
+
+/// A settings window over a recording persist closure: what Save wrote, in
+/// order, so a case can assert on the write rather than on the window alone.
+fn settings_harness<'a>(
+    config: Config,
+) -> (
+    Harness<'a, SettingsApp>,
+    std::sync::Arc<std::sync::Mutex<Vec<Config>>>,
+) {
+    let persisted: std::sync::Arc<std::sync::Mutex<Vec<Config>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let writer = std::sync::Arc::clone(&persisted);
+    let persist: PersistFn = Box::new(move |cfg: &Config| {
+        writer.lock().unwrap().push(cfg.clone());
+        Ok(())
+    });
+    let provider: Box<dyn AutostartProvider> = Box::new(RecordingProvider::new(false));
+    let mut harness = Harness::new_eframe(move |cc| {
+        SettingsApp::new(cc, config, provider, persist, accept_any_sprite())
+    });
+    harness.run();
+    (harness, persisted)
+}
+
+/// A key source with no platform behind it: edges are whatever a test queues,
+/// every one of them refused by name, and `armed` is what the row last said.
+#[derive(Clone, Default)]
+struct FakeEdgeSource {
+    edges: std::sync::Arc<std::sync::Mutex<Vec<PressEdge>>>,
+    armed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl EdgeSource for FakeEdgeSource {
+    fn drain(&mut self) -> Vec<PressEdge> {
+        std::mem::take(&mut *self.edges.lock().unwrap())
+    }
+    fn set_armed(&mut self, armed: bool) {
+        self.armed.store(armed, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn classify(&self, _edge: PressEdge) -> Verdict {
+        Verdict::NotBindable {
+            name: "Enter".to_string(),
+        }
+    }
+}
+
+/// [`settings_harness`] with a recorder that can arm.
+fn settings_harness_with_source<'a>(
+    config: Config,
+    source: FakeEdgeSource,
+) -> (
+    Harness<'a, SettingsApp>,
+    std::sync::Arc<std::sync::Mutex<Vec<Config>>>,
+) {
+    let persisted: std::sync::Arc<std::sync::Mutex<Vec<Config>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let writer = std::sync::Arc::clone(&persisted);
+    let persist: PersistFn = Box::new(move |cfg: &Config| {
+        writer.lock().unwrap().push(cfg.clone());
+        Ok(())
+    });
+    let provider: Box<dyn AutostartProvider> = Box::new(RecordingProvider::new(false));
+    let mut harness = Harness::new_eframe(move |_cc| {
+        SettingsApp::with_source(
+            config,
+            provider,
+            persist,
+            accept_any_sprite(),
+            Some(Box::new(source)),
+        )
+    });
+    harness.run();
+    (harness, persisted)
+}
+
+/// Put the caret in the n-th text input and type into it.
+fn type_into(harness: &mut Harness<'_, SettingsApp>, nth: usize, text: &str) {
+    harness
+        .get_all_by_role(Role::TextInput)
+        .nth(nth)
+        .unwrap()
+        .focus();
+    harness.run();
+    harness
+        .get_all_by_role(Role::TextInput)
+        .nth(nth)
+        .unwrap()
+        .type_text(text);
+    harness.run();
+}
+
+fn save_is_disabled(harness: &Harness<'_, SettingsApp>) -> bool {
+    harness.get_by_label("Save").accesskit_node().is_disabled()
+}
+
+fn says_saved(harness: &Harness<'_, SettingsApp>) -> bool {
+    harness.query_by_label("Saved").is_some()
+}
+
+/// §9 Saving: "Return anywhere in the form is `Save`: the same checks, the
+/// same write, the same messages as the button."
+#[test]
+fn settings_return_in_a_field_saves() {
+    let (mut harness, persisted) = settings_harness(cfg("Alt+J", 7.0, false));
+
+    // The interval field: "7" becomes "75" (the caret lands at the end).
+    type_into(&mut harness, 1, "5");
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    assert_eq!(
+        persisted
+            .lock()
+            .unwrap()
+            .last()
+            .map(|c| c.default_interval_minutes),
+        Some(75.0),
+        "Return in the interval field did not write the form"
+    );
+    assert!(says_saved(&harness), "a save from Return says Saved too");
+
+    // A sprite field: the same key, the same write.
+    type_into(&mut harness, 3, "4");
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    assert_eq!(
+        persisted.lock().unwrap().last().map(|c| c.sprite.x),
+        Some(4),
+        "Return in the sprite X field did not write the form"
+    );
+}
+
+/// §9 Saving: "the same checks, the same write, the same messages as the
+/// button" — a Return that fails the checks shows the button's message and
+/// writes nothing.
+#[test]
+fn settings_return_runs_the_same_checks_and_shows_the_same_message() {
+    let (mut harness, persisted) = settings_harness(cfg("Alt+J", 7.0, false));
+
+    type_into(&mut harness, 1, "x");
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+
+    assert!(
+        harness
+            .query_by_label("Interval must be a positive number of minutes (got: \"7x\")")
+            .is_some(),
+        "the message line does not carry the interval check's reason"
+    );
+    assert!(
+        persisted.lock().unwrap().is_empty(),
+        "a refused save from Return wrote something"
+    );
+    assert!(!says_saved(&harness), "a refused save must not say Saved");
+}
+
+/// §9 Saving: "`Save` is live only while the form differs from the file" —
+/// so Return on a form that matches the file has nothing to do.
+#[test]
+fn settings_return_on_a_clean_form_does_nothing() {
+    let (mut harness, persisted) = settings_harness(cfg("Alt+J", 7.0, false));
+
+    harness
+        .get_all_by_role(Role::TextInput)
+        .nth(1)
+        .unwrap()
+        .focus();
+    harness.run();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+
+    assert!(
+        persisted.lock().unwrap().is_empty(),
+        "Return on an unedited form wrote the file"
+    );
+    assert!(!says_saved(&harness));
+}
+
+/// §9 Saving: "While the recorder is armed the key is the recorder's — a
+/// press, not a save." The source swallows Return on a real desktop; here
+/// egui sees it too, and the window must still not save.
+#[test]
+fn settings_return_while_the_recorder_is_armed_is_a_press_not_a_save() {
+    let source = FakeEdgeSource::default();
+    let (mut harness, persisted) =
+        settings_harness_with_source(cfg("Alt+J", 7.0, false), source.clone());
+
+    type_into(&mut harness, 1, "5");
+    harness.get_by_label("Record").click();
+    harness.run();
+    assert!(
+        harness.query_all_by_label(recorder::PROMPT).count() > 0,
+        "Record did not arm the recorder"
+    );
+    assert!(source.armed.load(std::sync::atomic::Ordering::SeqCst));
+
+    // The press edge the monitor would report, and the key egui would see.
+    source.edges.lock().unwrap().push(PressEdge {
+        key: PhysicalKey(36),
+        modifiers: 0,
+    });
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+
+    assert!(
+        persisted.lock().unwrap().is_empty(),
+        "Return while armed wrote the file"
+    );
+    assert!(!says_saved(&harness));
+    assert!(
+        harness
+            .query_all_by_label(
+                "Enter cannot be part of a hotkey. Press modifiers plus one key. Esc cancels."
+            )
+            .count()
+            > 0,
+        "the press was not the recorder's"
+    );
+    assert!(
+        source.armed.load(std::sync::atomic::Ordering::SeqCst),
+        "a refused key must leave the recorder armed"
+    );
+}
+
+/// §9 Saving: "A focused button or checkbox keeps its own Return" — on the
+/// autostart checkbox the key is the checkbox's click, and the edited
+/// interval stays unsaved.
+#[test]
+fn settings_return_on_a_focused_checkbox_is_the_checkbox_s() {
+    let (mut harness, persisted) = settings_harness(cfg("Alt+J", 7.0, false));
+
+    type_into(&mut harness, 1, "5");
+    harness.get_by_label(AUTOSTART_LABEL).focus();
+    harness.run();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+
+    assert!(
+        persisted
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|c| c.default_interval_minutes == 7.0),
+        "Return on the checkbox saved the form"
+    );
+    assert!(!says_saved(&harness));
+    assert!(!save_is_disabled(&harness), "the edit is still unsaved");
+}
+
+/// §9 Saving: "A save that reached the file says so — `Saved`, beside the
+/// buttons — and the first edit after it takes the note away."
+#[test]
+fn settings_says_saved_after_a_save_until_the_first_edit() {
+    let (mut harness, _persisted) = settings_harness(cfg("Alt+J", 7.0, false));
+    assert!(!says_saved(&harness), "nothing has been saved yet");
+
+    type_into(&mut harness, 1, "5");
+    harness.get_by_label("Save").click();
+    harness.run();
+    assert!(says_saved(&harness), "a save that reached the file says so");
+
+    type_into(&mut harness, 1, "0");
+    assert!(
+        !says_saved(&harness),
+        "the first edit after a save must take the note away"
+    );
+}
+
+/// §9 Saving: "The note is the button's: an autostart click, committed on
+/// its own, takes it away like any other edit and raises none."
+#[test]
+fn settings_autostart_click_after_a_save_takes_the_note_away_and_raises_none() {
+    let (mut harness, persisted) = settings_harness(cfg("Alt+J", 7.0, false));
+
+    type_into(&mut harness, 1, "5");
+    harness.get_by_label("Save").click();
+    harness.run();
+    assert!(says_saved(&harness));
+
+    harness.get_by_label(AUTOSTART_LABEL).click();
+    harness.run();
+    assert!(
+        !says_saved(&harness),
+        "an autostart click is an edit: the note must go"
+    );
+    assert_eq!(
+        persisted.lock().unwrap().last().map(|c| c.autostart),
+        Some(true),
+        "the click itself was committed"
+    );
+    assert!(
+        save_is_disabled(&harness),
+        "nothing differs from the file after the click"
+    );
+}
+
+/// §9 Saving: "`Save` is live only while the form differs from the file, so
+/// a form that reads as unedited is one whose content is on disk."
+#[test]
+fn settings_save_is_greyed_while_the_form_matches_the_file() {
+    let (mut harness, persisted) = settings_harness(cfg("Alt+J", 7.0, false));
+    assert!(
+        save_is_disabled(&harness),
+        "a freshly-loaded form has nothing to save"
+    );
+
+    // "7" -> "75": differs from the file.
+    type_into(&mut harness, 1, "5");
+    assert!(!save_is_disabled(&harness), "an edit makes Save live");
+
+    // Backspace over the "5": the stored value is back, so nothing differs.
+    harness.key_press(egui::Key::Backspace);
+    harness.run();
+    assert_eq!(
+        harness
+            .get_all_by_role(Role::TextInput)
+            .nth(1)
+            .unwrap()
+            .value()
+            .as_deref(),
+        Some("7")
+    );
+    assert!(
+        save_is_disabled(&harness),
+        "typing the stored value back is no edit"
+    );
+
+    type_into(&mut harness, 1, "5");
+    harness.get_by_label("Save").click();
+    harness.run();
+    assert_eq!(persisted.lock().unwrap().len(), 1);
+    assert!(
+        save_is_disabled(&harness),
+        "a just-saved form reads as unedited, and its content is on disk"
+    );
+
+    // A greyed button is not a button: a click on it writes nothing.
+    harness.get_by_label("Save").click();
+    harness.run();
+    assert_eq!(persisted.lock().unwrap().len(), 1);
 }

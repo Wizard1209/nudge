@@ -21,6 +21,10 @@ mod recorder;
 #[cfg(not(target_arch = "wasm32"))]
 mod settings_app;
 #[cfg(not(target_arch = "wasm32"))]
+mod sprite;
+#[cfg(not(target_arch = "wasm32"))]
+mod sprite_png;
+#[cfg(not(target_arch = "wasm32"))]
 mod timer;
 #[cfg(target_os = "windows")]
 mod tray_bridge;
@@ -279,11 +283,19 @@ fn run_settings_ui() -> eframe::Result {
     let path_for_persist = config_path.clone();
     let persist: settings_app::PersistFn =
         Box::new(move |c: &config::Config| config::save(&path_for_persist, c));
+    // §9: an enabled sprite must pass the §10 check or Save refuses it.
+    let sprite_check: settings_app::SpriteCheckFn = Box::new(|path: &std::path::Path| {
+        sprite_png::check_sprite_file(path)
+            .map(|_size| ())
+            .map_err(|e| e.to_string())
+    });
 
-    let win_size = [520.0_f32, 400.0];
+    // Tall enough for every row at once: a settings window that scrolls
+    // hides the row the user is looking for.
+    let win_size = [520.0_f32, 560.0];
     let viewport = egui::ViewportBuilder::default()
         .with_inner_size(win_size)
-        .with_min_inner_size([400.0, 320.0])
+        .with_min_inner_size([400.0, 480.0])
         .with_decorations(true)
         .with_resizable(true)
         .with_title("Nudge — Settings");
@@ -295,7 +307,15 @@ fn run_settings_ui() -> eframe::Result {
     eframe::run_native(
         "Nudge — Settings",
         options,
-        Box::new(move |cc| Ok(Box::new(SettingsApp::new(cc, cfg, provider, persist)))),
+        Box::new(move |cc| {
+            Ok(Box::new(SettingsApp::new(
+                cc,
+                cfg,
+                provider,
+                persist,
+                sprite_check,
+            )))
+        }),
     )
 }
 
@@ -377,6 +397,16 @@ fn main() -> eframe::Result {
             config.default_interval_minutes
         );
     }
+    // A PNG that fails the check is not a sprite (spec §10): say why, show
+    // the plain card.
+    let sprite = match sprite_png::load_sprite(&config.sprite) {
+        Some(Ok(decoded)) => Some((decoded, config.sprite.clone())),
+        Some(Err(reason)) => {
+            eprintln!("[nudge] sprite not shown: {reason}");
+            None
+        }
+        None => None,
+    };
 
     // Whatever OS integration this platform has, started before the event
     // loop takes the main thread.
@@ -418,8 +448,9 @@ fn main() -> eframe::Result {
         }
     };
 
-    // Spotlight window: horizontally centered, vertical center at 40% of screen
-    // per spec §1. Computed once at launch from primary monitor dimensions.
+    // The window's creation size. Windows also positions it here, once, from
+    // the primary monitor; on macOS `NudgeApp::place_window` makes it the
+    // work area on the first frame (spec §1).
     let win_size = [
         nudge_state::POPUP_SIZE.0 as f32,
         nudge_state::POPUP_SIZE.1 as f32,
@@ -450,9 +481,10 @@ fn main() -> eframe::Result {
     // macOS: same chrome as Windows minus the two Win32-shaped calls.
     // `with_taskbar(false)` has no macOS meaning — the Dock is an *app*
     // property, set through the activation policy below — and the position
-    // cannot be set here at all, because the screen size is not knowable
-    // before the event loop exists (`platform::macos::apply_window_position`
-    // sends it on the first tick, in points).
+    // cannot be set here at all, because no screen is knowable before the
+    // event loop exists (`NudgeApp::place_window` reads it through
+    // `platform::screen_geometry` on the first frame, in points, and makes
+    // the window the work area).
     //
     // The rest is measured to work: transparency composites (the window's own
     // surface reads 0,0,0,0 at the corners while the card is opaque at the
@@ -508,7 +540,11 @@ fn main() -> eframe::Result {
             // The half of the OS integration that needs the main thread to
             // already be the event loop: the status item and the hotkey.
             platform::start_on_event_loop(&cc.egui_ctx);
-            Ok(Box::new(NudgeApp::new(cc, default_minutes)))
+            let mut app = NudgeApp::new(cc, default_minutes);
+            if let Some((decoded, cfg)) = sprite {
+                app = app.with_sprite(decoded, cfg);
+            }
+            Ok(Box::new(app))
         }),
     )
 }

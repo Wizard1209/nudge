@@ -41,6 +41,97 @@ pub struct Config {
     /// it defaults to false for new installs and pre-field config files.
     #[serde(default)]
     pub autostart: bool,
+
+    /// The optional PNG drawn over the popup card (spec §10). Read through
+    /// [`forgiving_sprite`]: a malformed field in the block falls back alone
+    /// instead of refusing the file.
+    // TODO: a malformed top-level field still drops the whole file (spec §9
+    // gap, out of scope).
+    #[serde(default, deserialize_with = "forgiving_sprite")]
+    pub sprite: SpriteConfig,
+}
+
+/// The card's width in points while no `card_width` is configured — §2's
+/// "around 480".
+pub const DEFAULT_CARD_WIDTH: u32 = 480;
+
+/// The `sprite` block of `config.json` (spec §10).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SpriteConfig {
+    /// Whether the sprite is drawn.
+    pub enabled: bool,
+    /// Absolute path to the PNG.
+    pub path: String,
+    /// The sprite's top-left corner relative to the card's, in points; either
+    /// may be negative.
+    pub x: i32,
+    pub y: i32,
+    /// The card's width while the sprite is on, in points.
+    pub card_width: u32,
+}
+
+impl Default for SpriteConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            path: String::new(),
+            x: 0,
+            y: 0,
+            card_width: DEFAULT_CARD_WIDTH,
+        }
+    }
+}
+
+impl SpriteConfig {
+    /// Each field that is absent or malformed falls back to its default
+    /// alone; a value that is not an object is an empty block.
+    fn from_value(raw: &serde_json::Value) -> Self {
+        let default = Self::default();
+        let Some(obj) = raw.as_object() else {
+            return default;
+        };
+        Self {
+            enabled: obj
+                .get("enabled")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(default.enabled),
+            path: obj
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .map_or(default.path, str::to_string),
+            x: coordinate_or_default(obj.get("x").and_then(serde_json::Value::as_f64)),
+            y: coordinate_or_default(obj.get("y").and_then(serde_json::Value::as_f64)),
+            card_width: card_width_or_default(
+                obj.get("card_width").and_then(serde_json::Value::as_f64),
+            ),
+        }
+    }
+}
+
+/// Never fails: the block is read as a `serde_json::Value` and normalised
+/// field by field, so one typo in it cannot drop the hotkey with it.
+fn forgiving_sprite<'de, D: serde::Deserializer<'de>>(d: D) -> Result<SpriteConfig, D::Error> {
+    let raw = serde_json::Value::deserialize(d)?;
+    Ok(SpriteConfig::from_value(&raw))
+}
+
+/// Finite number → nearest integer with JS `Math.round` parity (halves go
+/// towards +∞, so `-40.5` is `-40`); anything else → `None`.
+fn rounded_int(value: Option<f64>) -> Option<f64> {
+    value.filter(|v| v.is_finite()).map(|v| (v + 0.5).floor())
+}
+
+/// A sprite coordinate, or `0`.
+fn coordinate_or_default(value: Option<f64>) -> i32 {
+    rounded_int(value).map_or(0, |v| v.clamp(i32::MIN as f64, i32::MAX as f64) as i32)
+}
+
+/// A card width, or [`DEFAULT_CARD_WIDTH`] when not a positive number.
+fn card_width_or_default(value: Option<f64>) -> u32 {
+    match rounded_int(value) {
+        Some(w) if w > 0.0 => w.min(u32::MAX as f64) as u32,
+        _ => DEFAULT_CARD_WIDTH,
+    }
 }
 
 fn default_hotkey_label() -> String {
@@ -57,6 +148,7 @@ impl Default for Config {
             hotkey: default_hotkey_label(),
             default_interval_minutes: default_interval_minutes_value(),
             autostart: false,
+            sprite: SpriteConfig::default(),
         }
     }
 }
@@ -795,6 +887,120 @@ mod tests {
                 hotkey: "Alt+J".to_string(),
                 default_interval_minutes: 7.0,
                 autostart: true,
+                ..Config::default()
+            };
+            save(&path, &cfg).unwrap();
+            let (loaded, err) = load_or_default(&path);
+            assert!(err.is_none());
+            assert_eq!(loaded, cfg);
+        }
+
+        // === the sprite block (spec §10) ===================================
+        //
+        // Per-field fallback: one bad field falls back alone, the rest of the
+        // block and the rest of the file are still read.
+
+        /// Write `body` as a config file and load it, asserting no error.
+        fn load(body: &str) -> Config {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.json");
+            std::fs::write(&path, body).unwrap();
+            let (cfg, err) = load_or_default(&path);
+            assert!(err.is_none(), "{body}: {err:?}");
+            cfg
+        }
+
+        fn sprite_on() -> SpriteConfig {
+            SpriteConfig {
+                enabled: true,
+                path: "/a/b.png".to_string(),
+                x: -41,
+                y: -277,
+                card_width: 679,
+            }
+        }
+
+        #[test]
+        fn sprite_absent_is_off() {
+            assert_eq!(
+                SpriteConfig::default(),
+                SpriteConfig {
+                    enabled: false,
+                    path: String::new(),
+                    x: 0,
+                    y: 0,
+                    card_width: DEFAULT_CARD_WIDTH,
+                }
+            );
+            assert_eq!(DEFAULT_CARD_WIDTH, 480);
+            assert_eq!(
+                load(r#"{"hotkey":"Alt+J"}"#).sprite,
+                SpriteConfig::default()
+            );
+        }
+
+        #[test]
+        fn sprite_valid_block_round_trips() {
+            let cfg = load(
+                r#"{"sprite":{"enabled":true,"path":"/a/b.png","x":-41,"y":-277,"card_width":679}}"#,
+            );
+            assert_eq!(cfg.sprite, sprite_on(), "negatives are kept");
+        }
+
+        #[test]
+        fn sprite_bad_field_falls_back_alone() {
+            let cfg = load(
+                r#"{"hotkey":"Alt+J","sprite":{"enabled":"yes","path":7,"x":"3","y":null,"card_width":"679"}}"#,
+            );
+            assert_eq!(cfg.sprite, SpriteConfig::default());
+            assert_eq!(cfg.hotkey, "Alt+J", "not the whole-file fallback");
+        }
+
+        #[test]
+        fn sprite_non_object_is_off() {
+            for bad in ["7", "null", "true", "\"on\"", "[1,2]"] {
+                let cfg = load(&format!(r#"{{"hotkey":"Alt+J","sprite":{bad}}}"#));
+                assert_eq!(cfg.sprite, SpriteConfig::default(), "sprite: {bad}");
+                assert_eq!(cfg.hotkey, "Alt+J", "sprite: {bad}");
+            }
+        }
+
+        #[test]
+        fn sprite_rounds_coordinates() {
+            // JS `Math.round` parity: halves round up, towards +∞.
+            let cfg = load(r#"{"sprite":{"x":-40.6,"y":12.4,"card_width":679.5}}"#);
+            assert_eq!(
+                (cfg.sprite.x, cfg.sprite.y, cfg.sprite.card_width),
+                (-41, 12, 680)
+            );
+            assert_eq!(load(r#"{"sprite":{"x":-0.2}}"#).sprite.x, 0, "never -0");
+        }
+
+        #[test]
+        fn sprite_card_width_must_be_positive() {
+            for bad in ["0", "-5", "0.4"] {
+                let cfg = load(&format!(r#"{{"sprite":{{"card_width":{bad}}}}}"#));
+                assert_eq!(cfg.sprite.card_width, 480, "card_width: {bad}");
+            }
+        }
+
+        #[test]
+        fn sprite_non_finite_is_default() {
+            // `1e400` and `NaN` are not valid JSON, so the file path cannot
+            // produce them; the finite guard is pinned on the normaliser.
+            assert_eq!(card_width_or_default(Some(f64::INFINITY)), 480);
+            assert_eq!(card_width_or_default(Some(f64::NAN)), 480);
+            assert_eq!(coordinate_or_default(Some(f64::NEG_INFINITY)), 0);
+            assert_eq!(coordinate_or_default(Some(f64::NAN)), 0);
+        }
+
+        #[test]
+        fn save_keeps_sprite() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.json");
+            let cfg = Config {
+                sprite: sprite_on(),
+                ..Config::default()
             };
             save(&path, &cfg).unwrap();
             let (loaded, err) = load_or_default(&path);

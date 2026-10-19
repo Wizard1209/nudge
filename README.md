@@ -24,8 +24,8 @@ Opens focused on the first field.
 | # | Field (Russian product copy — the actual questions) | Type | Description |
 |---|------|-----|----------|
 | 1 | Что я делаю? | text | Free-form input, focused on open |
-| 2 | Не хуйню ли я делаю? | text | Free-form input, reflection |
-| 3 | Следующий nudge через | number (min) | Pre-filled with the current interval (default 10 min) |
+| 2 | Хуйня? | text | Free-form input, reflection |
+| 3 | Следующий через (мин) | number (min) | Pre-filled with the current interval (default 10 min) |
 
 - **Enter** — save and close
 - **Esc** — close without saving (whether the timer restarts depends on how
@@ -89,6 +89,12 @@ Full contract: [docs/journal-spec.md](docs/journal-spec.md)
   `HKCU\…\Run\Nudge` on Windows and with a LaunchAgent plist at
   `~/Library/LaunchAgents/com.wizard1209.nudge.plist` on macOS; see
   `docs/design-spec.md` §9.
+- Sprite: a `sprite` block in the same `config.json` — `enabled`, `path`
+  (an absolute path to a PNG with a transparent background), `x`, `y` (the
+  sprite's top-left corner relative to the card's, in points, either may be
+  negative) and `card_width` (the card's width while the sprite is on). Off
+  by default. The PNG is drawn in front of the card at its native pixels;
+  see `docs/design-spec.md` §10.
 
 ## Installing on macOS
 
@@ -110,8 +116,14 @@ in the menu bar is where Settings and Quit live.
 ## Settings
 
 The settings window opens from the tray menu (`Settings`) and edits the same
-`config.json` (hotkey, interval, autostart). Edits are picked up by the
-running app immediately via a file watcher.
+`config.json` (hotkey, interval, autostart, sprite). Edits are picked up by
+the running app immediately via a file watcher; a sprite change is applied
+the next time the popup is hidden.
+
+The sprite row has the five fields of the `sprite` block; `Browse…` picks the
+PNG with the system's file dialog (macOS). `Save` refuses an enabled sprite
+whose file is missing, not a PNG, or has no transparent background, and says
+which.
 
 The hotkey is typed in, in any of the spellings above — `⌥⌘J`, `Alt+Cmd+J`
 and `alt+cmd+j` are one combination. Full grammar: `docs/design-spec.md` §5.
@@ -137,6 +149,8 @@ This repo holds two implementations of the same spec. Alongside the Rust app
 lives [`electron/`](electron/README.md) — the **prototyping harness** where new
 features and design changes are tried first, because Electron is fast to build
 and easy to inspect visually. The outcome is captured in the shared spec under
-[`docs/`](docs), the contract both implementations follow, and then ported to
-Rust. The released product is the Rust binary only; the Electron app is a
-workbench, fully rewritable from the spec.
+[`docs/`](docs), the contract both implementations follow, the tests are
+derived from the spec, and the Rust port is written against them. The steps
+are listed in [`electron/README.md`](electron/README.md). The released product
+is the Rust binary only; the Electron app is a workbench, fully rewritable
+from the spec.

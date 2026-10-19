@@ -1,5 +1,7 @@
 import { _electron as electron } from 'playwright';
 import path from 'node:path';
+import { mkdtempSync } from 'node:fs';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -20,6 +22,8 @@ export async function launchApp(extraEnv = {}) {
       ...process.env,
       NUDGE_E2E: '1',
       NUDGE_FORCE_PROD: '1',
+      // A fresh <Documents>/Nudge per launch: no user config, journal or sprite.
+      NUDGE_DIR: mkdtempSync(path.join(os.tmpdir(), 'nudge-native-')),
       ...extraEnv,
     },
   });

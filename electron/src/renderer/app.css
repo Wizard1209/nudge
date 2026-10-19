@@ -1,5 +1,54 @@
 @import "tailwindcss";
 
+/* The popup card is set in Ubuntu Light 16px — egui's bundled default face,
+   so the Electron and Rust surfaces shape text alike. Licence: fonts/UFL.txt. */
+@font-face {
+  font-family: "Ubuntu";
+  font-weight: 300;
+  font-style: normal;
+  src: url("./fonts/Ubuntu-Light.ttf") format("truetype");
+}
+/* Spec §2: a (24,24,27) fill whose alpha depends on the material behind it
+   (--card-alpha, set by the component), corners rounded at 16, and a 1px
+   white hairline at 60/255 inside the edge as the contour. The shadow is not
+   drawn here: on macOS the compositor traces the card's alpha silhouette. */
+.card {
+  font-family: "Ubuntu", system-ui, sans-serif;
+  font-weight: 300;
+  font-size: 16px;
+  color: rgb(235 235 240);
+  background: rgb(24 24 27 / var(--card-alpha, 0.95));
+  border-radius: 16px;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.235);
+}
+/* The browser build has no compositor to shadow the card, so it draws the one
+   the reference app draws where the OS cannot: offset 12, blur 40, black at
+   160/255. */
+.card-browser {
+  box-shadow:
+    inset 0 0 0 1px rgb(255 255 255 / 0.235),
+    0 12px 40px rgb(0 0 0 / 0.627);
+}
+
+/* Spec §2/§3: a row is 16px type on an 18.5px line inset 12px above and
+   below (42.5), 20px sideways; rows are separated by 1px white lines at
+   50/255. */
+.row > input {
+  display: block;
+  width: 100%;
+  padding: 12px 20px;
+  line-height: 18.5px;
+  background: transparent;
+  color: inherit;
+  outline: none;
+}
+.row > input::placeholder {
+  color: rgb(170 170 170);
+}
+.row.separated {
+  border-bottom: 1px solid rgb(255 255 255 / 0.196);
+}
+
 /* Spec §3: the focused row shows a rounded tint around its text — a field
    inside the row (inset 10px sideways, 5px vertically, radius 8), not a
    fill of the whole row and not a plate hugging the card's contour. The

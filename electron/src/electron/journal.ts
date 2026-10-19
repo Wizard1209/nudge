@@ -100,6 +100,8 @@ function isWSL(): boolean {
  */
 export function resolveNudgeDir(): string {
   if (cachedDir) return cachedDir;
+  // Override for tests: keep the user's real folder out of native runs.
+  if (process.env.NUDGE_DIR) return (cachedDir = process.env.NUDGE_DIR);
 
   try {
     if (isWSL()) {
