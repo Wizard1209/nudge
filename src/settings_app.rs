@@ -567,6 +567,18 @@ impl SettingsApp {
         let source = crate::platform::new_edge_source(&cc.egui_ctx);
         #[cfg(target_arch = "wasm32")]
         let source = None;
+        Self::with_source(config, provider, persist, sprite_check, source)
+    }
+
+    /// [`SettingsApp::new`] with the recorder's key source handed in — what
+    /// lets a test arm the recorder with no platform behind it.
+    pub fn with_source(
+        config: Config,
+        provider: Box<dyn AutostartProvider>,
+        persist: PersistFn,
+        sprite_check: SpriteCheckFn,
+        source: Option<Box<dyn EdgeSource>>,
+    ) -> Self {
         Self {
             form: SettingsForm::from_config(config),
             provider,

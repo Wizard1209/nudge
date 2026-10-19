@@ -25,6 +25,7 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use nudge_web::app::NudgeApp;
 use nudge_web::autostart::AutostartProvider;
 use nudge_web::config::Config;
+use nudge_web::recorder::{self, EdgeSource, PhysicalKey, PressEdge, Verdict};
 use nudge_web::settings_app::{PersistFn, SettingsApp, SettingsForm, SpriteCheckFn};
 
 // =============================================================================
@@ -467,6 +468,57 @@ fn settings_harness<'a>(
     (harness, persisted)
 }
 
+/// A key source with no platform behind it: edges are whatever a test queues,
+/// every one of them refused by name, and `armed` is what the row last said.
+#[derive(Clone, Default)]
+struct FakeEdgeSource {
+    edges: std::sync::Arc<std::sync::Mutex<Vec<PressEdge>>>,
+    armed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl EdgeSource for FakeEdgeSource {
+    fn drain(&mut self) -> Vec<PressEdge> {
+        std::mem::take(&mut *self.edges.lock().unwrap())
+    }
+    fn set_armed(&mut self, armed: bool) {
+        self.armed.store(armed, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn classify(&self, _edge: PressEdge) -> Verdict {
+        Verdict::NotBindable {
+            name: "Enter".to_string(),
+        }
+    }
+}
+
+/// [`settings_harness`] with a recorder that can arm.
+fn settings_harness_with_source<'a>(
+    config: Config,
+    source: FakeEdgeSource,
+) -> (
+    Harness<'a, SettingsApp>,
+    std::sync::Arc<std::sync::Mutex<Vec<Config>>>,
+) {
+    let persisted: std::sync::Arc<std::sync::Mutex<Vec<Config>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let writer = std::sync::Arc::clone(&persisted);
+    let persist: PersistFn = Box::new(move |cfg: &Config| {
+        writer.lock().unwrap().push(cfg.clone());
+        Ok(())
+    });
+    let provider: Box<dyn AutostartProvider> = Box::new(RecordingProvider::new(false));
+    let mut harness = Harness::new_eframe(move |_cc| {
+        SettingsApp::with_source(
+            config,
+            provider,
+            persist,
+            accept_any_sprite(),
+            Some(Box::new(source)),
+        )
+    });
+    harness.run();
+    (harness, persisted)
+}
+
 /// Put the caret in the n-th text input and type into it.
 fn type_into(harness: &mut Harness<'_, SettingsApp>, nth: usize, text: &str) {
     harness
@@ -567,6 +619,52 @@ fn settings_return_on_a_clean_form_does_nothing() {
         "Return on an unedited form wrote the file"
     );
     assert!(!says_saved(&harness));
+}
+
+/// §9 Saving: "While the recorder is armed the key is the recorder's — a
+/// press, not a save." The source swallows Return on a real desktop; here
+/// egui sees it too, and the window must still not save.
+#[test]
+fn settings_return_while_the_recorder_is_armed_is_a_press_not_a_save() {
+    let source = FakeEdgeSource::default();
+    let (mut harness, persisted) =
+        settings_harness_with_source(cfg("Alt+J", 7.0, false), source.clone());
+
+    type_into(&mut harness, 1, "5");
+    harness.get_by_label("Record").click();
+    harness.run();
+    assert!(
+        harness.query_all_by_label(recorder::PROMPT).count() > 0,
+        "Record did not arm the recorder"
+    );
+    assert!(source.armed.load(std::sync::atomic::Ordering::SeqCst));
+
+    // The press edge the monitor would report, and the key egui would see.
+    source.edges.lock().unwrap().push(PressEdge {
+        key: PhysicalKey(36),
+        modifiers: 0,
+    });
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+
+    assert!(
+        persisted.lock().unwrap().is_empty(),
+        "Return while armed wrote the file"
+    );
+    assert!(!says_saved(&harness));
+    assert!(
+        harness
+            .query_all_by_label(
+                "Enter cannot be part of a hotkey. Press modifiers plus one key. Esc cancels."
+            )
+            .count()
+            > 0,
+        "the press was not the recorder's"
+    );
+    assert!(
+        source.armed.load(std::sync::atomic::Ordering::SeqCst),
+        "a refused key must leave the recorder armed"
+    );
 }
 
 /// §9 Saving: "A focused button or checkbox keeps its own Return" — on the
