@@ -679,7 +679,8 @@ const GROUP_GAP: f32 = 20.0;
 /// Nothing a message quotes can make it longer: what it echoes of the user's
 /// text is bounded ([`hotkey::echoed`]).
 const BANNER_HEIGHT: f32 = 64.0;
-const BANNER_COLOR: egui::Color32 = egui::Color32::LIGHT_YELLOW;
+/// A message is a warning and reads as one: amber, not the body's white.
+const BANNER_COLOR: egui::Color32 = egui::Color32::from_rgb(251, 191, 36);
 /// The hotkey field; the interval and position fields.
 const HOTKEY_FIELD_WIDTH: f32 = 200.0;
 const NUMBER_FIELD_WIDTH: f32 = 72.0;
