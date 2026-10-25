@@ -219,9 +219,8 @@ fn run_settings_ui() -> eframe::Result {
         None => return Ok(()),
     };
 
-    // Load config from the same path the main process uses, so a saved
-    // change is picked up by the running app at its next launch. (Live
-    // reload is Task 5.)
+    // Load config from the same path the main process uses: a saved change
+    // reaches the running app through its file watcher.
     let cli_config_path = config::parse_config_arg(std::env::args().skip(1));
     let config_path = cli_config_path
         .clone()
@@ -290,14 +289,13 @@ fn run_settings_ui() -> eframe::Result {
             .map_err(|e| e.to_string())
     });
 
-    // Tall enough for every row at once: a settings window that scrolls
-    // hides the row the user is looking for.
-    let win_size = [520.0_f32, 560.0];
+    // §9: sized to the form and not resizable — the form's height at this
+    // width, its margins and the reserved message line included, so the
+    // window never scrolls and never changes size.
     let viewport = egui::ViewportBuilder::default()
-        .with_inner_size(win_size)
-        .with_min_inner_size([400.0, 480.0])
+        .with_inner_size(settings_app::WINDOW_SIZE)
         .with_decorations(true)
-        .with_resizable(true)
+        .with_resizable(false)
         .with_title("Nudge — Settings");
     let options = eframe::NativeOptions {
         viewport,

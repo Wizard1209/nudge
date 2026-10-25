@@ -13,10 +13,6 @@
 //! window placement, the interval timer, the menu-bar status item, and
 //! journal-writing driven by real keystrokes.
 //!
-//! One is red on purpose: `settings_window_is_fixed_size_and_not_resizable`
-//! pins the settings window of §9 "Window chrome and layout" ahead of its
-//! port, so the port is written against it.
-//!
 //! The appearance group below them answers a different question — not "does
 //! the capability work" but "does the card look like the design says". It
 //! reads the window's own pixels rather than a screen region, and where it
@@ -3131,13 +3127,14 @@ fn sprite_turned_on_while_hidden_is_drawn_at_the_next_reveal() {
 }
 
 // -----------------------------------------------------------------------------
-// §9 Window chrome and layout — the settings window. RED on the current tree.
+// §9 Window chrome and layout — the settings window.
 // -----------------------------------------------------------------------------
 
-/// What §9 sizes the settings window's content to, in points. The figure the
-/// layout measured at 1× (560×582); the port commit replaces it with the one
-/// measured on the native build, which is where §9 gets its numbers.
-const SETTINGS_CONTENT: (f64, f64) = (560.0, 582.0);
+/// What §9 sizes the settings window's content to, in points: the form at
+/// 560 wide, measured on the native build — the window asks for exactly this
+/// (`settings_app::WINDOW_SIZE`), and tests/kittest_card.rs pins that the
+/// form adds up to it.
+const SETTINGS_CONTENT: (f64, f64) = (560.0, 515.0);
 
 /// The standard title bar's share of a framed window's frame on this macOS,
 /// in points: `CGWindowListCopyWindowInfo` reports a 560-point-tall content
@@ -3270,8 +3267,6 @@ fn filled_block(img: &image::RgbaImage, scale: f64, below: f64) -> Option<Rect> 
 /// anything to say, so the window never changes size." And, of the same
 /// subsection, "`Cancel`, then `Save`, at the bottom right; `Save` is the one
 /// filled button".
-///
-/// RED on the current tree: the window opens at 520×560 content and resizable.
 ///
 /// Geometry comes from `CGWindowListCopyWindowInfo` like everywhere else in
 /// this file, and "not resizable" is observed the way a user meets it: a drag

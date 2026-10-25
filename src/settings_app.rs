@@ -22,6 +22,7 @@ use crate::autostart::{AutostartError, AutostartProvider, apply_autostart};
 use crate::config::{Config, ConfigError, SpriteConfig};
 use crate::hotkey::{self, Hotkey};
 use crate::recorder::{self, EdgeSource, Effect, Input, Recorder};
+use eframe::egui;
 use std::path::Path;
 
 /// CLI flag that boots `nudge.exe` into the settings UI instead of the
@@ -45,9 +46,9 @@ where
 /// one of these and asks it questions; the form never touches the disk.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SettingsForm {
-    /// Hotkey label as a free-text string. v3 has no recorder widget — the
-    /// user types the label; we validate via [`crate::hotkey::parse`] only
-    /// on Save so partially-typed values don't flicker errors.
+    /// Hotkey label as a free-text string, typed or put here by the
+    /// recorder; validated via [`crate::hotkey::parse`] only on Save so
+    /// partially-typed values don't flicker errors.
     pub hotkey: String,
     /// Default interval (minutes) as the literal field text. Parsed via
     /// [`parse_interval_minutes`] on Save.
@@ -519,8 +520,8 @@ const FIELD_IDS: [&str; 6] = [
 ];
 
 /// The settings window as an eframe::App. Owns the form state, the provider,
-/// and the persistence closure; renders three rows + Save/Cancel + an error
-/// banner.
+/// and the persistence closure; renders the §9 form — three groups of rows,
+/// the message line, Cancel and Save.
 pub struct SettingsApp {
     form: SettingsForm,
     provider: Box<dyn AutostartProvider>,
@@ -650,6 +651,173 @@ impl SettingsApp {
     }
 }
 
+// §9 "Window chrome and layout", in points. The spec's layout numbers are
+// these, and the window's inner size is what they add up to.
+
+/// The window's inner size: the form at this width, measured — its last
+/// row's bottom plus the margin (tests/kittest_card.rs pins the sum).
+pub const WINDOW_SIZE: [f32; 2] = [560.0, 515.0];
+
+/// The form's inset from the window's edge, every side.
+const MARGIN: i8 = 20;
+/// A row's text and controls, inset from its box's border.
+const ROW_PAD: i8 = 12;
+/// A row is at least this tall; the controls sit centred in it.
+const ROW_HEIGHT: f32 = 44.0;
+/// A group box's corners.
+const GROUP_RADIUS: u8 = 10;
+/// The hairline between rows, and the group's border.
+const HAIRLINE: f32 = 1.0;
+/// Between the hotkey group and its footnote.
+const FOOTNOTE_GAP: f32 = 8.0;
+/// Between groups, and on either side of the message line.
+const GROUP_GAP: f32 = 20.0;
+/// The message line, reserved whether or not it has anything to say. The
+/// longest message — a bare key, refused with the vocabulary after it — is
+/// four rows of body text at the form's width, 60 pt; this leaves it air.
+const BANNER_HEIGHT: f32 = 64.0;
+/// The hotkey field; the interval and position fields.
+const HOTKEY_FIELD_WIDTH: f32 = 200.0;
+const NUMBER_FIELD_WIDTH: f32 = 72.0;
+/// Cancel and Save, and the gap between them and the `Saved` note.
+const BUTTON_SIZE: egui::Vec2 = egui::vec2(72.0, 30.0);
+const BUTTON_GAP: f32 = 12.0;
+/// Save's fill: the one filled button, dimmed rather than recoloured while
+/// greyed.
+const SAVE_FILL: egui::Color32 = egui::Color32::from_rgb(79, 70, 229);
+
+/// A rounded group box: one step lighter than the window, a hairline border.
+fn group(ui: &mut egui::Ui, rows: impl FnOnce(&mut egui::Ui)) {
+    let visuals = ui.visuals().clone();
+    egui::Frame::new()
+        .fill(visuals.faint_bg_color)
+        .stroke(egui::Stroke::new(
+            HAIRLINE,
+            visuals.widgets.noninteractive.bg_stroke.color,
+        ))
+        .corner_radius(GROUP_RADIUS)
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            rows(ui);
+        });
+}
+
+/// The hairline between two rows of a group, border to border.
+fn hairline(ui: &mut egui::Ui) {
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), HAIRLINE),
+        egui::Sense::hover(),
+    );
+    ui.painter().hline(
+        rect.x_range(),
+        rect.center().y,
+        egui::Stroke::new(
+            HAIRLINE,
+            ui.visuals().widgets.noninteractive.bg_stroke.color,
+        ),
+    );
+}
+
+/// A row: its text at the left, then `rest` over what is left of it, laid
+/// out left to right at the row's height; `rest` is handed the text's
+/// response, for a control the text labels.
+fn row_with(ui: &mut egui::Ui, text: &str, rest: impl FnOnce(&mut egui::Ui, &egui::Response)) {
+    egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(ROW_PAD, 0))
+        .show(ui, |ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), ROW_HEIGHT),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.set_min_height(ROW_HEIGHT);
+                    let label = ui.label(text);
+                    rest(ui, &label);
+                },
+            );
+        });
+}
+
+/// A row whose `controls` end at the right edge, added in reading order so
+/// the Tab order is the visual one.
+fn row(ui: &mut egui::Ui, text: &str, id_salt: &str, controls: impl FnOnce(&mut egui::Ui)) {
+    row_with(ui, text, |ui, _| {
+        right_aligned(ui, id_salt, ROW_HEIGHT, controls)
+    });
+}
+
+/// A row whose control is a checkbox at the right; the row's text is its
+/// label — to a screen reader too. Whether the box was clicked.
+fn checkbox_row(ui: &mut egui::Ui, text: &str, checked: &mut bool) -> bool {
+    let mut changed = false;
+    row_with(ui, text, |ui, label| {
+        right_aligned(ui, text, ROW_HEIGHT, |ui| {
+            let checkbox = ui
+                .add(egui::Checkbox::without_text(checked))
+                .labelled_by(label.id);
+            // A textless checkbox reports an empty label, which stands in
+            // front of the relation; so the text is set on the node too.
+            ui.ctx()
+                .accesskit_node_builder(checkbox.id, |node| node.set_label(text));
+            changed = checkbox.changed();
+        });
+    });
+    changed
+}
+
+/// `contents` laid out left to right but ending at the right edge of the
+/// space left, `height` tall. egui places left to right or right to left,
+/// and right to left would reverse the Tab order; so the contents' width is
+/// remembered from the last pass and the pass redone when it changes, the
+/// way egui's own `Grid` sizes its columns.
+fn right_aligned(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    height: f32,
+    contents: impl FnOnce(&mut egui::Ui),
+) {
+    let id = width_id(id_salt);
+    let known = remembered_width(ui, id);
+    let band = egui::vec2(ui.available_width(), height);
+    ui.allocate_ui_with_layout(
+        band,
+        egui::Layout::right_to_left(egui::Align::Center),
+        |ui| {
+            let width = known.unwrap_or_else(|| ui.available_width());
+            let used = ui
+                .allocate_ui_with_layout(
+                    egui::vec2(width, height),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.set_min_height(height);
+                        contents(ui);
+                    },
+                )
+                .response
+                .rect
+                .width();
+            remember_width(ui, id, used);
+        },
+    );
+}
+
+/// Where a remembered width lives: one window, so the salt alone names it.
+fn width_id(id_salt: &str) -> egui::Id {
+    egui::Id::new(("settings width", id_salt))
+}
+
+fn remembered_width(ui: &egui::Ui, id: egui::Id) -> Option<f32> {
+    ui.data(|d| d.get_temp::<f32>(id))
+}
+
+/// Keep `width` for the next pass; a change asks for that pass now, before
+/// anything is painted.
+fn remember_width(ui: &egui::Ui, id: egui::Id, width: f32) {
+    if remembered_width(ui, id).is_none_or(|w| (w - width).abs() > 0.5) {
+        ui.data_mut(|d| d.insert_temp(id, width));
+        ui.ctx().request_discard("settings row width");
+    }
+}
+
 impl eframe::App for SettingsApp {
     fn ui(&mut self, root_ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
         use eframe::egui;
@@ -678,135 +846,218 @@ impl eframe::App for SettingsApp {
             self.quit_requested = true;
         }
 
-        let ui = root_ui;
-        ui.heading("Settings");
-        ui.add_space(8.0);
-
-        // Row 1: hotkey — typed in the §5 grammar, or pressed.
-        //
-        // Armed, the field is not shown at all: it holds the *saved* value
-        // until a press replaces it, and a text box under a "press a
-        // combination" prompt reads as somewhere to type.
+        // §9 "Window chrome and layout": three groups of rows in rounded
+        // boxes, a hairline between rows; in every row the text at the left,
+        // the control at the right edge; the vocabulary as the hotkey group's
+        // footnote; a message line that keeps its height above the buttons;
+        // Cancel, then Save — the one filled button — at the bottom right.
+        // Nothing repeats the title: the title bar carries it.
         let armed = self.recorder.is_armed();
-        ui.horizontal(|ui| {
-            ui.label("Global hotkey:");
-            if armed {
-                ui.label(
-                    egui::RichText::new(recorder::PROMPT)
-                        .italics()
-                        .color(egui::Color32::LIGHT_YELLOW),
-                );
-            } else {
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.form.hotkey)
-                        .id(egui::Id::new(ID_HOTKEY))
-                        .desired_width(220.0)
-                        .hint_text(hotkey::format_native(&hotkey::default_hotkey())),
-                );
-            }
-            // No button at all where nothing can record — a Record button that
-            // cannot record is worse than none.
-            if self.recorder.available() {
-                let label = if armed { "Cancel" } else { "Record" };
-                if ui.button(label).clicked() {
-                    let input = if armed { Input::Cancel } else { Input::Record };
-                    let effect = self.recorder.feed(&input);
-                    if effect == Effect::Restore {
-                        self.form.hotkey = self.form.saved_hotkey().to_string();
+        let mut autostart_toggle: Option<bool> = None;
+        let mut save_clicked = false;
+
+        egui::Frame::new()
+            .inner_margin(egui::Margin::same(MARGIN))
+            .show(root_ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+
+                // Group 1: the hotkey — typed in the §5 grammar, or pressed.
+                group(ui, |ui| {
+                    row(ui, "Global hotkey", "hotkey", |ui| {
+                        // Armed, the field is not shown at all: it holds the
+                        // *saved* value until a press replaces it, and a text
+                        // box under a "press a combination" prompt reads as
+                        // somewhere to type.
+                        if armed {
+                            ui.label(
+                                egui::RichText::new(recorder::PROMPT)
+                                    .italics()
+                                    .color(egui::Color32::LIGHT_YELLOW),
+                            );
+                        } else {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.form.hotkey)
+                                    .id(egui::Id::new(ID_HOTKEY))
+                                    .desired_width(HOTKEY_FIELD_WIDTH)
+                                    .hint_text(hotkey::format_native(&hotkey::default_hotkey())),
+                            );
+                        }
+                        // No button at all where nothing can record — a Record
+                        // button that cannot record is worse than none.
+                        if self.recorder.available() {
+                            let label = if armed { "Cancel" } else { "Record" };
+                            if ui.button(label).clicked() {
+                                let input = if armed { Input::Cancel } else { Input::Record };
+                                let effect = self.recorder.feed(&input);
+                                if effect == Effect::Restore {
+                                    self.form.hotkey = self.form.saved_hotkey().to_string();
+                                }
+                            }
+                        }
+                    });
+                });
+                // The group's footnote: while armed, what the recorder has to
+                // say — the prompt, or a refusal naming the key. Otherwise
+                // what may be typed, which is standing information rather
+                // than an error message: this is how a hotkey is set.
+                ui.add_space(FOOTNOTE_GAP);
+                let under = self.recorder.hint().unwrap_or(hotkey::VOCABULARY);
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::symmetric(ROW_PAD, 0))
+                    .show(ui, |ui| {
+                        ui.add(egui::Label::new(egui::RichText::new(under).small().weak()).wrap());
+                    });
+                ui.add_space(GROUP_GAP);
+
+                // Group 2: the interval and autostart.
+                group(ui, |ui| {
+                    row(ui, "Default interval", "interval", |ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.form.interval_text)
+                                .id(egui::Id::new(ID_INTERVAL))
+                                .desired_width(NUMBER_FIELD_WIDTH)
+                                .hint_text("10"),
+                        );
+                        ui.label(egui::RichText::new("min").weak());
+                    });
+                    hairline(ui);
+                    // Each OS has its own name for this and its own mechanism
+                    // behind it — a Run key on Windows, a LaunchAgent on
+                    // macOS. Naming the wrong one is not cosmetic: it is the
+                    // label on the control that decides whether the user
+                    // believes the setting applies to them. The toggle goes
+                    // through the transactional rule after the frame.
+                    #[cfg(target_os = "macos")]
+                    let label = "Open at login";
+                    #[cfg(not(target_os = "macos"))]
+                    let label = "Launch with Windows";
+                    let mut autostart = self.form.autostart;
+                    if checkbox_row(ui, label, &mut autostart) {
+                        autostart_toggle = Some(autostart);
                     }
-                }
-            }
-        });
-        // Under the row: while armed, what the recorder has to say — the
-        // prompt, or a refusal naming the key. Otherwise what may be typed,
-        // which is standing information rather than an error message: this is
-        // how a hotkey is set.
-        let under = self.recorder.hint().unwrap_or(hotkey::VOCABULARY);
-        ui.label(egui::RichText::new(under).small().weak());
-        ui.add_space(6.0);
+                });
+                ui.add_space(GROUP_GAP);
 
-        // Row 2: default interval
-        ui.horizontal(|ui| {
-            ui.label("Default interval (min):");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.form.interval_text)
-                    .id(egui::Id::new(ID_INTERVAL))
-                    .desired_width(120.0)
-                    .hint_text("10"),
-            );
-        });
-        ui.add_space(6.0);
+                // Group 3: the §10 sprite — on/off, the PNG, where it sits and
+                // how wide the card is under it. The file is checked on Save,
+                // not here.
+                group(ui, |ui| {
+                    checkbox_row(ui, "Sprite", &mut self.form.sprite_enabled);
+                    hairline(ui);
+                    row_with(ui, "PNG", |ui, _| {
+                        // The path field takes what the row leaves after the
+                        // button, so the two end at the row's right edge.
+                        let field_width = ui.available_width()
+                            - remembered_width(ui, width_id("browse"))
+                                .map_or(0.0, |w| w + ui.spacing().item_spacing.x);
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.form.sprite_path)
+                                .id(egui::Id::new(ID_SPRITE_PATH))
+                                .desired_width(field_width)
+                                .hint_text("Path to a PNG with a transparent background"),
+                        );
+                        // A native file dialog takes the focus, which would
+                        // end a recording anyway; not offering it while armed
+                        // keeps the two from racing. The browser build has no
+                        // dialog at all.
+                        #[cfg(any(target_os = "windows", target_os = "macos"))]
+                        {
+                            let browse = ui.add_enabled(!armed, egui::Button::new("Browse…"));
+                            remember_width(ui, width_id("browse"), browse.rect.width());
+                            if browse.clicked()
+                                && let Some(picked) = pick_sprite_file()
+                            {
+                                self.form.sprite_path = picked;
+                            }
+                        }
+                    });
+                    hairline(ui);
+                    // §10: the three are in points; the unit is said once, on
+                    // the row.
+                    row(ui, "Position (pt)", "position", |ui| {
+                        for (name, text, id, hint) in [
+                            (
+                                "X",
+                                &mut self.form.sprite_x_text,
+                                ID_SPRITE_X,
+                                "0".to_string(),
+                            ),
+                            (
+                                "Y",
+                                &mut self.form.sprite_y_text,
+                                ID_SPRITE_Y,
+                                "0".to_string(),
+                            ),
+                            (
+                                "Card width",
+                                &mut self.form.card_width_text,
+                                ID_CARD_WIDTH,
+                                crate::config::DEFAULT_CARD_WIDTH.to_string(),
+                            ),
+                        ] {
+                            ui.label(egui::RichText::new(name).weak());
+                            ui.add(
+                                egui::TextEdit::singleline(text)
+                                    .id(egui::Id::new(id))
+                                    .desired_width(NUMBER_FIELD_WIDTH)
+                                    .hint_text(hint),
+                            );
+                        }
+                    });
+                });
+                ui.add_space(GROUP_GAP);
 
-        // Row 3: autostart — immediate-on-toggle through the transactional rule.
-        ui.horizontal(|ui| {
-            let mut autostart = self.form.autostart;
-            // Each OS has its own name for this and its own mechanism behind
-            // it — a Run key on Windows, a LaunchAgent on macOS. Naming the
-            // wrong one is not cosmetic: it is the label on the control that
-            // decides whether the user believes the setting applies to them.
-            #[cfg(target_os = "macos")]
-            let label = "Open at login";
-            #[cfg(not(target_os = "macos"))]
-            let label = "Launch with Windows";
-            let cb = ui.checkbox(&mut autostart, label);
-            if cb.changed() {
-                self.apply_autostart_toggle(autostart);
-            }
-        });
-        ui.add_space(6.0);
+                // The message line: reserved, so the window never changes
+                // size. What it says sits right above the buttons; empty, it
+                // is the gap before them. A sprite refusal is a message like
+                // any other and lands here too.
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), BANNER_HEIGHT),
+                    egui::Layout::bottom_up(egui::Align::Min),
+                    |ui| {
+                        ui.set_min_height(BANNER_HEIGHT);
+                        if let Some(msg) = &self.banner {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(msg).color(egui::Color32::LIGHT_YELLOW),
+                                )
+                                .wrap(),
+                            );
+                        }
+                    },
+                );
+                ui.add_space(GROUP_GAP);
 
-        // Row 4: the §10 sprite — on/off, the PNG, where it sits and how wide
-        // the card is under it. The file is checked on Save, not here.
-        ui.checkbox(&mut self.form.sprite_enabled, "Sprite");
-        ui.horizontal(|ui| {
-            ui.label("PNG:");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.form.sprite_path)
-                    .id(egui::Id::new(ID_SPRITE_PATH))
-                    .desired_width(300.0)
-                    .hint_text("Path to a PNG with a transparent background"),
-            );
-            // A native file dialog takes the focus, which would end a
-            // recording anyway; not offering it while armed keeps the two
-            // from racing. The browser build has no dialog at all.
-            #[cfg(any(target_os = "windows", target_os = "macos"))]
-            if ui
-                .add_enabled(!armed, egui::Button::new("Browse…"))
-                .clicked()
-                && let Some(picked) = pick_sprite_file()
-            {
-                self.form.sprite_path = picked;
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.label("X (pt):");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.form.sprite_x_text)
-                    .id(egui::Id::new(ID_SPRITE_X))
-                    .desired_width(60.0)
-                    .hint_text("0"),
-            );
-            ui.label("Y (pt):");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.form.sprite_y_text)
-                    .id(egui::Id::new(ID_SPRITE_Y))
-                    .desired_width(60.0)
-                    .hint_text("0"),
-            );
-            ui.label("Card width (pt):");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.form.card_width_text)
-                    .id(egui::Id::new(ID_CARD_WIDTH))
-                    .desired_width(60.0)
-                    .hint_text(crate::config::DEFAULT_CARD_WIDTH.to_string()),
-            );
-        });
-        ui.add_space(12.0);
+                // Cancel, then Save, at the bottom right, the `Saved` note to
+                // their left.
+                right_aligned(ui, "buttons", BUTTON_SIZE.y, |ui| {
+                    ui.spacing_mut().item_spacing.x = BUTTON_GAP;
+                    if self.saved {
+                        ui.label(egui::RichText::new("Saved").weak());
+                    }
+                    if ui
+                        .add(egui::Button::new("Cancel").min_size(BUTTON_SIZE))
+                        .clicked()
+                    {
+                        self.quit_requested = true;
+                    }
+                    // Greyed while nothing differs from the file (§9): the
+                    // same fill, dimmed.
+                    save_clicked = ui
+                        .add_enabled(
+                            self.form.is_dirty(),
+                            egui::Button::new(
+                                egui::RichText::new("Save").color(egui::Color32::WHITE),
+                            )
+                            .fill(SAVE_FILL)
+                            .min_size(BUTTON_SIZE),
+                        )
+                        .clicked();
+                });
+            });
 
-        // Error / status banner
-        if let Some(msg) = &self.banner {
-            ui.colored_label(egui::Color32::LIGHT_YELLOW, msg);
-            ui.add_space(8.0);
+        if let Some(desired) = autostart_toggle {
+            self.apply_autostart_toggle(desired);
         }
 
         if self.form != before {
@@ -827,19 +1078,6 @@ impl eframe::App for SettingsApp {
                 .memory(|m| m.focused())
                 .is_none_or(|id| FIELD_IDS.iter().any(|name| egui::Id::new(name) == id));
 
-        let mut save_clicked = false;
-        ui.horizontal(|ui| {
-            // Greyed while nothing differs from the file (§9).
-            save_clicked = ui
-                .add_enabled(self.form.is_dirty(), egui::Button::new("Save"))
-                .clicked();
-            if ui.button("Cancel").clicked() {
-                self.quit_requested = true;
-            }
-            if self.saved {
-                ui.label(egui::RichText::new("Saved").weak());
-            }
-        });
         if save_clicked || return_in_the_form {
             self.save();
         }
@@ -1065,7 +1303,7 @@ mod tests {
 
     #[test]
     fn to_config_carries_the_sprite_block() {
-        // The form has no sprite row yet; Save must still not delete the
+        // The sprite group's fields round-trip; Save must not delete the
         // block a hand-edited file carries.
         let f = SettingsForm::from_config(Config {
             sprite: sprite_on(),

@@ -786,12 +786,11 @@ fn settings_save_is_greyed_while_the_form_matches_the_file() {
 }
 
 // -----------------------------------------------------------------------------
-// §9 Window chrome and layout — RED on the current tree.
+// §9 Window chrome and layout.
 //
-// One case per sentence of the subsection, against the Rust settings window.
-// The window still draws the stacked form with a heading, so these are red
-// until the port of that layout; their Electron twins, green on the same
-// sentences, are electron/tests/native/settings.test.js.
+// One case per sentence of the subsection, against the Rust settings window;
+// their Electron twins, on the same sentences, are
+// electron/tests/native/settings.test.js.
 // -----------------------------------------------------------------------------
 
 use egui_kittest::kittest::By;
@@ -994,9 +993,15 @@ fn settings_row_texts_share_a_left_edge_and_controls_a_right_edge() {
 fn settings_checkboxes_sit_at_the_right_of_their_rows() {
     let (harness, _persisted) = settings_harness(cfg("Alt+J", 7.0, false));
     let checkboxes = checkbox_rects(&harness);
-    // The right edge every row's control ends at — Save's too, at the bottom
-    // right.
-    let right_edge = rect_of(&harness, "Save").max.x;
+    // The right edge every row's control ends at: the hotkey row's last one.
+    // (Not Save's — the buttons sit at the window's margin, the rows inside
+    // their boxes.)
+    let right_edge = harness
+        .query_by_label("Record")
+        .map(|n| n.rect())
+        .unwrap_or_else(|| input_rect(&harness, 0))
+        .max
+        .x;
     for (text, checkbox) in [AUTOSTART_ROW, "Sprite"].into_iter().zip(checkboxes) {
         let label = row_text_rect(&harness, text);
         assert!(
