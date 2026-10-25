@@ -9,37 +9,32 @@ import { test } from "../fixtures/settings"
  * `config::save_to_localstorage` writes and what `config::load_from_localstorage`
  * would read on the next boot.
  *
- * Coordinates below are tuned for the 800×600 viewport and egui's default
- * spacing. The SettingsApp renders a heading, then the rows with ~24px
- * each — the hotkey row followed by its vocabulary line (design-spec §9),
- * interval, autostart, then the sprite rows — then a banner area, then the
- * button row.
+ * Coordinates below are for the 800×600 viewport. The SettingsApp lays the
+ * rows out in groups (hotkey with its footnote under it; interval and
+ * autostart; the sprite rows), each row a label on the left and its control
+ * at the right edge, then a reserved message line and Cancel, Save at the
+ * bottom right. The groups stretch to the canvas width, so the controls sit
+ * near x≈780 here rather than at the native window's right edge.
  */
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-// Approximate Y-coordinates for the SettingsApp rows under egui's default
-// spacing in the 800x600 viewport. Calibrated against a screenshot of the
-// rendered canvas (e2e/dist served at localhost:8080). Loosen by ±5px if
-// egui's default spacing changes upstream. Everything below the hotkey row
-// sits one small-text line (~14px) lower than it would without the
-// vocabulary line under the hotkey field.
-const ROW_HOTKEY_Y = 42
-const ROW_INTERVAL_Y = 82
-const ROW_AUTOSTART_Y = 110
-// The sprite rows (checkbox, PNG path, X / Y / card width) sit between the
-// autostart row and the buttons, so the button row is three rows lower
-// than the autostart one.
-const BUTTON_ROW_Y = 214
+// Centres of the controls, read off a screenshot of the rendered canvas
+// (e2e/dist served at localhost:8080, the fixture's 800x600 at 1x): hotkey
+// field x 567-766 / y 34-52, interval field x 665-736 / y 136-154, autostart
+// box x 751-764 / y 183-196, Save x 708-779 / y 473-502. The buttons follow
+// the form, they are not anchored to the canvas bottom.
+const ROW_HOTKEY_Y = 43
+const ROW_INTERVAL_Y = 145
+const ROW_AUTOSTART_Y = 190
+const BUTTON_ROW_Y = 488
 
-// The hotkey + interval TextEdits sit to the right of their labels; X
-// coordinates target the middle of each input box.
-const HOTKEY_INPUT_X = 237
-const INTERVAL_INPUT_X = 256
-// Checkbox glyph for autostart sits at the very left of its row.
-const AUTOSTART_CHECKBOX_X = 9
-// Save button is the first (leftmost) button in the bottom row.
-const SAVE_BUTTON_X = 36
+const HOTKEY_INPUT_X = 667
+const INTERVAL_INPUT_X = 700
+// The autostart checkbox sits at the right end of its row.
+const AUTOSTART_CHECKBOX_X = 758
+// Save is the filled button, right of Cancel.
+const SAVE_BUTTON_X = 744
 
 async function clickAt(page: Awaited<ReturnType<typeof test.extend<unknown>["page"]>>, x: number, y: number): Promise<void> {
     // Double click → reliably gives egui's TextEdit focus (see actions.ts).
