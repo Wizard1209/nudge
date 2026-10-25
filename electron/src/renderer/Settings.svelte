@@ -422,6 +422,8 @@
           bind:checked={spriteEnabled}
         />
       </label>
+      <!-- The one field that holds long text, in the label's size: a path
+           of ordinary length reads whole instead of clipped. -->
       <div class="flex items-center justify-between gap-3 min-h-11 px-3">
         <span class="text-sm shrink-0">PNG</span>
         <div class="flex flex-1 min-w-0 gap-2">
@@ -431,7 +433,7 @@
             aria-label="Sprite PNG path"
             bind:value={spritePath}
             placeholder="Path to a PNG with a transparent background"
-            class="flex-1 min-w-0 bg-zinc-900 rounded px-3 py-1 outline-none border border-zinc-700"
+            class="flex-1 min-w-0 bg-zinc-900 text-sm rounded px-3 py-1 outline-none border border-zinc-700"
           />
           {#if settingsApi}
             <button
