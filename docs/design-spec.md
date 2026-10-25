@@ -39,6 +39,11 @@ explicitly. Otherwise the spec applies to all of them.
   that monitor closes the popup (§4) and reaches nothing beneath. The menu
   bar and the Dock / taskbar stay above it. Only the popup's own monitor is
   covered.
+- Which monitor: the one with the keyboard focus — the display holding the
+  frontmost application's front window, as Spotlight chooses — read when the
+  popup is shown, on every trigger alike. With no such window it is the
+  display under the pointer; the pointer's display on its own is the valid
+  alternative, not the rule.
 - On macOS the popup appears on whichever Space is current, full-screen
   ones included; Mission Control and the click-wallpaper-to-reveal-desktop
   gesture leave it where it is. It takes the keyboard when shown even if

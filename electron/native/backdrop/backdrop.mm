@@ -162,11 +162,46 @@ static Napi::Value State(const Napi::CallbackInfo &info) {
   return out;
 }
 
+// frontWindowBounds(): the frontmost application's front window — its
+// largest on-screen window at the normal layer, since the first one listed
+// can be a toolbar strip — as {x, y, width, height} in CG coordinates (origin
+// at the primary display's top left, y down), or null when the frontmost app
+// has no such window (the desktop, say). The display that holds it is where
+// the popup goes (spec §1, "Which monitor"); the choice itself is made in
+// the pure displayFor, this only reads the window. No Screen Recording
+// consent is needed for bounds and owner pids, only for window names.
+static Napi::Value FrontWindowBounds(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  NSRunningApplication *front = NSWorkspace.sharedWorkspace.frontmostApplication;
+  if (!front) return env.Null();
+  pid_t pid = front.processIdentifier;
+  CFArrayRef list = CGWindowListCopyWindowInfo(
+      kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID);
+  if (!list) return env.Null();
+  CGRect best = CGRectNull;
+  for (NSDictionary *entry in (__bridge NSArray *)list) {
+    if ([entry[(id)kCGWindowOwnerPID] intValue] != pid) continue;
+    if ([entry[(id)kCGWindowLayer] intValue] != 0) continue;
+    CGRect bounds;
+    if (!CGRectMakeWithDictionaryRepresentation((__bridge CFDictionaryRef)entry[(id)kCGWindowBounds], &bounds)) continue;
+    if (CGRectIsNull(best) || bounds.size.width * bounds.size.height > best.size.width * best.size.height) best = bounds;
+  }
+  CFRelease(list);
+  if (CGRectIsNull(best)) return env.Null();
+  Napi::Object out = Napi::Object::New(env);
+  out.Set("x", best.origin.x);
+  out.Set("y", best.origin.y);
+  out.Set("width", best.size.width);
+  out.Set("height", best.size.height);
+  return out;
+}
+
 static Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("attach", Napi::Function::New(env, Attach));
   exports.Set("setFrame", Napi::Function::New(env, SetFrameJs));
   exports.Set("detach", Napi::Function::New(env, Detach));
   exports.Set("state", Napi::Function::New(env, State));
+  exports.Set("frontWindowBounds", Napi::Function::New(env, FrontWindowBounds));
   return exports;
 }
 

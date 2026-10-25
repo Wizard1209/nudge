@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { launchApp, popupState } from './fixtures/electron.js';
+import { launchApp, popupState, openSettingsWindow, settingsState } from './fixtures/electron.js';
 
 // Bug 2: "after three Tabs the window closes."
 // The popup is a frameless, always-on-top window with exactly three fields.
@@ -106,6 +106,56 @@ describe('popup — the card fills its window (nothing clipped)', () => {
       expect(f.bottom).toBeLessThanOrEqual(g.innerH + 1);
     }
   });
+});
+
+// Spec §1, "Which monitor: the one with the keyboard focus — the display
+// holding the frontmost application's front window, as Spotlight chooses".
+// This host has one display, so the chosen display can only be that one; what
+// this case pins down is the plumbing — the addon reads a front window, it is
+// ours once a regular window of ours is up, its CG bounds agree with
+// Electron's screen DIPs (same top-left origin, no flip), and the popup's
+// display is the one that window is on. The multi-display cases live in the
+// pure displayFor's unit tests (tests/unit/display.test.ts).
+//
+// The popup itself never is that window: it takes the keyboard without
+// activating the app (see macosPanel.test.js), exactly like Spotlight, so the
+// front window stays the one the user was working in. Settings is a regular
+// window and does activate the app.
+describe('popup — the display is the one holding the front window', () => {
+  let app;
+  afterEach(async () => {
+    await app?.close();
+    app = undefined;
+  });
+
+  it.skipIf(process.platform !== 'darwin')(
+    "goes on the display of the frontmost app's front window — Settings, once it is up",
+    async () => {
+      ({ app } = await launchApp());
+      await openSettingsWindow(app);
+      const settings = await settingsState(app);
+
+      const read = () =>
+        app.evaluate(({ screen }) => {
+          const front = globalThis.__nudgeTest.frontWindowBounds();
+          return {
+            front,
+            chosen: globalThis.__nudgeTest.currentDisplay().id,
+            matching: front && screen.getDisplayMatching(front).id,
+          };
+        });
+      // Activation lands asynchronously after show(); give it a moment.
+      let r = await read();
+      for (const deadline = Date.now() + 5000; Date.now() < deadline; r = await read()) {
+        if (r.front && r.front.x === settings.bounds.x && r.front.y === settings.bounds.y) break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      // The front window is our Settings window: the app is frontmost, and
+      // the addon's CG points are Electron's DIPs with no conversion.
+      expect(r.front).toEqual(settings.bounds);
+      expect(r.chosen).toBe(r.matching);
+    },
+  );
 });
 
 function activeTestId(popup) {

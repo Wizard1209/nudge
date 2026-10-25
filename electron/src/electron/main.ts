@@ -31,6 +31,7 @@ import {
   type SpriteConfig,
 } from "./config";
 import { normalizeSprite } from "../shared/config";
+import { displayFor } from "../shared/display";
 import { parseHotkey, hotkeyToAccelerator } from "../shared/hotkey";
 import {
   restartsTimer,
@@ -54,7 +55,7 @@ import {
   type SpriteView,
 } from "../shared/sprite";
 import { ElectronAutostartProvider } from "./autostart";
-import { backdropAttached, backdropState, hideBackdrop, syncBackdrop } from "./backdrop";
+import { backdropAttached, backdropState, frontWindowBounds, hideBackdrop, syncBackdrop } from "./backdrop";
 import { buildTrayIcon, daisyFrame, formatTooltip, type DaisyFrame } from "./trayIcon";
 
 // An uncaught exception in the main process would otherwise come up as a
@@ -248,9 +249,15 @@ function positionCard(display: Electron.Display = currentDisplay()) {
   syncBackdrop(win, cardRect());
 }
 
-/** The display the popup goes on: the one under the cursor. */
+/**
+ * The display the popup goes on (spec §1, "Which monitor"): the one with the
+ * keyboard focus — holding the frontmost application's front window — and
+ * with no such window the one under the cursor. Read afresh on every show,
+ * whatever the trigger. Off macOS the addon that reads the front window is
+ * absent and the cursor's display is all there is.
+ */
 function currentDisplay(): Electron.Display {
-  return screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  return displayFor(frontWindowBounds(), screen.getCursorScreenPoint(), screen.getAllDisplays());
 }
 
 function hideNudge() {
@@ -767,8 +774,9 @@ app.whenReady().then(async () => {
   startConfigWatcher();
   // A display's scale factor can change under an open popup (an external
   // monitor plugged in, a resolution switch): lay the sprite out again on
-  // the display the popup is on — the cursor may have gone elsewhere since
-  // it was shown. A hidden popup is laid out when it next shows.
+  // the display the popup is on — the focus or the cursor may have gone
+  // elsewhere since it was shown. A hidden popup is laid out when it next
+  // shows.
   screen.on("display-metrics-changed", () => {
     if (win?.isVisible()) positionCard(screen.getDisplayMatching(win.getBounds()));
   });
@@ -822,6 +830,10 @@ if (process.env.NUDGE_E2E) {
     // The macOS glass under the card: whether the addon loaded and where the
     // view sits, in the page's coordinates.
     backdrop: () => backdropState(),
+    // What the addon reads as the front window (null off macOS), and the
+    // display the popup would go on right now.
+    frontWindowBounds: () => frontWindowBounds(),
+    currentDisplay: () => currentDisplay(),
   };
 }
 

@@ -72,7 +72,7 @@ describe('popup with a sprite', () => {
     expect(await size()).toEqual(await realSize());
   });
 
-  /** Scale factor of the display the popup goes on (the cursor's). */
+  /** Scale factor of the display the popup goes on (one display here: the cursor's too). */
   function scaleFactor() {
     return app.evaluate(({ screen }) =>
       screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).scaleFactor);
