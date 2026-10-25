@@ -2219,6 +2219,117 @@ fn popup_reappears_at_its_place_after_a_reveal_desktop_sweep() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Which monitor the popup takes
+// ---------------------------------------------------------------------------
+
+/// Spec §1: "Which monitor: the one with the keyboard focus — the display
+/// holding the frontmost application's front window, as Spotlight chooses —
+/// read when the popup is shown, on every trigger alike. With no such window
+/// it is the display under the pointer; the pointer's display on its own is
+/// the valid alternative, not the rule."
+///
+/// A window of another app is made frontmost, the hotkey is pressed, and the
+/// popup must come up as the work area of the display that holds that window.
+///
+/// **Green on one display by construction.** The guest has a single display,
+/// so every candidate rule — the front window's, the pointer's, the window's
+/// own — names the same screen, and this case cannot tell them apart; a port
+/// that ignores the front window entirely passes it. What it pins is the
+/// shape of the rule where a second display would be read: a front window of
+/// another application existing at the moment of the chord, the popup
+/// appearing while that app held the focus, and its window being that
+/// display's work area. Which display a second one would win is decided in
+/// `src/screen_pick.rs`, whose unit tests carry the multi-display cases.
+#[test]
+#[ignore = "needs a GUI session + PostEvent grant; run in the guest via scripts/native-tests-macos.sh"]
+fn popup_takes_the_display_of_the_frontmost_window() {
+    let display = main_display_frame();
+    let (probe_pid, probe) = front_probe_window().expect(
+        "no on-screen window of another app to put in front — the rule cannot be \
+         exercised without one (the guest normally has Terminal/Finder up)",
+    );
+    let probe_centre = (probe.x + probe.w / 2.0, probe.y + probe.h / 2.0);
+    assert!(
+        probe_centre.0 >= display.x
+            && probe_centre.0 < display.x + display.w
+            && probe_centre.1 >= display.y
+            && probe_centre.1 < display.y + display.h,
+        "the probe window {probe:?} is centred off the main display {display:?} — the \
+         guest is expected to have one display, and the expectation below is that \
+         display's work area"
+    );
+    // The display holding the probe window — the main one, see above.
+    let work = work_area();
+
+    let app = SandboxedApp::launch();
+    assert!(
+        popup_visible(app.pid()),
+        "launch popup never appeared — harness problem, not a placement problem"
+    );
+    dismiss_with_escape();
+    assert!(
+        wait_until(Duration::from_secs(1), || !popup_visible(app.pid())),
+        "Esc did not dismiss the popup — synthetic input is not reaching the app"
+    );
+
+    bring_frontmost(probe_pid);
+    assert!(
+        wait_until(Duration::from_secs(2), || frontmost_pid()
+            == Some(probe_pid)),
+        "pid {probe_pid} did not become the frontmost application (frontmost is {:?}) \
+         — without that the chord below exercises the pointer fallback, not the rule",
+        frontmost_pid()
+    );
+
+    press_chord(
+        VK_SPACE,
+        CGEventFlags::CGEventFlagControl | CGEventFlags::CGEventFlagShift,
+    );
+    assert!(
+        wait_until(Duration::from_secs(2), || popup_visible(app.pid())),
+        "⌃⇧Space did not bring the popup back"
+    );
+    // A few frames' grace, so a placement the app corrects on its next tick
+    // counts as placed.
+    std::thread::sleep(Duration::from_millis(500));
+    let shown = window_rect(app.pid()).expect("nudge window vanished").rect;
+    eprintln!("front window {probe:?} of pid {probe_pid}; popup at {shown:?}; work {work:?}");
+    assert!(
+        shown.same_as(&work),
+        "the popup came up at {shown:?}, not as the work area {work:?} of the display \
+         holding the frontmost window {probe:?} (spec §1, which monitor)"
+    );
+}
+
+/// The owner pid and rect of the first on-screen, ordinary-level, named
+/// window of another app: something `bring_frontmost` can put in front and
+/// the rule can then read.
+fn front_probe_window() -> Option<(u32, Rect)> {
+    let own = std::process::id() as i64;
+    list_windows()
+        .into_iter()
+        .find(|w| w.layer == 0 && w.on_screen && w.owner != own && w.named && w.rect.w > 100.0)
+        .map(|w| (w.owner as u32, w.rect))
+}
+
+/// Make this process the frontmost application, through System Events, the
+/// way `dismiss_with_escape` does for `nudge` — by pid rather than by name,
+/// since the probe may be any app the guest has up.
+fn bring_frontmost(pid: u32) {
+    let status = Command::new("osascript")
+        .arg("-e")
+        .arg(format!(
+            r#"tell application "System Events" to set frontmost of (first process whose unix id is {pid}) to true"#
+        ))
+        .status()
+        .expect("osascript not runnable");
+    assert!(
+        status.success(),
+        "System Events could not activate pid {pid}"
+    );
+}
+
 /// Spec §1, §4: a click anywhere on the monitor outside the card closes the
 /// popup and reaches nothing beneath.
 ///

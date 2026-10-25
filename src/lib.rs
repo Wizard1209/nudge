@@ -101,6 +101,7 @@ pub mod nudge_state;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod platform;
 pub mod recorder;
+pub mod screen_pick;
 pub mod settings_app;
 pub mod sprite;
 #[cfg(not(target_arch = "wasm32"))]
