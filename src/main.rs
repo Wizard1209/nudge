@@ -288,6 +288,10 @@ fn run_settings_ui() -> eframe::Result {
             .map(|_size| ())
             .map_err(|e| e.to_string())
     });
+    // §5: a saved combination someone else holds is warned about, not
+    // refused. Windows answers nothing here: its arbitration is documented
+    // but unmeasured.
+    let conflict: settings_app::ConflictFn = Box::new(platform::hotkey_conflict);
 
     // §9: sized to the form and not resizable — the form's height at this
     // width, its margins and the reserved message line included, so the
@@ -312,6 +316,7 @@ fn run_settings_ui() -> eframe::Result {
                 provider,
                 persist,
                 sprite_check,
+                conflict,
             )))
         }),
     )

@@ -431,6 +431,13 @@ pub type PersistFn = Box<dyn FnMut(&Config) -> Result<(), ConfigError> + Send>;
 /// build, with no file access, injects a check that accepts everything.
 pub type SpriteCheckFn = Box<dyn Fn(&Path) -> Result<(), String> + Send>;
 
+/// Who else holds a combination, in one line, or `None` when nothing the
+/// platform can see does — the warning a successful save shows (§5). Native
+/// injects `platform::hotkey_conflict`, which asks the OS; the browser build
+/// and the headless tests inject a check that knows of no one, so a save in
+/// a test registers nothing on the machine running it.
+pub type ConflictFn = Box<dyn Fn(&Hotkey) -> Option<String> + Send>;
+
 /// Save, as the form sees it: validate, check the sprite file when the
 /// sprite is on, write, rebaseline. `Ok` carries what reached the disk;
 /// `Err` the one line the window shows instead, and nothing was written.
@@ -469,21 +476,6 @@ pub fn apply_effect(effect: &Effect, form: &mut SettingsForm) -> bool {
             form.hotkey = form.saved_hotkey().to_string();
             false
         }
-    }
-}
-
-/// Ask the platform who else holds this combination. `None` everywhere the
-/// question cannot be answered — the browser build, and Windows, whose
-/// arbitration is documented but unmeasured.
-fn conflict_warning(hk: &Hotkey) -> Option<String> {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        crate::platform::hotkey_conflict(hk)
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = hk;
-        None
     }
 }
 
@@ -527,6 +519,7 @@ pub struct SettingsApp {
     provider: Box<dyn AutostartProvider>,
     persist: PersistFn,
     sprite_check: SpriteCheckFn,
+    conflict: ConflictFn,
     /// The hotkey row's recorder — see [`HotkeyRecorder`].
     recorder: HotkeyRecorder,
     /// Surfaced to the user above the buttons. Cleared on the next interaction.
@@ -546,6 +539,7 @@ impl SettingsApp {
         provider: Box<dyn AutostartProvider>,
         persist: PersistFn,
         sprite_check: SpriteCheckFn,
+        conflict: ConflictFn,
     ) -> Self {
         // Default eframe visuals — settings is NOT the spotlight. Opaque
         // panel, normal chrome. We still pin dark mode so the look matches
@@ -568,7 +562,7 @@ impl SettingsApp {
         let source = crate::platform::new_edge_source(&cc.egui_ctx);
         #[cfg(target_arch = "wasm32")]
         let source = None;
-        Self::with_source(config, provider, persist, sprite_check, source)
+        Self::with_source(config, provider, persist, sprite_check, conflict, source)
     }
 
     /// [`SettingsApp::new`] with the recorder's key source handed in — what
@@ -578,6 +572,7 @@ impl SettingsApp {
         provider: Box<dyn AutostartProvider>,
         persist: PersistFn,
         sprite_check: SpriteCheckFn,
+        conflict: ConflictFn,
         source: Option<Box<dyn EdgeSource>>,
     ) -> Self {
         Self {
@@ -585,6 +580,7 @@ impl SettingsApp {
             provider,
             persist,
             sprite_check,
+            conflict,
             recorder: HotkeyRecorder::new(source),
             banner: None,
             saved: false,
@@ -621,7 +617,7 @@ impl SettingsApp {
                 // which never gets this far.
                 self.banner = hotkey::parse(&saved.hotkey)
                     .ok()
-                    .and_then(|hk| conflict_warning(&hk))
+                    .and_then(|hk| (self.conflict)(&hk))
                     .map(|warning| format!("This combination is {warning}"));
             }
             Err(line) => self.banner = Some(line),

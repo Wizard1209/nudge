@@ -27,7 +27,7 @@ use nudge_web::autostart::AutostartProvider;
 use nudge_web::config::Config;
 use nudge_web::recorder::{self, EdgeSource, PhysicalKey, PressEdge, Verdict};
 use nudge_web::settings_app::{
-    MARGIN, PersistFn, SettingsApp, SettingsForm, SpriteCheckFn, WINDOW_SIZE,
+    ConflictFn, MARGIN, PersistFn, SettingsApp, SettingsForm, SpriteCheckFn, WINDOW_SIZE,
 };
 
 // =============================================================================
@@ -233,6 +233,13 @@ fn no_op_persist() -> PersistFn {
     Box::new(|_cfg: &Config| Ok(()))
 }
 
+/// A conflict check that knows of no one: a save here must not ask the OS,
+/// which would register a real hotkey on the machine running the tests — and
+/// from every test thread at once.
+fn no_conflict() -> ConflictFn {
+    Box::new(|_hk| None)
+}
+
 /// A PNG check that passes everything: no test here reads a file.
 fn accept_any_sprite() -> SpriteCheckFn {
     Box::new(|_path: &std::path::Path| Ok(()))
@@ -255,6 +262,7 @@ fn settings_form_populates_from_a_config() {
             provider,
             no_op_persist(),
             accept_any_sprite(),
+            no_conflict(),
         )
     });
     harness.run();
@@ -315,6 +323,7 @@ fn settings_app_editing_a_field_round_trips_through_the_ui() {
             provider,
             no_op_persist(),
             accept_any_sprite(),
+            no_conflict(),
         )
     });
     harness.run();
@@ -362,6 +371,7 @@ fn toggling_autostart_goes_through_the_injected_provider_not_the_os() {
             boxed_provider,
             persist,
             accept_any_sprite(),
+            no_conflict(),
         )
     });
     harness.run();
@@ -405,7 +415,14 @@ fn settings_save_with_a_bad_sprite_shows_the_reason_and_persists_nothing() {
 
     let provider: Box<dyn AutostartProvider> = Box::new(RecordingProvider::new(false));
     let mut harness = Harness::new_eframe(|cc| {
-        SettingsApp::new(cc, cfg("Alt+J", 7.0, false), provider, persist, refuse)
+        SettingsApp::new(
+            cc,
+            cfg("Alt+J", 7.0, false),
+            provider,
+            persist,
+            refuse,
+            no_conflict(),
+        )
     });
     harness.run();
 
@@ -468,7 +485,14 @@ fn settings_harness<'a>(
     let mut harness = Harness::builder()
         .with_size(WINDOW_SIZE)
         .build_eframe(move |cc| {
-            SettingsApp::new(cc, config, provider, persist, accept_any_sprite())
+            SettingsApp::new(
+                cc,
+                config,
+                provider,
+                persist,
+                accept_any_sprite(),
+                no_conflict(),
+            )
         });
     harness.run();
     (harness, persisted)
@@ -520,6 +544,7 @@ fn settings_harness_with_source<'a>(
                 provider,
                 persist,
                 accept_any_sprite(),
+                no_conflict(),
                 Some(Box::new(source)),
             )
         });
