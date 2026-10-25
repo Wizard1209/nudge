@@ -798,7 +798,11 @@ fn settings_save_is_greyed_while_the_form_matches_the_file() {
 //
 // One case per sentence of the subsection, against the Rust settings window;
 // their Electron twins, on the same sentences, are
-// electron/tests/native/settings.test.js.
+// electron/tests/native/settings.test.js. One sentence has no case here:
+// "rows in rounded boxes, a hairline between rows" is paint, not a node —
+// AccessKit cannot see a box or a line — and this tier renders no pixels
+// (see egui_kittest in Cargo.toml). The boxes are judged by eye on a capture
+// of the window; the guest test looks only for the filled button.
 // -----------------------------------------------------------------------------
 
 use egui_kittest::kittest::By;

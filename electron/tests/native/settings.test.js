@@ -282,6 +282,21 @@ describe('settings window — §9 layout', () => {
     expect((await settingsState(app)).contentBounds).toEqual(quietWindow);
   });
 
+  // "The `Saved` note sits to their left after a save."
+  it('puts the Saved note to the left of the buttons after a save', async () => {
+    const settings = await openSettings();
+    expect(await settings.locator('[data-testid="settings-saved"]').count()).toBe(0);
+    await settings.fill('[data-testid="settings-interval"]', '5');
+    await settings.click('[data-testid="settings-save"]');
+    await settings.waitForSelector('[data-testid="settings-saved"]');
+    const note = await settings.locator('[data-testid="settings-saved"]').boundingBox();
+    const cancel = await settings.locator('[data-testid="settings-cancel"]').boundingBox();
+    expect(note.x + note.width).toBeLessThanOrEqual(cancel.x);
+    // On the buttons' line.
+    expect(note.y).toBeLessThan(cancel.y + cancel.height);
+    expect(cancel.y).toBeLessThan(note.y + note.height);
+  });
+
   // "... so the window never changes size." A refused hotkey echoes what was
   // typed, and what was typed can be anything: the message has to stay on
   // its line whatever it quotes, the buttons where they were, the form
