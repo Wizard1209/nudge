@@ -642,10 +642,13 @@ consistency but have no active UI effect:
 - Nothing inside the window repeats the title: the title bar carries it.
 - The window is sized to the form and is not resizable. The banner has its
   line above the buttons whether or not it has anything to say, so the
-  window never changes size. On the native build the content is 560 × 515
-  pt; the banner's line is 64 pt, 20 pt above and below it — the longest
-  message, a bare key refused with the vocabulary after it, is four rows of
-  13 pt text at the form's width.
+  window never changes size. A message quotes at most the first 40
+  characters of what was typed, so there is a longest message and the line
+  holds it; a message is clipped to its line rather than the line growing.
+  On the native build the content is 560 × 515 pt; the banner's line is 64
+  pt, 20 pt above and below it — the longest message, a bare key refused
+  with the vocabulary after it, is four rows of 13 pt text at the form's
+  width.
 
 ## 10. Sprite overlay
 

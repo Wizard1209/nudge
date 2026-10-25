@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
+  ECHO_LIMIT,
+  describeParseError,
+  echoed,
   parseHotkey,
   formatHotkey,
   formatHotkeyNative,
@@ -187,6 +190,23 @@ describe("parseHotkey", () => {
       ok: false,
       error: { kind: "unknownToken", token: "CapsLock" },
     });
+  });
+
+  it("quotes a bounded head of what was typed in the message", () => {
+    // The error keeps the whole token — it is what was typed; the message
+    // shows ECHO_LIMIT characters of it and says there was more.
+    const token = "abcdefghij".repeat(15);
+    const result = parseHotkey(`Ctrl+${token}`);
+    expect(result).toEqual({ ok: false, error: { kind: "unknownToken", token } });
+    if (result.ok) throw new Error("unreachable");
+    expect(describeParseError(result.error)).toBe(
+      `unknown hotkey token: "${token.slice(0, ECHO_LIMIT)}…"`,
+    );
+    // Short text is quoted whole, with nothing after it.
+    expect(echoed("Numpad5")).toBe("Numpad5");
+    expect(echoed("x".repeat(ECHO_LIMIT))).toBe("x".repeat(ECHO_LIMIT));
+    // Counted in characters, so an astral token is cut between them.
+    expect([...echoed("😀".repeat(ECHO_LIMIT + 1))]).toHaveLength(ECHO_LIMIT + 1);
   });
 
   it("rejects an empty string", () => {

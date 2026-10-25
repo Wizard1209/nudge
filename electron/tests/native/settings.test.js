@@ -282,6 +282,43 @@ describe('settings window — §9 layout', () => {
     expect((await settingsState(app)).contentBounds).toEqual(quietWindow);
   });
 
+  // "... so the window never changes size." A refused hotkey echoes what was
+  // typed, and what was typed can be anything: the message has to stay on
+  // its line whatever it quotes, the buttons where they were, the form
+  // unscrolled. Two shapes of anything: one word that no line can hold,
+  // which pushes sideways, and a run of words, which wraps and pushes up.
+  it('keeps the banner on its line when the refused hotkey is a long token', async () => {
+    const settings = await openSettings();
+    const probe = () => settings.evaluate(() => {
+      const buttons = document.querySelector('[data-testid="settings-save"]').parentElement;
+      const l = buttons.previousElementSibling.getBoundingClientRect();
+      const b = buttons.getBoundingClientRect();
+      return {
+        scroll: document.documentElement.scrollHeight,
+        inner: window.innerHeight,
+        scrollWidth: document.documentElement.scrollWidth,
+        innerWidth: window.innerWidth,
+        line: { top: l.top, bottom: l.bottom, left: l.left, right: l.right },
+        buttonsTop: b.top,
+      };
+    });
+    const quiet = await probe();
+    for (const token of ['abcdefghij'.repeat(15), 'abcde '.repeat(25)]) {
+      await settings.fill('[data-testid="settings-hotkey"]', token);
+      await settings.click('[data-testid="settings-save"]');
+      await settings.waitForSelector('[data-testid="settings-banner"]');
+      const spoken = await probe();
+      expect(spoken, token).toEqual(quiet);
+      expect(spoken.scroll, token).toBe(spoken.inner);
+      expect(spoken.scrollWidth, token).toBe(spoken.innerWidth);
+      const banner = await settings.locator('[data-testid="settings-banner"]').boundingBox();
+      expect(banner.y, token).toBeGreaterThanOrEqual(quiet.line.top);
+      expect(banner.y + banner.height, token).toBeLessThanOrEqual(quiet.line.bottom);
+      expect(banner.x, token).toBeGreaterThanOrEqual(quiet.line.left);
+      expect(banner.x + banner.width, token).toBeLessThanOrEqual(quiet.line.right);
+    }
+  });
+
   // "`Cancel`, then `Save`, at the bottom right; `Save` is the one filled
   // button ..."
   it('has Cancel then Save at the bottom right, Save the one filled button', async () => {

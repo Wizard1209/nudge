@@ -245,8 +245,8 @@ impl std::fmt::Display for SettingsValidationError {
         match self {
             SettingsValidationError::Interval(e) => write!(f, "{e}"),
             // The parse error says what is wrong with the string; this adds
-            // what a correct one looks like, because the banner is the only
-            // place the accepted vocabulary is stated.
+            // what a correct one looks like, so the refusal and the remedy
+            // are read together (§9 Saving).
             SettingsValidationError::Hotkey(e) => write!(f, "{e}. {}", hotkey::VOCABULARY),
             SettingsValidationError::SpriteX(_) => {
                 f.write_str("Sprite X must be a whole number of points")
@@ -276,7 +276,7 @@ impl std::fmt::Display for IntervalParseError {
         write!(
             f,
             "Interval must be a positive number of minutes (got: \"{}\")",
-            self.input
+            hotkey::echoed(&self.input)
         )
     }
 }
@@ -655,11 +655,12 @@ impl SettingsApp {
 // these, and the window's inner size is what they add up to.
 
 /// The window's inner size: the form at this width, measured — its last
-/// row's bottom plus the margin (tests/kittest_card.rs pins the sum).
+/// row's bottom plus the margin (`settings_form_adds_up_to_the_window` in
+/// tests/kittest_card.rs pins the sum).
 pub const WINDOW_SIZE: [f32; 2] = [560.0, 515.0];
 
 /// The form's inset from the window's edge, every side.
-const MARGIN: i8 = 20;
+pub const MARGIN: i8 = 20;
 /// A row's text and controls, inset from its box's border.
 const ROW_PAD: i8 = 12;
 /// A row is at least this tall; the controls sit centred in it.
@@ -675,7 +676,10 @@ const GROUP_GAP: f32 = 20.0;
 /// The message line, reserved whether or not it has anything to say. The
 /// longest message — a bare key, refused with the vocabulary after it — is
 /// four rows of body text at the form's width, 60 pt; this leaves it air.
+/// Nothing a message quotes can make it longer: what it echoes of the user's
+/// text is bounded ([`hotkey::echoed`]).
 const BANNER_HEIGHT: f32 = 64.0;
+const BANNER_COLOR: egui::Color32 = egui::Color32::LIGHT_YELLOW;
 /// The hotkey field; the interval and position fields.
 const HOTKEY_FIELD_WIDTH: f32 = 200.0;
 const NUMBER_FIELD_WIDTH: f32 = 72.0;
@@ -1010,22 +1014,22 @@ impl eframe::App for SettingsApp {
                 // The message line: reserved, so the window never changes
                 // size. What it says sits right above the buttons; empty, it
                 // is the gap before them. A sprite refusal is a message like
-                // any other and lands here too.
-                ui.allocate_ui_with_layout(
+                // any other and lands here too. The line is allocated first
+                // and the message painted into it afterwards, clipped to it:
+                // the form's shape is the line's, never the message's.
+                let (line, _) = ui.allocate_exact_size(
                     egui::vec2(ui.available_width(), BANNER_HEIGHT),
-                    egui::Layout::bottom_up(egui::Align::Min),
-                    |ui| {
-                        ui.set_min_height(BANNER_HEIGHT);
-                        if let Some(msg) = &self.banner {
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(msg).color(egui::Color32::LIGHT_YELLOW),
-                                )
-                                .wrap(),
-                            );
-                        }
-                    },
+                    egui::Sense::hover(),
                 );
+                if let Some(msg) = &self.banner {
+                    let mut ui = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(line)
+                            .layout(egui::Layout::bottom_up(egui::Align::Min)),
+                    );
+                    ui.set_clip_rect(line.intersect(ui.clip_rect()));
+                    ui.add(egui::Label::new(egui::RichText::new(msg).color(BANNER_COLOR)).wrap());
+                }
                 ui.add_space(GROUP_GAP);
 
                 // Cancel, then Save, at the bottom right, the `Saved` note to

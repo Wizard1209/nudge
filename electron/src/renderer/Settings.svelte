@@ -485,9 +485,11 @@
     <!-- §9: the message line is reserved — it keeps its height whether or
          not it has anything to say, so the window never changes size and
          never scrolls. Tall enough for the longest message, a refused hotkey
-         with the vocabulary after it; a sprite refusal is a message like any
-         other and sits on the same line. -->
-    <div class="flex min-h-[100px] flex-col justify-end gap-1">
+         with the vocabulary after it, and nothing a message quotes can make
+         one longer (`echoed`); a sprite refusal is a message like any other
+         and sits on the same line. The height is fixed, not a minimum, and
+         the line clips: the form's shape is the line's, never the message's. -->
+    <div class="flex h-[100px] flex-col justify-end gap-1 overflow-hidden">
       {#if banner}
         <p data-testid="settings-banner" class="text-sm text-amber-400">{banner}</p>
       {/if}

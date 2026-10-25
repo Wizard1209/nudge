@@ -262,6 +262,17 @@ describe('settings sub-app', () => {
         expect(await readStored(page)).toBeNull();
     });
 
+    it('quotes a bounded head of a refused token, so the message line has a longest message (§9)', async () => {
+        const token = 'abcdefghij'.repeat(15);
+        await page.click('[data-testid="settings-hotkey"]', { clickCount: 3 });
+        await page.type('[data-testid="settings-hotkey"]', `Ctrl+${token}`);
+        await page.click('[data-testid="settings-save"]');
+        const banner = await bannerText(page);
+        expect(banner).toContain(`"${token.slice(0, 40)}…"`);
+        expect(banner).not.toContain(token);
+        expect(await readStored(page)).toBeNull();
+    });
+
     describe('the recorder', () => {
         it('records a chord from real key presses and persists it on Save', async () => {
             await arm(page);

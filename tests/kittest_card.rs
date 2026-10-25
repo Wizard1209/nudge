@@ -26,7 +26,9 @@ use nudge_web::app::NudgeApp;
 use nudge_web::autostart::AutostartProvider;
 use nudge_web::config::Config;
 use nudge_web::recorder::{self, EdgeSource, PhysicalKey, PressEdge, Verdict};
-use nudge_web::settings_app::{PersistFn, SettingsApp, SettingsForm, SpriteCheckFn};
+use nudge_web::settings_app::{
+    MARGIN, PersistFn, SettingsApp, SettingsForm, SpriteCheckFn, WINDOW_SIZE,
+};
 
 // =============================================================================
 // NudgeApp — the spotlight card
@@ -447,6 +449,8 @@ fn settings_save_with_a_bad_sprite_shows_the_reason_and_persists_nothing() {
 
 /// A settings window over a recording persist closure: what Save wrote, in
 /// order, so a case can assert on the write rather than on the window alone.
+/// The harness is the window's own size, so what the layout cases measure is
+/// the form as the window shows it.
 fn settings_harness<'a>(
     config: Config,
 ) -> (
@@ -461,9 +465,11 @@ fn settings_harness<'a>(
         Ok(())
     });
     let provider: Box<dyn AutostartProvider> = Box::new(RecordingProvider::new(false));
-    let mut harness = Harness::new_eframe(move |cc| {
-        SettingsApp::new(cc, config, provider, persist, accept_any_sprite())
-    });
+    let mut harness = Harness::builder()
+        .with_size(WINDOW_SIZE)
+        .build_eframe(move |cc| {
+            SettingsApp::new(cc, config, provider, persist, accept_any_sprite())
+        });
     harness.run();
     (harness, persisted)
 }
@@ -506,15 +512,17 @@ fn settings_harness_with_source<'a>(
         Ok(())
     });
     let provider: Box<dyn AutostartProvider> = Box::new(RecordingProvider::new(false));
-    let mut harness = Harness::new_eframe(move |_cc| {
-        SettingsApp::with_source(
-            config,
-            provider,
-            persist,
-            accept_any_sprite(),
-            Some(Box::new(source)),
-        )
-    });
+    let mut harness = Harness::builder()
+        .with_size(WINDOW_SIZE)
+        .build_eframe(move |_cc| {
+            SettingsApp::with_source(
+                config,
+                provider,
+                persist,
+                accept_any_sprite(),
+                Some(Box::new(source)),
+            )
+        });
     harness.run();
     (harness, persisted)
 }
@@ -1080,5 +1088,99 @@ fn settings_banner_line_keeps_its_height_when_empty() {
         "the buttons moved from y={} to y={} when the banner appeared: its line was not reserved while empty",
         quiet_save.min.y,
         save.min.y
+    );
+}
+
+/// §9: "The window is sized to the form" — "on the native build the content
+/// is 560 × 515 pt". The form, laid out at that width, ends one margin above
+/// the window's bottom and one margin short of its right edge: the number in
+/// the spec is what the form adds up to, not a guess the window asks for.
+/// The native build is the macOS one — the footnote's wrap, and so the sum,
+/// is this platform's vocabulary in this platform's spelling.
+#[cfg(target_os = "macos")]
+#[test]
+fn settings_form_adds_up_to_the_window() {
+    let (harness, _persisted) = settings_harness(cfg("Alt+J", 7.0, false));
+    let mut right = f32::MIN;
+    let mut bottom = f32::MIN;
+    for role in [Role::TextInput, Role::Button, Role::CheckBox, Role::Label] {
+        for node in harness.get_all_by_role(role) {
+            right = right.max(node.rect().max.x);
+            bottom = bottom.max(node.rect().max.y);
+        }
+    }
+    let margin = f32::from(MARGIN);
+    assert!(
+        (bottom + margin - WINDOW_SIZE[1]).abs() <= 1.0,
+        "the form ends at y={bottom}, one margin above {} — the window is {} tall",
+        bottom + margin,
+        WINDOW_SIZE[1]
+    );
+    assert!(
+        (right + margin - WINDOW_SIZE[0]).abs() <= 1.0,
+        "the form ends at x={right}, one margin short of {} — the window is {} wide",
+        right + margin,
+        WINDOW_SIZE[0]
+    );
+}
+
+/// §9: "The banner has its line above the buttons whether or not it has
+/// anything to say, so the window never changes size." A refused hotkey
+/// echoes what was typed, and what was typed can be anything: the message
+/// has to stay on its line whatever it quotes, and the form has to keep its
+/// shape under it — the buttons where they were, nothing past the margin.
+/// Two shapes of anything: one word that no line can hold, which pushes
+/// sideways, and a run of words, which wraps and pushes up.
+#[test]
+fn settings_long_hotkey_token_stays_on_the_message_line() {
+    let one_word: String = std::iter::repeat_n("abcdefghij", 15).collect();
+    let many_words: String = std::iter::repeat_n("abcde ", 25).collect();
+    for token in [one_word, many_words] {
+        long_token_stays_on_the_message_line(&token);
+    }
+}
+
+fn long_token_stays_on_the_message_line(token: &str) {
+    let (mut harness, persisted) = settings_harness(cfg("Alt+J", 7.0, false));
+    let quiet_save = rect_of(&harness, "Save");
+    let quiet_cancel = rect_of(&harness, "Cancel");
+    let quiet_labels = label_texts(&harness);
+
+    type_into(&mut harness, 0, token);
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    assert!(
+        persisted.lock().unwrap().is_empty(),
+        "the refused save must not write"
+    );
+    let banner = harness
+        .get_all_by_role(Role::Label)
+        .find(|n| !quiet_labels.contains(&n.value().unwrap_or_default()))
+        .expect("the refused save raised no banner");
+    let text = banner.value().unwrap_or_default();
+    let banner = banner.rect();
+
+    let save = rect_of(&harness, "Save");
+    let cancel = rect_of(&harness, "Cancel");
+    let last_row = input_rect(&harness, 5);
+    assert_eq!(save, quiet_save, "Save moved when the banner appeared");
+    assert_eq!(
+        cancel, quiet_cancel,
+        "Cancel moved when the banner appeared"
+    );
+    assert!(
+        banner.min.y >= last_row.max.y - 0.5 && banner.max.y <= save.min.y + 0.5,
+        "the banner (y={}..{}) overflows its line between the last row (ending y={}) and the buttons (y={}): {text:?}",
+        banner.min.y,
+        banner.max.y,
+        last_row.max.y,
+        save.min.y
+    );
+    let margin = f32::from(MARGIN);
+    assert!(
+        banner.min.x >= margin - 0.5 && banner.max.x <= WINDOW_SIZE[0] - margin + 0.5,
+        "the banner (x={}..{}) reaches past the form's margins: {text:?}",
+        banner.min.x,
+        banner.max.x
     );
 }
