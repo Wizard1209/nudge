@@ -181,7 +181,8 @@ describe('settings window — §9 layout', () => {
   });
 
   // "In every row the label sits at the left and the control at the right
-  // edge."
+  // edge — one left edge for every row's text and one right edge for every
+  // row's last control, so the groups read as one form"
   it('puts the label at the left and the control at the right edge of every row', async () => {
     const settings = await openSettings();
     const rows = (await readGroups(settings)).flatMap((g) => g.rows);
@@ -191,7 +192,7 @@ describe('settings window — §9 layout', () => {
       expect(row.control.right, `${row.text}: control right`).toBeCloseTo(row.innerRight, 0);
       expect(row.label.right, `${row.text}: label before control`).toBeLessThan(row.control.left);
     }
-    // One edge for all rows, so the groups read as one form.
+    // One edge for all rows.
     const lefts = new Set(rows.map((r) => Math.round(r.label.left)));
     const rights = new Set(rows.map((r) => Math.round(r.control.right)));
     expect([...lefts]).toHaveLength(1);
@@ -335,7 +336,7 @@ describe('settings window — §9 layout', () => {
   });
 
   // "`Cancel`, then `Save`, at the bottom right; `Save` is the one filled
-  // button ..."
+  // button ..." — and, of the rows, "the buttons end where the boxes do".
   it('has Cancel then Save at the bottom right, Save the one filled button', async () => {
     const settings = await openSettings();
     const cancel = await settings.locator('[data-testid="settings-cancel"]').boundingBox();
@@ -348,8 +349,8 @@ describe('settings window — §9 layout', () => {
     // Cancel, then Save, on one line.
     expect(cancel.x + cancel.width).toBeLessThanOrEqual(save.x);
     expect(Math.abs(cancel.y - save.y)).toBeLessThan(1);
-    // At the right: flush with the form's right edge; at the bottom: nothing
-    // below but the margin.
+    // At the right: where the boxes end; at the bottom: nothing below but
+    // the margin.
     expect(save.x + save.width).toBeCloseTo(groups[2].box.right, 0);
     expect(save.y + save.height).toBeCloseTo(innerHeight - main.bottom, 0);
     // The one filled button: a fill of its own, unlike Cancel's.

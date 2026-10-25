@@ -883,7 +883,9 @@ fn settings_has_no_heading_repeating_the_title() {
     );
 }
 
-/// §9: "`Cancel`, then `Save`, at the bottom right".
+/// §9: "`Cancel`, then `Save`, at the bottom right" — and, of the rows, "the
+/// buttons end where the boxes do": a box spans the form, so its right edge
+/// is one margin in from the window's.
 #[test]
 fn settings_cancel_then_save_at_the_bottom_right() {
     let (harness, _persisted) = settings_harness(cfg("Alt+J", 7.0, false));
@@ -921,6 +923,12 @@ fn settings_cancel_then_save_at_the_bottom_right() {
         "Save ends at y={} but the form reaches y={bottom}: Save is not at the bottom",
         save.max.y
     );
+    let box_right = WINDOW_SIZE[0] - f32::from(MARGIN);
+    assert!(
+        (save.max.x - box_right).abs() <= 1.0,
+        "Save ends at x={} and the boxes at x={box_right}: the buttons do not end where the boxes do",
+        save.max.x
+    );
 }
 
 /// §9: "The `Saved` note sits to their left after a save."
@@ -949,9 +957,10 @@ fn settings_saved_note_sits_left_of_cancel() {
 }
 
 /// §9: "In every row the label sits at the left and the control at the right
-/// edge." Six rows, one left edge for their texts, one right edge for the
-/// last control of each. The row texts are §9's Fields names; the PNG and
-/// position rows read `PNG` and `Position (pt)` (§10: "labelled in points").
+/// edge — one left edge for every row's text and one right edge for every
+/// row's last control, so the groups read as one form". Six rows. The row
+/// texts are §9's Fields names; the PNG and position rows read `PNG` and
+/// `Position (pt)` (§10: "labelled in points").
 #[test]
 fn settings_row_texts_share_a_left_edge_and_controls_a_right_edge() {
     let (harness, _persisted) = settings_harness(cfg("Alt+J", 7.0, false));

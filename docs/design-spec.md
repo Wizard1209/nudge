@@ -632,7 +632,9 @@ consistency but have no active UI effect:
 - The form is three groups of rows in rounded boxes, a hairline between
   rows: the hotkey; the interval and autostart; the sprite (checkbox, PNG,
   position). In every row the label sits at the left and the control at the
-  right edge. The hotkey vocabulary is a footnote under its group.
+  right edge — one left edge for every row's text and one right edge for
+  every row's last control, so the groups read as one form; the buttons end
+  where the boxes do. The hotkey vocabulary is a footnote under its group.
   Measured on the native build: the form is inset 20 pt from the window's
   edges; a box has a 10 pt corner radius and a 1 pt border, the same
   hairline as between its rows; a row is 44 pt tall, its text and controls
