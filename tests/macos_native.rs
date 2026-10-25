@@ -3134,7 +3134,7 @@ fn sprite_turned_on_while_hidden_is_drawn_at_the_next_reveal() {
 /// 560 wide, measured on the native build — the window asks for exactly this
 /// (`settings_app::WINDOW_SIZE`), and tests/kittest_card.rs pins that the
 /// form adds up to it.
-const SETTINGS_CONTENT: (f64, f64) = (560.0, 515.0);
+const SETTINGS_CONTENT: (f64, f64) = (560.0, 537.0);
 
 /// The standard title bar's share of a framed window's frame on this macOS,
 /// in points: `CGWindowListCopyWindowInfo` reports a 560-point-tall content

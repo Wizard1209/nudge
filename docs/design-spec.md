@@ -636,8 +636,8 @@ consistency but have no active UI effect:
   Measured on the native build: the form is inset 20 pt from the window's
   edges; a box has a 10 pt corner radius and a 1 pt border, the same
   hairline as between its rows; a row is 44 pt tall, its text and controls
-  inset 12 pt from the border; boxes are 20 pt apart, and the footnote sits
-  8 pt under its box.
+  inset 12 pt from the border; boxes are 20 pt apart, and the footnote, in
+  12 pt text, sits 8 pt under its box.
 - A checkbox sits at the right of its row; the row's text is its label.
 - Nothing inside the window repeats the title: the title bar carries it.
 - The window is sized to the form and is not resizable. The banner has its
@@ -645,7 +645,7 @@ consistency but have no active UI effect:
   window never changes size. A message quotes at most the first 40
   characters of what was typed, so there is a longest message and the line
   holds it; a message is clipped to its line rather than the line growing.
-  On the native build the content is 560 × 515 pt; the banner's line is 64
+  On the native build the content is 560 × 537 pt; the banner's line is 64
   pt, 20 pt above and below it — the longest message, a bare key refused
   with the vocabulary after it, is four rows of 13 pt text at the form's
   width.

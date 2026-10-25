@@ -657,7 +657,7 @@ impl SettingsApp {
 /// The window's inner size: the form at this width, measured — its last
 /// row's bottom plus the margin (`settings_form_adds_up_to_the_window` in
 /// tests/kittest_card.rs pins the sum).
-pub const WINDOW_SIZE: [f32; 2] = [560.0, 515.0];
+pub const WINDOW_SIZE: [f32; 2] = [560.0, 537.0];
 
 /// The form's inset from the window's edge, every side.
 pub const MARGIN: i8 = 20;
@@ -671,6 +671,9 @@ const GROUP_RADIUS: u8 = 10;
 const HAIRLINE: f32 = 1.0;
 /// Between the hotkey group and its footnote.
 const FOOTNOTE_GAP: f32 = 8.0;
+/// The footnote's text: a step under the body's 13 pt, still readable at
+/// one pixel per point — egui's own Small, at 9 pt, is not.
+const FOOTNOTE_SIZE: f32 = 12.0;
 /// Between groups, and on either side of the message line.
 const GROUP_GAP: f32 = 20.0;
 /// The message line, reserved whether or not it has anything to say. The
@@ -910,7 +913,10 @@ impl eframe::App for SettingsApp {
                 egui::Frame::new()
                     .inner_margin(egui::Margin::symmetric(ROW_PAD, 0))
                     .show(ui, |ui| {
-                        ui.add(egui::Label::new(egui::RichText::new(under).small().weak()).wrap());
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(under).size(FOOTNOTE_SIZE).weak())
+                                .wrap(),
+                        );
                     });
                 ui.add_space(GROUP_GAP);
 

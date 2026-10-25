@@ -1092,7 +1092,7 @@ fn settings_banner_line_keeps_its_height_when_empty() {
 }
 
 /// §9: "The window is sized to the form" — "on the native build the content
-/// is 560 × 515 pt". The form, laid out at that width, ends one margin above
+/// is 560 × 537 pt". The form, laid out at that width, ends one margin above
 /// the window's bottom and one margin short of its right edge: the number in
 /// the spec is what the form adds up to, not a guess the window asks for.
 /// The native build is the macOS one — the footnote's wrap, and so the sum,
