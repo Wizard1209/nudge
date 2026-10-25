@@ -3271,10 +3271,10 @@ fn filled_block(img: &image::RgbaImage, scale: f64, below: f64) -> Option<Rect> 
 /// Geometry comes from `CGWindowListCopyWindowInfo` like everywhere else in
 /// this file, and "not resizable" is observed the way a user meets it: a drag
 /// on the right edge that moves nothing. Nothing is read through System
-/// Events, which reports zero windows for this process while the window is
-/// up (measured on the host) — so there is no `resizable` attribute to ask
-/// for and no button to find by name. The filled button is found in the
-/// window's own pixels instead.
+/// Events: what it reports for this process depends on the Accessibility
+/// grant the session happens to hold, so there is no `resizable` attribute
+/// to rely on and no button to find by name. The filled button is found in
+/// the window's own pixels instead.
 #[test]
 #[ignore = "needs a GUI session + Accessibility and Screen Recording grants; run via --ignored"]
 fn settings_window_is_fixed_size_and_not_resizable() {
