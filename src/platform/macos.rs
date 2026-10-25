@@ -61,12 +61,14 @@ use std::time::{Duration, Instant};
 
 use eframe::egui;
 use muda::{Menu, MenuEvent, MenuId, MenuItem};
-use objc2::ClassType;
 use objc2::rc::Retained;
+use objc2::runtime::NSObjectProtocol;
+use objc2::{ClassType, sel};
 use objc2_app_kit::{
-    NSAppearance, NSAppearanceCustomization, NSAppearanceNameVibrantDark, NSApplication, NSEvent,
-    NSScreen, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
-    NSVisualEffectView, NSWindowCollectionBehavior, NSWindowOrderingMode,
+    NSAppearance, NSAppearanceCustomization, NSAppearanceNameVibrantDark, NSApplication,
+    NSApplicationActivationOptions, NSEvent, NSRunningApplication, NSScreen, NSView,
+    NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
+    NSWindowCollectionBehavior, NSWindowOrderingMode, NSWorkspace,
 };
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -136,6 +138,13 @@ static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// by `App::hide_popup`. Both raise sites matter — see [`reveal`] for what the
 /// gap between them used to cost.
 static POPUP_VISIBLE: AtomicBool = AtomicBool::new(true);
+
+/// The application that had the keyboard when the popup took it, by pid:
+/// what [`hand_back_activation`] gives it back to (spec §1). Written by
+/// [`focus_popup`] on the first activation of a show, taken by the hide.
+/// `None` while hidden, and while shown when nothing else was active at
+/// the moment the popup took the keyboard.
+static PREVIOUS_FRONT: Mutex<Option<i32>> = Mutex::new(None);
 
 /// The display spec §1 chose the last time the popup was shown, by its
 /// frame in AppKit's screen space — the one identity a display keeps across
@@ -381,6 +390,75 @@ pub fn set_popup_visible(visible: bool) {
         // frosting its patch of desktop for the whole interval the popup is
         // away. `sync_card_backdrop` unhides it on the next open.
         hide_card_backdrop();
+        hand_back_activation();
+    }
+}
+
+/// Spec §1: the popup "hands [the keyboard] back to the application that
+/// had it when it closes". AppKit does not do that on its own: ordering the
+/// window out leaves this app the active one with no key window, so every
+/// keystroke goes nowhere until the user clicks, and the next show reads
+/// nudge as the frontmost application, finds no ordinary-level window of
+/// its own and falls through to the pointer's display.
+///
+/// Only while this app still is the active one: a Leave by focus loss means
+/// the user has already put another application in front, and taking that
+/// from them is the opposite of handing back. The remembered application
+/// gets the activation; one that is gone, or none remembered, means hiding
+/// instead, which has the system pick the next application the way ⌘H does.
+fn hand_back_activation() {
+    let previous = PREVIOUS_FRONT.lock().unwrap().take();
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let app = NSApplication::sharedApplication(mtm);
+    // SAFETY: plain accessors and requests on the shared application, on
+    // the main thread; the running application is returned retained.
+    unsafe {
+        if !app.isActive() {
+            return;
+        }
+        let target = previous
+            .and_then(|pid| NSRunningApplication::runningApplicationWithProcessIdentifier(pid))
+            .filter(|target| !target.isTerminated());
+        let handed = target.is_some_and(|target| {
+            let options = NSApplicationActivationOptions::empty();
+            // macOS 14 made activation cooperative: the active application
+            // names the one it hands over to. Older systems take the plain
+            // request, and do not have the selector.
+            if target.respondsToSelector(sel!(activateFromApplication:options:)) {
+                target.activateFromApplication_options(
+                    &NSRunningApplication::currentApplication(),
+                    options,
+                )
+            } else {
+                target.activateWithOptions(options)
+            }
+        });
+        if !handed {
+            app.hide(None);
+        }
+    }
+}
+
+/// Note which application is about to lose the keyboard to the popup, for
+/// [`hand_back_activation`] — once per show: the first call of a show is
+/// the one made before the activation, and the retries that follow it on a
+/// popup not yet key would otherwise read this app as the previous one.
+fn remember_front_application() {
+    let mut previous = PREVIOUS_FRONT.lock().unwrap();
+    if previous.is_some() {
+        return;
+    }
+    // SAFETY: `sharedWorkspace` is a plain class accessor; the frontmost
+    // application is returned retained, and `processIdentifier` only reads it.
+    let pid = unsafe {
+        NSWorkspace::sharedWorkspace()
+            .frontmostApplication()
+            .map(|front| front.processIdentifier())
+    };
+    if pid.is_some_and(|pid| pid != std::process::id() as i32) {
+        *previous = pid;
     }
 }
 
@@ -569,8 +647,18 @@ fn choose_screen(mtm: MainThreadMarker) {
 /// activate there, and asking anyway is the unsound path, not the safe one.
 pub fn focus_popup(ctx: &egui::Context) {
     if let Some(mtm) = MainThreadMarker::new() {
+        remember_front_application();
+        let app = NSApplication::sharedApplication(mtm);
+        // SAFETY: plain accessors on the shared application, on the main
+        // thread. A hide after the previous close (`hand_back_activation`)
+        // keeps the window off screen until the app is unhidden.
+        unsafe {
+            if app.isHidden() {
+                app.unhideWithoutActivation();
+            }
+        }
         #[allow(deprecated)]
-        NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
+        app.activateIgnoringOtherApps(true);
     }
     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
 }

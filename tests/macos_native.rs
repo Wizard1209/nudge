@@ -2330,6 +2330,85 @@ fn bring_frontmost(pid: u32) {
     );
 }
 
+/// Spec §1: the popup "takes the keyboard when shown even if another
+/// application is activating at the same moment, and hands it back to the
+/// application that had it when it closes, by any of the three Leave
+/// triggers and by Enter alike."
+///
+/// A window of another app is made frontmost, the hotkey summons the popup,
+/// and after it closes that app must be the frontmost one again — once by
+/// Esc, once by Enter. Both keystrokes are raw, posted to whatever holds the
+/// keyboard, so a popup that never took it fails here too. Without the
+/// hand-back, nudge stays the active application with no key window: every
+/// keystroke goes nowhere until the user clicks, and the next show reads
+/// nudge as the frontmost app, finds no window of its own at the ordinary
+/// level and falls through to the pointer's display.
+#[test]
+#[ignore = "needs a GUI session + PostEvent grant; run in the guest via scripts/native-tests-macos.sh"]
+fn closing_the_popup_hands_the_keyboard_back_to_the_app_that_had_it() {
+    let (probe_pid, probe) = front_probe_window().expect(
+        "no on-screen window of another app to put in front — the hand-back cannot \
+         be exercised without one (the guest normally has Terminal/Finder up)",
+    );
+
+    let app = SandboxedApp::launch();
+    assert!(
+        popup_visible(app.pid()),
+        "launch popup never appeared — harness problem, not an activation problem"
+    );
+    dismiss_with_escape();
+    assert!(
+        wait_until(Duration::from_secs(1), || !popup_visible(app.pid())),
+        "Esc did not dismiss the popup — synthetic input is not reaching the app"
+    );
+
+    let closes: [(&str, fn()); 2] = [("Esc", press_escape), ("Enter", press_return)];
+    for (name, close) in closes {
+        bring_frontmost(probe_pid);
+        assert!(
+            wait_until(Duration::from_secs(2), || frontmost_pid()
+                == Some(probe_pid)),
+            "pid {probe_pid} ({probe:?}) did not become the frontmost application \
+             (frontmost is {:?}) — nothing to hand the keyboard back to",
+            frontmost_pid()
+        );
+
+        press_chord(
+            VK_SPACE,
+            CGEventFlags::CGEventFlagControl | CGEventFlags::CGEventFlagShift,
+        );
+        assert!(
+            wait_until(Duration::from_secs(2), || popup_visible(app.pid())),
+            "⌃⇧Space did not bring the popup back before {name}"
+        );
+        // The activation lands asynchronously; the popup must hold the
+        // keyboard before the raw keystroke below is posted, or the probe
+        // takes it.
+        assert!(
+            wait_until(Duration::from_secs(2), || frontmost_pid()
+                == Some(app.pid())),
+            "the popup came up but nudge is not the frontmost application (frontmost \
+             is {:?}) — it never took the keyboard, so {name} would go to the probe",
+            frontmost_pid()
+        );
+        std::thread::sleep(Duration::from_millis(300));
+
+        close();
+        assert!(
+            wait_until(Duration::from_secs(2), || !popup_visible(app.pid())),
+            "{name} did not close the popup — the keyboard is not reaching it"
+        );
+        assert!(
+            wait_until(Duration::from_secs(2), || frontmost_pid()
+                == Some(probe_pid)),
+            "after {name} the frontmost application is {:?}, not pid {probe_pid} that \
+             had the keyboard before the hotkey — the popup kept the activation \
+             (spec §1: hands it back to the application that had it)",
+            frontmost_pid()
+        );
+    }
+}
+
 /// Spec §1, §4: a click anywhere on the monitor outside the card closes the
 /// popup and reaches nothing beneath.
 ///

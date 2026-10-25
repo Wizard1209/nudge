@@ -47,7 +47,9 @@ explicitly. Otherwise the spec applies to all of them.
 - On macOS the popup appears on whichever Space is current, full-screen
   ones included; Mission Control and the click-wallpaper-to-reveal-desktop
   gesture leave it where it is. It takes the keyboard when shown even if
-  another application is activating at the same moment.
+  another application is activating at the same moment, and hands it back
+  to the application that had it when it closes, by any of the three Leave
+  triggers and by Enter alike.
 - Not resizable.
 - Does not appear in the taskbar or in ALT+TAB.
 - Lives in the tray: closing the popup does not exit the app.
