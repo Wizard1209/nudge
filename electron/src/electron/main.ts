@@ -198,6 +198,11 @@ function startTimer(minutes: number) {
 
 function showNudge(source: TriggerSource) {
   if (!win) return;
+  // A trigger while the popup is up changes nothing — the hotkey, the tray
+  // and its menu fire whether or not it is showing, and a re-placement here
+  // would read the display afresh with the popup itself in front. The timer
+  // never gets here: it is parked while the popup is up (spec §4).
+  if (win.isVisible()) return;
   lastTriggerSource = source;
   positionCard();
   win.show();

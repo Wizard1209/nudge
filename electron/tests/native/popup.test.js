@@ -158,6 +158,47 @@ describe('popup — the display is the one holding the front window', () => {
   );
 });
 
+// Spec §1 places the popup "when the popup is shown, on every trigger alike"
+// — and a trigger that finds it already up is not a show. The hotkey, the tray
+// click and its menu all fire while the popup is visible; placing it again
+// then would read the display with the popup itself (or Settings) in front,
+// and the spot could change under the user's hands. One display here, so the
+// spec spot is the same either way: the window is nudged off it first, and a
+// trigger that re-placed it would put it back. The trigger source is the
+// other tell — the launch popup is the timer's, a trigger counts as manual.
+describe('popup — a trigger while it is up leaves it where it is', () => {
+  let app;
+  afterEach(async () => {
+    await app?.close();
+    app = undefined;
+  });
+
+  it('two triggers on a visible popup change neither its bounds nor its source', async () => {
+    ({ app } = await launchApp());
+    await expect.poll(async () => (await popupState(app))?.visible).toBe(true);
+    const before = await popupState(app);
+    const state = () => app.evaluate(() => globalThis.__nudgeTest.getState());
+    expect((await state()).lastTriggerSource).toBe('timer');
+
+    const moved = await app.evaluate(({ BrowserWindow }) => {
+      const w = BrowserWindow.getAllWindows().find((x) => x.getTitle() === 'Nudge');
+      const b = w.getBounds();
+      w.setPosition(b.x + 40, b.y + 60);
+      return w.getBounds();
+    });
+    expect([moved.x, moved.y]).toEqual([before.bounds.x + 40, before.bounds.y + 60]);
+
+    await app.evaluate(() => globalThis.__nudgeTest.show());
+    await app.evaluate(() => globalThis.__nudgeTest.show());
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    const after = await popupState(app);
+    expect(after.visible).toBe(true);
+    expect(after.bounds).toEqual(moved);
+    expect((await state()).lastTriggerSource).toBe('timer');
+  });
+});
+
 function activeTestId(popup) {
   return popup.evaluate(
     () => document.activeElement?.getAttribute('data-testid') ?? document.activeElement?.tagName,
