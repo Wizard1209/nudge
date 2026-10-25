@@ -70,6 +70,11 @@ pub fn sync_card_backdrop(_ctx: &egui::Context, _frame: &eframe::Frame, _card: e
 /// texture `main.rs` uploads is never drawn and `card_width` is ignored.
 // TODO: GetForegroundWindow → MonitorFromWindow + GetMonitorInfoW rcMonitor/rcWork,
 // in points: the monitor of the front window, else the cursor's (spec §1, which monitor).
+// The rule itself is `crate::screen_pick::pick_screen` (tested, every target):
+// feed it the foreground window's rect (GetWindowRect), the cursor
+// (GetCursorPos) and every monitor (EnumDisplayMonitors), all in virtual-screen
+// points, and read the chosen monitor's rcMonitor/rcWork back — at show time,
+// before the popup takes the foreground, the way `platform::macos::reveal` does.
 // TODO: sprite drawing pending — no layout without screen geometry.
 pub fn screen_geometry(_ctx: &egui::Context, _frame: &eframe::Frame) -> Option<ScreenGeometry> {
     None

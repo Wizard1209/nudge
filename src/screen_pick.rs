@@ -24,9 +24,37 @@ use eframe::egui::{Pos2, Rect};
 /// a point on the seam between two displays belongs to the one on the right
 /// (or below), never to both.
 pub fn pick_screen(front: Option<Rect>, pointer: Pos2, screens: &[Rect]) -> usize {
-    let _ = (front, pointer, screens);
-    // TODO: the port of spec §1 "which monitor" — see the tests below.
-    todo!("spec §1: which monitor")
+    if let Some(front) = front {
+        if let Some(i) = screens.iter().position(|s| contains(s, front.center())) {
+            return i;
+        }
+        let most_overlap = screens
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (i, overlap(s, &front)))
+            .filter(|(_, area)| *area > 0.0)
+            .max_by(|a, b| a.1.total_cmp(&b.1));
+        if let Some((i, _)) = most_overlap {
+            return i;
+        }
+    }
+    screens
+        .iter()
+        .position(|s| contains(s, pointer))
+        .unwrap_or(0)
+}
+
+/// Half-open on the far edges: a point on the seam belongs to the display
+/// that starts there.
+fn contains(r: &Rect, p: Pos2) -> bool {
+    p.x >= r.min.x && p.x < r.max.x && p.y >= r.min.y && p.y < r.max.y
+}
+
+/// The area the two rects share, zero when they only touch.
+fn overlap(a: &Rect, b: &Rect) -> f32 {
+    let w = a.max.x.min(b.max.x) - a.min.x.max(b.min.x);
+    let h = a.max.y.min(b.max.y) - a.min.y.max(b.min.y);
+    if w > 0.0 && h > 0.0 { w * h } else { 0.0 }
 }
 
 #[cfg(test)]

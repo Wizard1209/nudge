@@ -94,6 +94,9 @@ objc2-app-kit = { version = "0.2", features = [
     "NSBitmapImageRep",   # one rep per display density, built from the daisy's RGBA
     "NSMenu",             # the muda NSMenu handed to the item while it is tracked
     "NSApplication",      # currentEvent, to tell a right-up from a left-up in the action
+    "NSWorkspace",        # frontmostApplication: whose front window decides the popup's display (spec §1)
+    "NSRunningApplication", # ... and its pid, the key into the window list
+    "libc",               # `processIdentifier` returns a `pid_t`, which this feature gates
 ] }
 # The handler an `NSEvent` monitor takes is an Objective-C block, and this is
 # the crate that builds one. Already in the tree via winit 0.30's objc2 0.5
