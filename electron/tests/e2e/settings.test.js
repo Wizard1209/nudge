@@ -88,6 +88,14 @@ describe('settings sub-app', () => {
         expect(await page.$('[data-testid="settings-cancel"]')).not.toBeNull();
     });
 
+    // §9: the autostart row names the platform's own mechanism, and the
+    // browser under test runs on this host.
+    it('names the autostart row after the platform', async () => {
+        const text = await page.$eval('[data-testid="settings-autostart"]', (el) =>
+            el.closest('label').textContent.trim());
+        expect(text).toBe(spell('Open at login', 'Launch with Windows'));
+    });
+
     it('prints the accepted vocabulary under the field (§9)', async () => {
         const text = await page.$eval(
             '[data-testid="settings-hotkey-vocabulary"]',
@@ -440,12 +448,15 @@ describe('settings sub-app', () => {
             expect(values).toEqual([false, '', '0', '0', '480']);
         });
 
-        // §10: "`x`, `y` … in points", "`card_width` … in points".
-        it('labels X, Y and card width in points, and says so when refusing one', async () => {
+        // §10: "`x`, `y`, `card_width`, labelled in points" — the unit once,
+        // on the row, like `min` after the interval; the fields keep bare names.
+        it('labels the position row in points, and says so when refusing a field', async () => {
             const labels = await page.evaluate((ids) => ids.map((id) =>
                 document.querySelector(`[data-testid="${id}"]`).closest('label').querySelector('span').textContent.trim()),
             ['settings-sprite-x', 'settings-sprite-y', 'settings-card-width']);
-            expect(labels).toEqual(['X (pt)', 'Y (pt)', 'Card width (pt)']);
+            expect(labels).toEqual(['X', 'Y', 'Card width']);
+            expect(await page.$eval('[data-testid="settings-sprite-position"]', (el) => el.textContent.trim()))
+                .toBe('Position (pt)');
 
             for (const [id, pattern] of [
                 ['settings-sprite-x', /X must be a whole number of points/],

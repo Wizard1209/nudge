@@ -467,7 +467,7 @@ file while a hand-editing user reads the other.
 | Field | Type | What it does |
 |---|---|---|
 | Global hotkey | text | A string in the §5 grammar. See below. |
-| Default interval (min) | text | A number, must be finite and positive; same rules as the minutes field of the popup in §3. |
+| Default interval, with `min` after the field | text | A number, must be finite and positive; same rules as the minutes field of the popup in §3. |
 | Open at login / Launch with Windows | checkbox | Registers the app to launch at session start. The label names the platform's own mechanism, because that is what tells the user whether the setting applies to them. |
 | Sprite | checkbox, path with `Browse…`, X, Y, Card width | The `sprite` block of §10. X, Y and Card width must be whole numbers, Card width positive; an enabled sprite must pass the §10 PNG check or `Save` refuses it, naming the reason. |
 
@@ -570,7 +570,7 @@ either way.
 - **Hotkey and interval** are written to `config.json` by the `Save` button.
   Both are validated first, and if either fails the file is not touched at
   all — a banner shows the error, and for the hotkey it also states the
-  accepted vocabulary, since the banner is the only place that list appears.
+  accepted vocabulary.
   A hotkey the app cannot register must not reach the file: the settings
   window is the one surface that can put one there, and a save that reported
   success would leave the next launch silently unbound.
@@ -617,17 +617,27 @@ consistency but have no active UI effect:
 - `sprite` — applied the next time the popup is hidden (§10), never under
   the user's hands.
 
-### Window chrome
+### Window chrome and layout
 
 - Standard OS title bar and frame (unlike the popup — this is not a
   spotlight).
 - Title: `Nudge — Settings`.
-- `Save` / `Cancel` buttons, with the `Saved` note beside them after a
-  save; `Save` is greyed while there is nothing to save (see Saving). Esc
-  and the system close button are equivalent to Cancel: the window closes
-  without saving the fields that are saved explicitly (hotkey, interval).
-  An autostart change already applied is of course not rolled back — it
-  was committed at the moment of the click.
+- `Cancel`, then `Save`, at the bottom right; `Save` is the one filled
+  button and is greyed while there is nothing to save (see Saving). The
+  `Saved` note sits to their left after a save. Esc and the system close
+  button are equivalent to Cancel: the window closes without saving the
+  fields that are saved explicitly (hotkey, interval). An autostart change
+  already applied is of course not rolled back — it was committed at the
+  moment of the click.
+- The form is three groups of rows in rounded boxes, a hairline between
+  rows: the hotkey; the interval and autostart; the sprite (checkbox, PNG,
+  position). In every row the label sits at the left and the control at the
+  right edge. The hotkey vocabulary is a footnote under its group.
+- A checkbox sits at the right of its row; the row's text is its label.
+- Nothing inside the window repeats the title: the title bar carries it.
+- The window is sized to the form and is not resizable. The banner has its
+  line above the buttons whether or not it has anything to say, so the
+  window never changes size.
 
 ## 10. Sprite overlay
 
@@ -649,8 +659,9 @@ A `sprite` block in `config.json` (§9):
 
 Each field that is absent or malformed falls back to its default alone, the
 same forgiving rule §9 applies to the rest of the file. The settings window
-has a row for each of them; `Browse…` picks the PNG with the system's file
-dialog.
+has a group for them: a row for the checkbox, one for the PNG with `Browse…`
+(the system's file dialog), one for the position (`x`, `y`, `card_width`,
+labelled in points).
 
 ### What counts as a sprite
 

@@ -33,15 +33,10 @@
   /** Which spelling this build shows and writes (§5: one per platform). */
   const platform = detectPlatform();
 
-  // Three candidate layouts of the same form, for the owner to pick one of:
-  // main.ts passes NUDGE_SETTINGS_LAYOUT=a|b|c through as ?layout=. Unknown or
-  // absent is the shipped markup. The variants are separate blocks on purpose
-  // — same state, handlers and test ids, markup duplicated — so that each can
-  // be read and compared whole, and the losers deleted without untangling.
-  const layout =
-    typeof location !== "undefined"
-      ? new URLSearchParams(location.search).get("layout")
-      : null;
+  // §9: the autostart row names the platform's own mechanism — the same
+  // platform the hotkey spelling follows, so the two never disagree.
+  const autostartLabel =
+    platform === "macos" ? "Open at login" : "Launch with Windows";
 
   // Browser persistence. The Electron Settings window will swap these for IPC
   // calls (Layer B5); the pure SettingsForm/recorder logic stays identical.
@@ -280,14 +275,16 @@
     const result = form.toConfig();
     if (!result.ok) {
       // §9: if any field fails the file is not touched at all, and the
-      // hotkey's banner also states the accepted vocabulary — the banner is
-      // the only place that list appears at the moment it is needed. A sprite
-      // field reports inline, under its own section.
+      // hotkey's banner also states the accepted vocabulary. One message
+      // line reports the one failure this save found: a sprite refusal from
+      // an earlier save does not stand next to it.
       const err = result.error;
       if (err.field === "hotkey") {
         banner = `${describeParseError(err.error)}. ${vocabulary(platform)}`;
+        spriteError = "";
       } else if (err.field === "interval") {
         banner = FIELD_ERROR.interval;
+        spriteError = "";
       } else {
         spriteError = FIELD_ERROR[err.field];
         banner = "";
@@ -340,52 +337,58 @@
 
 <svelte:window onkeydown={onWindowKeydown} onblur={onWindowBlur} />
 
-{#if layout === "a"}
-  <!-- Variant A — "Form": a classic preference pane. Labels right-aligned
-       in a fixed 150px column ending with a colon, fields in the right column
-       on one common left edge; groups 20px apart, rows 8px; buttons bottom-
-       right in Apple order (Cancel, Save). -->
-  <main class="min-h-screen bg-zinc-950 text-white p-5" oninput={onEdit}>
-    <div class="space-y-5">
-      <div class="grid grid-cols-[150px_1fr] gap-x-3 gap-y-2 items-center">
-        <label class="text-right text-sm text-zinc-400" for="settings-hotkey">Global hotkey:</label>
-        <div class="flex gap-2">
-          <input
-            id="settings-hotkey"
-            data-testid="settings-hotkey"
-            type="text"
-            bind:value={hotkey}
-            readonly={recorder === "armed"}
-            placeholder={formatHotkeyNative(
-              { ctrl: true, alt: false, shift: true, win: false, key: "SPACE" },
-              platform,
-            )}
-            class="w-[200px] bg-zinc-900 rounded px-3 py-2 outline-none border {recorder ===
-            'armed'
-            ? 'border-indigo-500'
-            : 'border-zinc-700'}"
-          />
-          <button
-            data-testid="settings-hotkey-record"
-            data-recorder={recorder}
-            onclick={onRecordClick}
-            class="px-3 py-2 rounded bg-zinc-800 hover:bg-zinc-700 text-sm"
-          >
-            {recorder === "armed" ? "Press a key…" : "Record"}
-          </button>
+<!-- §9 "Window chrome and layout": three groups of rows in rounded boxes, a
+     hairline between rows, the label at the left of a row and the control at
+     its right edge; the hotkey vocabulary is its group's footnote; the
+     message line keeps its height above the buttons; Cancel, then the one
+     filled button, Save, at the bottom right. The controls are the compact
+     (py-1) size so a 44px row keeps air around them. -->
+<main class="min-h-screen bg-zinc-950 text-white p-5" oninput={onEdit}>
+  <div class="space-y-5">
+    <div>
+      <div class="rounded-[10px] border border-zinc-800 bg-zinc-900/50 divide-y divide-zinc-800">
+        <div class="flex items-center justify-between gap-3 min-h-11 px-3">
+          <label class="text-sm" for="settings-hotkey">Global hotkey</label>
+          <div class="flex gap-2">
+            <input
+              id="settings-hotkey"
+              data-testid="settings-hotkey"
+              type="text"
+              bind:value={hotkey}
+              readonly={recorder === "armed"}
+              placeholder={formatHotkeyNative(
+                { ctrl: true, alt: false, shift: true, win: false, key: "SPACE" },
+                platform,
+              )}
+              class="w-[200px] bg-zinc-900 rounded px-3 py-1 outline-none border {recorder ===
+              'armed'
+                ? 'border-indigo-500'
+                : 'border-zinc-700'}"
+            />
+            <button
+              data-testid="settings-hotkey-record"
+              data-recorder={recorder}
+              onclick={onRecordClick}
+              class="px-3 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-sm"
+            >
+              {recorder === "armed" ? "Press a key…" : "Record"}
+            </button>
+          </div>
         </div>
-        <!-- §9: the accepted vocabulary is standing information under the
-             field — it wraps inside the field column, not under the label. -->
-        <p
-          data-testid="settings-hotkey-vocabulary"
-          class="col-start-2 text-xs text-zinc-500"
-        >
-          {vocabulary(platform)}
-        </p>
       </div>
+      <!-- §9: the accepted vocabulary is standing information under the
+           field — the group's footnote. -->
+      <p
+        data-testid="settings-hotkey-vocabulary"
+        class="mt-2 px-3 text-xs text-zinc-500"
+      >
+        {vocabulary(platform)}
+      </p>
+    </div>
 
-      <div class="grid grid-cols-[150px_1fr] gap-x-3 gap-y-2 items-center">
-        <label class="text-right text-sm text-zinc-400" for="settings-interval">Default interval:</label>
+    <div class="rounded-[10px] border border-zinc-800 bg-zinc-900/50 divide-y divide-zinc-800">
+      <div class="flex items-center justify-between gap-3 min-h-11 px-3">
+        <label class="text-sm" for="settings-interval">Default interval</label>
         <div class="flex items-center gap-2 text-sm text-zinc-400">
           <input
             id="settings-interval"
@@ -393,55 +396,58 @@
             type="text"
             inputmode="decimal"
             bind:value={intervalText}
-            class="w-[72px] bg-zinc-900 text-base rounded px-3 py-2 outline-none border border-zinc-700"
+            class="w-[72px] bg-zinc-900 text-base rounded px-3 py-1 outline-none border border-zinc-700"
           />
           <span>min</span>
         </div>
-        <span class="text-right text-sm leading-4 text-zinc-400">Startup:</span>
-        <label class="flex items-center gap-3 text-sm leading-4">
-          <input
-            data-testid="settings-autostart"
-            type="checkbox"
-            checked={autostart}
-            onchange={onAutostartChange}
-          />
-          Open at login
-        </label>
       </div>
+      <!-- §9: the row's text names the platform's own mechanism. -->
+      <label class="flex items-center justify-between gap-3 min-h-11 px-3 cursor-default">
+        <span class="text-sm">{autostartLabel}</span>
+        <input
+          data-testid="settings-autostart"
+          type="checkbox"
+          checked={autostart}
+          onchange={onAutostartChange}
+        />
+      </label>
+    </div>
 
-      <div class="grid grid-cols-[150px_1fr] gap-x-3 gap-y-2 items-center">
-        <label class="col-start-2 flex items-center gap-3 text-sm leading-4">
-          <input
-            data-testid="settings-sprite-enabled"
-            type="checkbox"
-            bind:checked={spriteEnabled}
-          />
-          Sprite
-        </label>
-        <!-- The path and position rows are the checkbox's: indented a step
-             past the field column so they read as its subordinates. -->
-        <span class="text-right text-sm text-zinc-400">PNG:</span>
-        <div class="flex gap-2 pl-6">
+    <div class="rounded-[10px] border border-zinc-800 bg-zinc-900/50 divide-y divide-zinc-800">
+      <label class="flex items-center justify-between gap-3 min-h-11 px-3 cursor-default">
+        <span class="text-sm">Sprite</span>
+        <input
+          data-testid="settings-sprite-enabled"
+          type="checkbox"
+          bind:checked={spriteEnabled}
+        />
+      </label>
+      <div class="flex items-center justify-between gap-3 min-h-11 px-3">
+        <span class="text-sm shrink-0">PNG</span>
+        <div class="flex flex-1 min-w-0 gap-2">
           <input
             data-testid="settings-sprite-path"
             type="text"
             aria-label="Sprite PNG path"
             bind:value={spritePath}
             placeholder="Path to a PNG with a transparent background"
-            class="flex-1 min-w-0 bg-zinc-900 rounded px-3 py-2 outline-none border border-zinc-700"
+            class="flex-1 min-w-0 bg-zinc-900 rounded px-3 py-1 outline-none border border-zinc-700"
           />
           {#if settingsApi}
             <button
               data-testid="settings-sprite-browse"
               onclick={browseSprite}
-              class="px-3 py-2 rounded bg-zinc-800 hover:bg-zinc-700 text-sm"
+              class="px-3 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-sm"
             >
               Browse…
             </button>
           {/if}
         </div>
-        <span class="text-right text-sm text-zinc-400">Position:</span>
-        <div class="flex items-center justify-between pl-6">
+      </div>
+      <!-- §10: the three are in points; the unit is said once, on the row. -->
+      <div class="flex items-center justify-between gap-3 min-h-11 px-3">
+        <span data-testid="settings-sprite-position" class="text-sm">Position (pt)</span>
+        <div class="flex items-center gap-3">
           <label class="flex items-center gap-1.5 text-sm text-zinc-400">
             <span>X</span>
             <input
@@ -449,7 +455,7 @@
               type="text"
               inputmode="numeric"
               bind:value={spriteXText}
-              class="w-[72px] bg-zinc-900 text-base text-white rounded px-3 py-2 outline-none border border-zinc-700"
+              class="w-[72px] bg-zinc-900 text-base text-white rounded px-3 py-1 outline-none border border-zinc-700"
             />
           </label>
           <label class="flex items-center gap-1.5 text-sm text-zinc-400">
@@ -459,7 +465,7 @@
               type="text"
               inputmode="numeric"
               bind:value={spriteYText}
-              class="w-[72px] bg-zinc-900 text-base text-white rounded px-3 py-2 outline-none border border-zinc-700"
+              class="w-[72px] bg-zinc-900 text-base text-white rounded px-3 py-1 outline-none border border-zinc-700"
             />
           </label>
           <label class="flex items-center gap-1.5 text-sm text-zinc-400">
@@ -469,536 +475,31 @@
               type="text"
               inputmode="numeric"
               bind:value={cardWidthText}
-              class="w-[72px] bg-zinc-900 text-base text-white rounded px-3 py-2 outline-none border border-zinc-700"
+              class="w-[72px] bg-zinc-900 text-base text-white rounded px-3 py-1 outline-none border border-zinc-700"
             />
           </label>
         </div>
-        {#if spriteError}
-          <p
-            data-testid="settings-sprite-error"
-            class="col-start-2 pl-6 text-sm text-red-400"
-          >
-            {spriteError}
-          </p>
-        {/if}
       </div>
+    </div>
 
+    <!-- §9: the message line is reserved — it keeps its height whether or
+         not it has anything to say, so the window never changes size and
+         never scrolls. Tall enough for the longest message, a refused hotkey
+         with the vocabulary after it; a sprite refusal is a message like any
+         other and sits on the same line. -->
+    <div class="flex min-h-[100px] flex-col justify-end gap-1">
       {#if banner}
         <p data-testid="settings-banner" class="text-sm text-amber-400">{banner}</p>
       {/if}
-
-      <div class="flex items-center justify-end gap-3">
-        {#if saved}
-          <span data-testid="settings-saved" class="text-sm text-zinc-400">Saved</span>
-        {/if}
-        <button
-          data-testid="settings-cancel"
-          onclick={cancel}
-          class="px-4 py-2 rounded bg-zinc-800 hover:bg-zinc-700 text-sm"
-        >
-          Cancel
-        </button>
-        <button
-          data-testid="settings-save"
-          onclick={save}
-          disabled={!dirty}
-          class="px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-500 text-sm disabled:opacity-40"
-        >
-          Save
-        </button>
-      </div>
-    </div>
-  </main>
-{:else if layout === "b"}
-  <!-- Variant B — "Sections": one column, labels above fields, three
-       sections under small semibold headers 24px apart; the sprite's path
-       and position rows indented 24px under its checkbox; buttons bottom-left
-       as in the shipped layout. -->
-  <main class="min-h-screen bg-zinc-950 text-white p-5" oninput={onEdit}>
-    <div>
-      <h2 class="text-sm font-semibold text-zinc-300">Hotkey</h2>
-      <div class="mt-2 space-y-2">
-        <!-- The section header is this field's visible label; the spec's
-             name stays on the field for assistive tech. -->
-        <label class="sr-only" for="settings-hotkey">Global hotkey</label>
-        <div class="flex gap-2">
-          <input
-            id="settings-hotkey"
-            data-testid="settings-hotkey"
-            type="text"
-            bind:value={hotkey}
-            readonly={recorder === "armed"}
-            placeholder={formatHotkeyNative(
-              { ctrl: true, alt: false, shift: true, win: false, key: "SPACE" },
-              platform,
-            )}
-            class="w-[200px] bg-zinc-900 rounded px-3 py-2 outline-none border {recorder ===
-            'armed'
-            ? 'border-indigo-500'
-            : 'border-zinc-700'}"
-          />
-          <button
-            data-testid="settings-hotkey-record"
-            data-recorder={recorder}
-            onclick={onRecordClick}
-            class="px-3 py-2 rounded bg-zinc-800 hover:bg-zinc-700 text-sm"
-          >
-            {recorder === "armed" ? "Press a key…" : "Record"}
-          </button>
-        </div>
-        <!-- §9: the accepted vocabulary is standing information under the
-             field — it wraps at the hotkey row's width (200 field + gap +
-             Record), not the window's. -->
-        <p
-          data-testid="settings-hotkey-vocabulary"
-          class="max-w-[278px] text-xs text-zinc-500"
-        >
-          {vocabulary(platform)}
-        </p>
-      </div>
-
-      <h2 class="mt-6 text-sm font-semibold text-zinc-300">Nudges</h2>
-      <div class="mt-2 space-y-2">
-        <label class="block text-sm text-zinc-400" for="settings-interval">
-          Default interval (minutes)
-        </label>
-        <input
-          id="settings-interval"
-          data-testid="settings-interval"
-          type="text"
-          inputmode="decimal"
-          bind:value={intervalText}
-          class="w-[72px] bg-zinc-900 text-base rounded px-3 py-2 outline-none border border-zinc-700"
-        />
-        <label class="flex items-center gap-3 text-sm leading-4">
-          <input
-            data-testid="settings-autostart"
-            type="checkbox"
-            checked={autostart}
-            onchange={onAutostartChange}
-          />
-          Open at login
-        </label>
-      </div>
-
-      <h2 class="mt-6 text-sm font-semibold text-zinc-300">Sprite</h2>
-      <div class="mt-2 space-y-2">
-        <label class="flex items-center gap-3 text-sm leading-4">
-          <input
-            data-testid="settings-sprite-enabled"
-            type="checkbox"
-            bind:checked={spriteEnabled}
-          />
-          Sprite
-        </label>
-        <div class="pl-6 space-y-2">
-          <div class="flex gap-2">
-            <input
-              data-testid="settings-sprite-path"
-              type="text"
-              aria-label="Sprite PNG path"
-              bind:value={spritePath}
-              placeholder="Path to a PNG with a transparent background"
-              class="flex-1 min-w-0 bg-zinc-900 rounded px-3 py-2 outline-none border border-zinc-700"
-            />
-            {#if settingsApi}
-              <button
-                data-testid="settings-sprite-browse"
-                onclick={browseSprite}
-                class="px-3 py-2 rounded bg-zinc-800 hover:bg-zinc-700 text-sm"
-              >
-                Browse…
-              </button>
-            {/if}
-          </div>
-          <div class="flex items-end gap-2">
-            <label class="space-y-1 text-sm text-zinc-400">
-              <span class="block">X</span>
-              <input
-                data-testid="settings-sprite-x"
-                type="text"
-                inputmode="numeric"
-                bind:value={spriteXText}
-                class="w-[72px] bg-zinc-900 text-base text-white rounded px-3 py-2 outline-none border border-zinc-700"
-              />
-            </label>
-            <label class="space-y-1 text-sm text-zinc-400">
-              <span class="block">Y</span>
-              <input
-                data-testid="settings-sprite-y"
-                type="text"
-                inputmode="numeric"
-                bind:value={spriteYText}
-                class="w-[72px] bg-zinc-900 text-base text-white rounded px-3 py-2 outline-none border border-zinc-700"
-              />
-            </label>
-            <label class="space-y-1 text-sm text-zinc-400">
-              <span class="block">Card width</span>
-              <input
-                data-testid="settings-card-width"
-                type="text"
-                inputmode="numeric"
-                bind:value={cardWidthText}
-                class="w-[72px] bg-zinc-900 text-base text-white rounded px-3 py-2 outline-none border border-zinc-700"
-              />
-            </label>
-          </div>
-          {#if spriteError}
-            <p data-testid="settings-sprite-error" class="text-sm text-red-400">{spriteError}</p>
-          {/if}
-        </div>
-      </div>
-
-      <div class="mt-6 space-y-2">
-        {#if banner}
-          <p data-testid="settings-banner" class="text-sm text-amber-400">{banner}</p>
-        {/if}
-        <div class="flex items-center gap-3">
-          <button
-            data-testid="settings-save"
-            onclick={save}
-            disabled={!dirty}
-            class="px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-500 text-sm disabled:opacity-40"
-          >
-            Save
-          </button>
-          <button
-            data-testid="settings-cancel"
-            onclick={cancel}
-            class="px-4 py-2 rounded bg-zinc-800 hover:bg-zinc-700 text-sm"
-          >
-            Cancel
-          </button>
-          {#if saved}
-            <span data-testid="settings-saved" class="text-sm text-zinc-400">Saved</span>
-          {/if}
-        </div>
-      </div>
-    </div>
-  </main>
-{:else if layout === "c"}
-  <!-- Variant C — "System Settings": macOS 13+ grouped rows. Each group is a
-       rounded box one step lighter than the window, rows 44px tall separated
-       by hairlines, label left and control right-aligned; the controls are
-       the compact (py-1) size so a row keeps air around them; the vocabulary
-       is the first group's footnote; buttons bottom-right (Cancel, Save). -->
-  <main class="min-h-screen bg-zinc-950 text-white p-5" oninput={onEdit}>
-    <div class="space-y-5">
-      <div>
-        <div class="rounded-[10px] border border-zinc-800 bg-zinc-900/50 divide-y divide-zinc-800">
-          <div class="flex items-center justify-between gap-3 min-h-11 px-3">
-            <label class="text-sm" for="settings-hotkey">Global hotkey</label>
-            <div class="flex gap-2">
-              <input
-                id="settings-hotkey"
-                data-testid="settings-hotkey"
-                type="text"
-                bind:value={hotkey}
-                readonly={recorder === "armed"}
-                placeholder={formatHotkeyNative(
-                  { ctrl: true, alt: false, shift: true, win: false, key: "SPACE" },
-                  platform,
-                )}
-                class="w-[200px] bg-zinc-900 rounded px-3 py-1 outline-none border {recorder ===
-                'armed'
-                ? 'border-indigo-500'
-                : 'border-zinc-700'}"
-              />
-              <button
-                data-testid="settings-hotkey-record"
-                data-recorder={recorder}
-                onclick={onRecordClick}
-                class="px-3 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-sm"
-              >
-                {recorder === "armed" ? "Press a key…" : "Record"}
-              </button>
-            </div>
-          </div>
-        </div>
-        <!-- §9: the accepted vocabulary is standing information under the
-             field — here the group's footnote. -->
-        <p
-          data-testid="settings-hotkey-vocabulary"
-          class="mt-2 px-3 text-xs text-zinc-500"
-        >
-          {vocabulary(platform)}
-        </p>
-      </div>
-
-      <div class="rounded-[10px] border border-zinc-800 bg-zinc-900/50 divide-y divide-zinc-800">
-        <div class="flex items-center justify-between gap-3 min-h-11 px-3">
-          <label class="text-sm" for="settings-interval">Default interval</label>
-          <div class="flex items-center gap-2 text-sm text-zinc-400">
-            <input
-              id="settings-interval"
-              data-testid="settings-interval"
-              type="text"
-              inputmode="decimal"
-              bind:value={intervalText}
-              class="w-[72px] bg-zinc-900 text-base rounded px-3 py-1 outline-none border border-zinc-700"
-            />
-            <span>min</span>
-          </div>
-        </div>
-        <label class="flex items-center justify-between gap-3 min-h-11 px-3 cursor-default">
-          <span class="text-sm">Open at login</span>
-          <input
-            data-testid="settings-autostart"
-            type="checkbox"
-            checked={autostart}
-            onchange={onAutostartChange}
-          />
-        </label>
-      </div>
-
-      <div>
-        <div class="rounded-[10px] border border-zinc-800 bg-zinc-900/50 divide-y divide-zinc-800">
-          <label class="flex items-center justify-between gap-3 min-h-11 px-3 cursor-default">
-            <span class="text-sm">Sprite</span>
-            <input
-              data-testid="settings-sprite-enabled"
-              type="checkbox"
-              bind:checked={spriteEnabled}
-            />
-          </label>
-          <div class="flex items-center justify-between gap-3 min-h-11 px-3">
-            <span class="text-sm shrink-0">PNG</span>
-            <div class="flex flex-1 min-w-0 gap-2">
-              <input
-                data-testid="settings-sprite-path"
-                type="text"
-                aria-label="Sprite PNG path"
-                bind:value={spritePath}
-                placeholder="Path to a PNG with a transparent background"
-                class="flex-1 min-w-0 bg-zinc-900 rounded px-3 py-1 outline-none border border-zinc-700"
-              />
-              {#if settingsApi}
-                <button
-                  data-testid="settings-sprite-browse"
-                  onclick={browseSprite}
-                  class="px-3 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-sm"
-                >
-                  Browse…
-                </button>
-              {/if}
-            </div>
-          </div>
-          <div class="flex items-center justify-between gap-3 min-h-11 px-3">
-            <span class="text-sm">Position</span>
-            <div class="flex items-center gap-3">
-              <label class="flex items-center gap-1.5 text-sm text-zinc-400">
-                <span>X</span>
-                <input
-                  data-testid="settings-sprite-x"
-                  type="text"
-                  inputmode="numeric"
-                  bind:value={spriteXText}
-                  class="w-[72px] bg-zinc-900 text-base text-white rounded px-3 py-1 outline-none border border-zinc-700"
-                />
-              </label>
-              <label class="flex items-center gap-1.5 text-sm text-zinc-400">
-                <span>Y</span>
-                <input
-                  data-testid="settings-sprite-y"
-                  type="text"
-                  inputmode="numeric"
-                  bind:value={spriteYText}
-                  class="w-[72px] bg-zinc-900 text-base text-white rounded px-3 py-1 outline-none border border-zinc-700"
-                />
-              </label>
-              <label class="flex items-center gap-1.5 text-sm text-zinc-400">
-                <span>Card width</span>
-                <input
-                  data-testid="settings-card-width"
-                  type="text"
-                  inputmode="numeric"
-                  bind:value={cardWidthText}
-                  class="w-[72px] bg-zinc-900 text-base text-white rounded px-3 py-1 outline-none border border-zinc-700"
-                />
-              </label>
-            </div>
-          </div>
-        </div>
-        {#if spriteError}
-          <p
-            data-testid="settings-sprite-error"
-            class="mt-2 px-3 text-sm text-red-400"
-          >
-            {spriteError}
-          </p>
-        {/if}
-      </div>
-
-      {#if banner}
-        <p data-testid="settings-banner" class="text-sm text-amber-400">{banner}</p>
-      {/if}
-
-      <div class="flex items-center justify-end gap-3">
-        {#if saved}
-          <span data-testid="settings-saved" class="text-sm text-zinc-400">Saved</span>
-        {/if}
-        <button
-          data-testid="settings-cancel"
-          onclick={cancel}
-          class="px-4 py-2 rounded bg-zinc-800 hover:bg-zinc-700 text-sm"
-        >
-          Cancel
-        </button>
-        <button
-          data-testid="settings-save"
-          onclick={save}
-          disabled={!dirty}
-          class="px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-500 text-sm disabled:opacity-40"
-        >
-          Save
-        </button>
-      </div>
-    </div>
-  </main>
-{:else}
-<main class="min-h-screen bg-zinc-950 text-white p-8" oninput={onEdit}>
-  <div class="max-w-md mx-auto space-y-6">
-    <h1 class="text-xl font-semibold">Nudge — Settings</h1>
-
-    <div class="space-y-2">
-      <label class="block text-sm text-zinc-400" for="settings-hotkey">
-        Global hotkey
-      </label>
-      <div class="flex gap-2">
-        <input
-          id="settings-hotkey"
-          data-testid="settings-hotkey"
-          type="text"
-          bind:value={hotkey}
-          readonly={recorder === "armed"}
-          placeholder={formatHotkeyNative(
-            { ctrl: true, alt: false, shift: true, win: false, key: "SPACE" },
-            platform,
-          )}
-          class="flex-1 bg-zinc-900 rounded px-3 py-2 outline-none border {recorder ===
-          'armed'
-            ? 'border-indigo-500'
-            : 'border-zinc-700'}"
-        />
-        <button
-          data-testid="settings-hotkey-record"
-          data-recorder={recorder}
-          onclick={onRecordClick}
-          class="px-3 py-2 rounded bg-zinc-800 hover:bg-zinc-700 text-sm"
-        >
-          {recorder === "armed" ? "Press a key…" : "Record"}
-        </button>
-      </div>
-      <!-- §9: the accepted vocabulary is printed under the field, not held
-           back for an error — this is how a hotkey is set, so it is standing
-           information. -->
-      <p data-testid="settings-hotkey-vocabulary" class="text-xs text-zinc-500">
-        {vocabulary(platform)}
-      </p>
-    </div>
-
-    <div class="space-y-2">
-      <label class="block text-sm text-zinc-400" for="settings-interval">
-        Default interval (minutes)
-      </label>
-      <input
-        id="settings-interval"
-        data-testid="settings-interval"
-        type="text"
-        inputmode="decimal"
-        bind:value={intervalText}
-        class="w-full bg-zinc-900 rounded px-3 py-2 outline-none border border-zinc-700"
-      />
-    </div>
-
-    <label class="flex items-center gap-3 text-sm">
-      <input
-        data-testid="settings-autostart"
-        type="checkbox"
-        checked={autostart}
-        onchange={onAutostartChange}
-      />
-      Launch at login
-    </label>
-
-    <div class="space-y-3">
-      <label class="flex items-center gap-3 text-sm">
-        <input
-          data-testid="settings-sprite-enabled"
-          type="checkbox"
-          bind:checked={spriteEnabled}
-        />
-        Sprite
-      </label>
-      <div class="flex gap-2">
-        <input
-          data-testid="settings-sprite-path"
-          type="text"
-          aria-label="Sprite PNG path"
-          bind:value={spritePath}
-          placeholder="Path to a PNG with a transparent background"
-          class="flex-1 min-w-0 bg-zinc-900 rounded px-3 py-2 outline-none border border-zinc-700"
-        />
-        {#if settingsApi}
-          <button
-            data-testid="settings-sprite-browse"
-            onclick={browseSprite}
-            class="px-3 py-2 rounded bg-zinc-800 hover:bg-zinc-700 text-sm"
-          >
-            Browse…
-          </button>
-        {/if}
-      </div>
-      <div class="grid grid-cols-3 gap-2">
-        <label class="space-y-1 text-sm text-zinc-400">
-          <span class="block">X (pt)</span>
-          <input
-            data-testid="settings-sprite-x"
-            type="text"
-            inputmode="numeric"
-            bind:value={spriteXText}
-            class="w-full bg-zinc-900 text-white rounded px-3 py-2 outline-none border border-zinc-700"
-          />
-        </label>
-        <label class="space-y-1 text-sm text-zinc-400">
-          <span class="block">Y (pt)</span>
-          <input
-            data-testid="settings-sprite-y"
-            type="text"
-            inputmode="numeric"
-            bind:value={spriteYText}
-            class="w-full bg-zinc-900 text-white rounded px-3 py-2 outline-none border border-zinc-700"
-          />
-        </label>
-        <label class="space-y-1 text-sm text-zinc-400">
-          <span class="block">Card width (pt)</span>
-          <input
-            data-testid="settings-card-width"
-            type="text"
-            inputmode="numeric"
-            bind:value={cardWidthText}
-            class="w-full bg-zinc-900 text-white rounded px-3 py-2 outline-none border border-zinc-700"
-          />
-        </label>
-      </div>
       {#if spriteError}
         <p data-testid="settings-sprite-error" class="text-sm text-red-400">{spriteError}</p>
       {/if}
     </div>
 
-    {#if banner}
-      <p data-testid="settings-banner" class="text-sm text-amber-400">{banner}</p>
-    {/if}
-
-    <div class="flex items-center gap-3 pt-2">
-      <button
-        data-testid="settings-save"
-        onclick={save}
-        disabled={!dirty}
-        class="px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-500 text-sm disabled:bg-zinc-800 disabled:text-zinc-500"
-      >
-        Save
-      </button>
+    <div class="flex items-center justify-end gap-3">
+      {#if saved}
+        <span data-testid="settings-saved" class="text-sm text-zinc-400">Saved</span>
+      {/if}
       <button
         data-testid="settings-cancel"
         onclick={cancel}
@@ -1006,10 +507,15 @@
       >
         Cancel
       </button>
-      {#if saved}
-        <span data-testid="settings-saved" class="text-sm text-zinc-400">Saved</span>
-      {/if}
+      <!-- §9: greyed while there is nothing to save — the same fill, dimmed. -->
+      <button
+        data-testid="settings-save"
+        onclick={save}
+        disabled={!dirty}
+        class="px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-500 text-sm disabled:opacity-40"
+      >
+        Save
+      </button>
     </div>
   </div>
 </main>
-{/if}

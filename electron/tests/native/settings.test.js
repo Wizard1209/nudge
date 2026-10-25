@@ -43,13 +43,36 @@ describe('settings window — no gray flash, content fully painted', () => {
     expect(transparent(bg.body) && transparent(bg.html)).toBe(false);
   });
 
-  it('the form content fits within the client area (nothing clipped)', async () => {
+  // §9: the window is sized to the form — nothing clipped, no empty band
+  // below the buttons: the button row ends one 20px margin above the bottom.
+  it('the window is sized to the form (nothing clipped, nothing to spare)', async () => {
     const settings = await openSettings();
     const fit = await settings.evaluate(() => ({
       scroll: document.documentElement.scrollHeight,
       inner: window.innerHeight,
+      formBottom: document.querySelector('[data-testid="settings-save"]').getBoundingClientRect().bottom,
     }));
-    expect(fit.scroll).toBeLessThanOrEqual(fit.inner);
+    expect(fit.scroll).toBe(fit.inner);
+    expect(fit.formBottom).toBeCloseTo(fit.inner - 20, 0);
+  });
+
+  // §9: the banner keeps its line above the buttons whether or not it has
+  // anything to say, so a refused save moves nothing and scrolls nothing.
+  it('a refused save neither moves the buttons nor scrolls the form', async () => {
+    const settings = await openSettings();
+    const probe = () => settings.evaluate(() => ({
+      scroll: document.documentElement.scrollHeight,
+      inner: window.innerHeight,
+      saveTop: document.querySelector('[data-testid="settings-save"]').getBoundingClientRect().top,
+    }));
+    const quiet = await probe();
+    // The longest message the banner carries: a bare key, refused with the
+    // vocabulary after it.
+    await settings.fill('[data-testid="settings-hotkey"]', 'J');
+    await settings.click('[data-testid="settings-save"]');
+    await settings.waitForSelector('[data-testid="settings-banner"]');
+    expect(await probe()).toEqual(quiet);
+    expect(quiet.scroll).toBe(quiet.inner);
   });
 
   it('all controls are present and visible', async () => {
