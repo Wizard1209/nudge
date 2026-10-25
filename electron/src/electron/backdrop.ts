@@ -75,7 +75,8 @@ export function backdropState(): { loaded: boolean } & Partial<BackdropState> {
 
 /**
  * The frontmost application's front window in screen coordinates (its
- * largest normal-layer window on screen), for choosing the popup's display:
+ * first normal-layer window on screen, front to back), for choosing the
+ * popup's display:
  * null when it has none, and off macOS, where the addon is not built.
  */
 export function frontWindowBounds(): Rect | null {

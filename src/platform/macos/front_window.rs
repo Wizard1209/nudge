@@ -45,15 +45,16 @@ const KEY_OWNER_PID: &str = "kCGWindowOwnerPID";
 const KEY_LAYER: &str = "kCGWindowLayer";
 const KEY_BOUNDS: &str = "kCGWindowBounds";
 
-/// The bounds of the frontmost application's front window — its largest
-/// on-screen window at the ordinary window level — in CoreGraphics' global
-/// space: points, origin at the primary display's top-left corner, y down.
+/// The bounds of the frontmost application's front window — its first
+/// on-screen window at the ordinary window level, the list being ordered
+/// front to back — in CoreGraphics' global space: points, origin at the
+/// primary display's top-left corner, y down.
 ///
-/// Largest rather than first, because the list's first entry for an
-/// application can be a toolbar or title strip drawn as a window of its
-/// own (iTerm2's first entry measured 1470×68). Ordinary level (layer 0)
-/// rather than any, because an application's menu-bar extras, tooltips and
-/// floating panels are windows too, and are not what the user is looking at.
+/// Ordinary level (layer 0) rather than any, because an application's
+/// menu-bar extras, tooltips and floating panels are windows too, and are
+/// not what the user is looking at. An application's front entry can be a
+/// strip drawn as a window of its own (iTerm2's measured 1470×68), but it
+/// sits on the same display as the window it belongs to.
 ///
 /// `None` when no application is frontmost, when it has no such window, or
 /// when the list could not be read.
@@ -78,7 +79,6 @@ pub fn front_window_bounds() -> Option<NSRect> {
     let key_layer = CFString::from_static_string(KEY_LAYER);
     let key_bounds = CFString::from_static_string(KEY_BOUNDS);
 
-    let mut largest: Option<NSRect> = None;
     let count = unsafe { CFArrayGetCount(array.as_concrete_TypeRef()) };
     for i in 0..count {
         // SAFETY: `i` is in range; the entries are dictionaries owned by the
@@ -115,10 +115,7 @@ pub fn front_window_bounds() -> Option<NSRect> {
         {
             continue;
         }
-        let area = |r: &NSRect| r.size.width * r.size.height;
-        if largest.is_none_or(|l| area(&rect) > area(&l)) {
-            largest = Some(rect);
-        }
+        return Some(rect);
     }
-    largest
+    None
 }
