@@ -1,6 +1,6 @@
 /**
- * Tray icon (spec §5): a daisy with 12 elliptical petals around a yellow
- * centre. Petals fall one per `interval/12`; petal 0 (12 o'clock) drops
+ * Tray icon (spec §5): a daisy with 16 petals around a yellow centre, drawn
+ * from the table in docs/daisy/daisy.json. Petals fall one per `interval/16`; petal 0 (12 o'clock) drops
  * first, then clockwise. The icon is the only place in the app with accent
  * colour (warm pink petal tips, yellow centre).
  *
@@ -15,30 +15,28 @@
  * the old digit icon — no external image deps.
  */
 import { deflateSync } from "node:zlib";
+import daisy from "../../../docs/daisy/daisy.json";
 
 /** The canvas the geometry below is designed on; every size is a scale of it. */
-export const REFERENCE_SIZE = 64;
-const PETAL_COUNT = 12;
+export const REFERENCE_SIZE = daisy.canvas;
+/** Spec §5: 16 petals; the table in docs/daisy/daisy.json has one entry each. */
+export const PETAL_COUNT = 16;
 /** Samples per axis per pixel for edge anti-aliasing. */
 const SUPERSAMPLE = 4;
 
-// Geometry on the reference canvas, in pixels.
-const REF_CENTER_R = 7; // radius of the yellow disc
-// Spec §5: "Each petal is a strip that runs out from under the centre:
-// narrowest where it leaves the disc, widest about three fifths of the way
-// out, closed by a pointed-oval tip. Petal and centre meet with no gap
-// between them." The strip starts under the disc, so a falling petal's base
-// shows only once it has slid out. The width along the petal is the median
-// profile of the ray florets traced on a Bellis perennis photo (eight
-// florets lying over both neighbours, so both edges were real), sampled
-// every 5 % of the visible length from the disc edge to the tip, as a share
-// of the full width: half as wide at the disc, full at 60 %, then the tip.
-const REF_PETAL_R_BASE = 3; // petal starts under the centre
-const REF_PETAL_R_TIP = 28; // petal tip stops shy of the canvas edge
-const REF_PETAL_HALF_WIDTH = 4.5;
-const PETAL_PROFILE = [
-  0.479, 0.479, 0.479, 0.504, 0.555, 0.592, 0.623, 0.718, 0.822, 0.875, 0.919, 0.965, 1.000, 0.972, 0.931, 0.908, 0.858, 0.818, 0.723, 0.504, 0.000
-]; // share of the length taken by the tip's rounded cap
+// Geometry on the reference canvas, in pixels: the icon's own table
+// (docs/daisy/daisy.json, baked by docs/daisy/constructor.html). Spec §5:
+// "Each petal is a strip that runs out from under the centre: narrowest
+// where it leaves the disc, widest about three fifths of the way out, closed
+// by a pointed-oval tip. Petal and centre meet with no gap between them."
+// Every petal carries its own angle, length, width and width profile, so
+// the small irregularities of a real head are part of the icon and the same
+// in every render.
+const REF_CENTER_R = daisy.disc_radius;
+const REF_PETAL_R_BASE = daisy.petal_base; // petal starts under the centre
+const REF_PETAL_R_TIP = daisy.petal_tip;
+const REF_PETAL_HALF_WIDTH = daisy.petal_half_width;
+export const PETALS = daisy.petals;
 // Spec §5 fall: petal slides outward from the centre, droops slightly under
 // "gravity", and fades to transparent over the fade window. These deltas
 // stay small — even 4 px of outward motion on the reference canvas is
@@ -75,13 +73,14 @@ type RGBA = [number, number, number, number];
 
 const CENTER_COLOR: RGBA = [0xff, 0xc8, 0x10, 0xff]; // warm yellow
 const PETAL_BASE: RGBA = [0xff, 0xff, 0xff, 0xff]; // white near centre
-const PETAL_TIP: RGBA = [0xf5, 0xa8, 0xb8, 0xff]; // warm pink tip
+const PETAL_TIP: RGBA = daisy.pink_tips ? [0xf5, 0xa8, 0xb8, 0xff] : [0xff, 0xff, 0xff, 0xff]; // warm pink tip
 const TRANSPARENT: RGBA = [0, 0, 0, 0];
 
-// Petal 0 sits at 12 o'clock and the sequence runs clockwise. With y growing
-// downward (canvas convention), 12 o'clock is angle −π/2.
+// Petal 0 sits at 12 o'clock and the sequence runs clockwise; each petal's
+// angle is its own (the table's, in degrees clockwise from 12 o'clock). With
+// y growing downward (canvas convention), 12 o'clock is angle −π/2.
 function petalAngle(index: number): number {
-  return -Math.PI / 2 + (index * 2 * Math.PI) / PETAL_COUNT;
+  return -Math.PI / 2 + (PETALS[index].angle * Math.PI) / 180;
 }
 
 /**
@@ -165,15 +164,16 @@ function lerpRGBA(a: RGBA, b: RGBA, t: number): RGBA {
   ];
 }
 
-// Half-width of the petal strip at `t` (0 = disc edge, 1 = tip) as a share of
-// the full half-width: PETAL_PROFILE interpolated; the hidden base under the
-// disc keeps the disc-edge width.
-export function petalWidthAt(t: number): number {
+// Half-width of petal `index` at `t` (0 = disc edge, 1 = tip) as a share of
+// the full half-width: its 21-point profile interpolated; the hidden base
+// under the disc keeps the disc-edge width.
+export function petalWidthAt(index: number, t: number): number {
+  const prof = PETALS[index].profile;
   if (t >= 1) return 0;
-  if (t <= 0) return PETAL_PROFILE[0];
-  const x = t * (PETAL_PROFILE.length - 1);
+  if (t <= 0) return prof[0];
+  const x = t * (prof.length - 1);
   const i = Math.floor(x);
-  return PETAL_PROFILE[i] + (PETAL_PROFILE[i + 1] - PETAL_PROFILE[i]) * (x - i);
+  return prof[i] + (prof[i + 1] - prof[i]) * (x - i);
 }
 
 // Returns the RGBA contribution of a single petal at the given offset from
@@ -186,8 +186,9 @@ function petalColorAt(g: Geometry, dx: number, dy: number, idx: number): RGBA | 
   const u = dx * cos + dy * sin;
   const v = -dx * sin + dy * cos;
   if (u < g.petalRBase) return null;
-  const t = (u - g.centerR) / (g.petalRTip - g.centerR);
-  if (Math.abs(v) > g.petalHalfWidth * petalWidthAt(t)) return null;
+  const tip = g.petalRTip * PETALS[idx].length;
+  const t = (u - g.centerR) / (tip - g.centerR);
+  if (Math.abs(v) > g.petalHalfWidth * PETALS[idx].width * petalWidthAt(idx, t)) return null;
   // Pink over the outward half, concentrated at the very tip.
   const pink = Math.max(0, (t - 0.5) / 0.5) ** 2;
   return lerpRGBA(PETAL_BASE, PETAL_TIP, pink);

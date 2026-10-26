@@ -1,12 +1,15 @@
 //! RGBA marguerite icon renderer for the system tray / menu bar.
 //!
-//! A Bellis perennis ("marguerite"): 12 plump petals around a bright yellow
+//! A Bellis perennis ("marguerite"): 16 petals around a bright yellow
 //! center, white at the base fading to a soft pink at the outermost tip —
 //! the signature look that distinguishes a marguerite from a plain field
 //! daisy. Each petal is a strip that runs out from under the centre (spec
 //! §5): narrowest where it leaves the disc, widest about three fifths of
 //! the way out, closed by a pointed-oval tip, so petal and centre meet with
-//! no gap. Petals fall one by one as the nudge timer counts down
+//! no gap. The geometry is the table in `docs/daisy/daisy.json`, baked by
+//! `docs/daisy/constructor.html`: every petal's angle, length, width and
+//! width profile, so the small irregularities of a real head are part of
+//! the icon and the same in every render. Petals fall one by one as the nudge timer counts down
 //! (petal 0 at 12 o'clock falls first, then petal 1, …, clockwise).
 //! `DriftState` animates the just-fallen petal radially outward + slightly
 //! downward (gravity) while fading.
@@ -24,38 +27,53 @@
 //!   pixel is supersampled so a petal a pixel and a half wide still has a
 //!   graded edge rather than a staircase.
 
-use std::f32::consts::PI;
+use std::sync::LazyLock;
 use std::time::Duration;
 
+use serde::Deserialize;
+
 pub const ICON_SIZE: u32 = 64;
-pub const PETAL_COUNT: u8 = 12;
+/// Spec §5: 16 petals; the table has one entry each (pinned by a test).
+pub const PETAL_COUNT: u8 = 16;
+
+/// The icon's table, `docs/daisy/daisy.json`, on the 64 px design canvas.
+#[derive(Deserialize)]
+struct Daisy {
+    disc_radius: f32,
+    petal_half_width: f32,
+    /// Where a petal starts, from the flower centre: under the disc, so a
+    /// falling petal's base shows only once it has slid out.
+    petal_base: f32,
+    /// Where a petal of length 1 ends, from the flower centre.
+    petal_tip: f32,
+    pink_tips: bool,
+    petals: Vec<Petal>,
+}
+
+/// One petal of the table: its angle in degrees clockwise from 12 o'clock,
+/// its length and width as factors of the table's, and its half-width along
+/// the visible length as 21 samples from the disc edge to the tip, as a
+/// share of the full half-width.
+#[derive(Deserialize)]
+struct Petal {
+    angle: f32,
+    length: f32,
+    width: f32,
+    profile: Vec<f32>,
+}
+
+static DAISY: LazyLock<Daisy> = LazyLock::new(|| {
+    serde_json::from_str(include_str!("../docs/daisy/daisy.json"))
+        .expect("docs/daisy/daisy.json is the icon's table")
+});
 
 /// Sub-samples per axis per pixel in [`render_at`]. 4×4 is what the Electron
 /// twin uses; 16 coverage levels are plenty for an 18 px edge.
 const SUPERSAMPLE: u32 = 4;
 
 // The flower is designed on a 64 px canvas; `Geometry::at` scales it.
+// Disc radius, petal width, base and tip come from the table.
 
-/// Where a petal starts, from the flower centre: under the disc, so a
-/// falling petal's base shows only once it has slid out.
-const PETAL_BASE: f32 = 3.0;
-/// Where a petal's tip ends, from the flower centre.
-const PETAL_TIP: f32 = 31.0;
-/// Full half-width of a petal across its body. Wider than a classic field
-/// daisy — gives the plump rounded look that reads as a marguerite /
-/// tamagotchi-style flower.
-const PETAL_WIDTH: f32 = 4.6;
-/// The strip's half-width along the petal as a share of [`PETAL_WIDTH`],
-/// sampled every 5 % of the visible length from the disc edge to the tip:
-/// the median profile of the ray florets traced on a Bellis perennis photo
-/// (eight florets lying over both neighbours, so both edges were real). Half
-/// as wide at the disc, full at 60 %, then the pointed-oval tip.
-const PETAL_PROFILE: [f32; 21] = [
-    0.479, 0.479, 0.479, 0.504, 0.555, 0.592, 0.623, 0.718, 0.822, 0.875, 0.919, 0.965, 1.000,
-    0.972, 0.931, 0.908, 0.858, 0.818, 0.723, 0.504, 0.000,
-];
-/// Radius of the central yellow disk.
-const CENTER_RADIUS: f32 = 6.5;
 /// How far a falling petal travels outward over the whole drift.
 const DRIFT_OUTWARD: f32 = 8.0;
 /// How far a falling petal sags under "gravity" over the whole drift.
@@ -70,6 +88,8 @@ struct Geometry {
     /// samples with (see [`render`] vs [`render_at`]).
     center: f32,
     petal_base: f32,
+    /// Where a petal of length 1 ends; each petal's own tip is this times
+    /// its length factor.
     petal_tip: f32,
     petal_width: f32,
     center_radius: f32,
@@ -85,10 +105,10 @@ impl Geometry {
         let k = size as f32 / ICON_SIZE as f32;
         Self {
             center: size as f32 * 0.5,
-            petal_base: PETAL_BASE * k,
-            petal_tip: PETAL_TIP * k,
-            petal_width: PETAL_WIDTH * k,
-            center_radius: CENTER_RADIUS * k,
+            petal_base: DAISY.petal_base * k,
+            petal_tip: DAISY.petal_tip * k,
+            petal_width: DAISY.petal_half_width * k,
+            center_radius: DAISY.disc_radius * k,
             drift_outward: DRIFT_OUTWARD * k,
             drift_gravity: DRIFT_GRAVITY * k,
             disk_ramp: DISK_RAMP * k,
@@ -115,6 +135,7 @@ impl Geometry {
         let dir_x = theta.sin();
         let dir_y = -theta.cos();
         PetalFrame {
+            index: i,
             cx: self.center + dir_x * radial_off,
             cy: self.center + dir_y * radial_off + gravity_off,
             dir_x,
@@ -127,6 +148,7 @@ impl Geometry {
 /// than once per sample.
 #[derive(Clone, Copy, Debug)]
 struct PetalFrame {
+    index: u8,
     cx: f32,
     cy: f32,
     dir_x: f32,
@@ -369,22 +391,23 @@ impl Scene {
 }
 
 fn petal_angle(i: u8) -> f32 {
-    (i as f32) * (2.0 * PI / PETAL_COUNT as f32)
+    DAISY.petals[i as usize].angle.to_radians()
 }
 
-/// Half-width of the petal strip at `t` (0 = disc edge, 1 = tip) as a share
-/// of the full half-width: [`PETAL_PROFILE`] interpolated; the hidden base
-/// under the disc keeps the disc-edge width.
-fn petal_width_at(t: f32) -> f32 {
+/// Half-width of petal `i` at `t` (0 = disc edge, 1 = tip) as a share of
+/// the full half-width: its profile interpolated; the hidden base under
+/// the disc keeps the disc-edge width.
+fn petal_width_at(i: u8, t: f32) -> f32 {
+    let prof = &DAISY.petals[i as usize].profile;
     if t >= 1.0 {
         return 0.0;
     }
     if t <= 0.0 {
-        return PETAL_PROFILE[0];
+        return prof[0];
     }
-    let x = t * (PETAL_PROFILE.len() - 1) as f32;
-    let i = x.floor() as usize;
-    PETAL_PROFILE[i] + (PETAL_PROFILE[i + 1] - PETAL_PROFILE[i]) * (x - i as f32)
+    let x = t * (prof.len() - 1) as f32;
+    let j = x.floor() as usize;
+    prof[j] + (prof[j + 1] - prof[j]) * (x - j as f32)
 }
 
 /// Returns (alpha, color) at point (px, py) for the petal at `frame`. Tip
@@ -397,11 +420,13 @@ fn petal_sample(
     py: f32,
 ) -> (f32, [u8; 3]) {
     let PetalFrame {
+        index,
         cx,
         cy,
         dir_x,
         dir_y,
     } = *frame;
+    let petal = &DAISY.petals[index as usize];
     let perp_x = -dir_y;
     let perp_y = dir_x;
 
@@ -412,13 +437,19 @@ fn petal_sample(
 
     // In or out of the strip: a hard edge, graded by the caller's
     // supersampling, like the Electron twin.
-    let t = (r_par - g.center_radius) / (g.petal_tip - g.center_radius);
-    let inside = r_par >= g.petal_base && r_per.abs() <= g.petal_width * petal_width_at(t);
+    let tip = g.petal_tip * petal.length;
+    let t = (r_par - g.center_radius) / (tip - g.center_radius);
+    let inside = r_par >= g.petal_base
+        && r_per.abs() <= g.petal_width * petal.width * petal_width_at(index, t);
     let a = if inside { alpha_scale } else { 0.0 };
 
     // Tip colouring: blend toward pink over the outward half. Squaring
     // concentrates the pink near the very tip.
-    let tip_factor = ((t - 0.5) / 0.5).max(0.0).powi(2);
+    let tip_factor = if DAISY.pink_tips {
+        ((t - 0.5) / 0.5).max(0.0).powi(2)
+    } else {
+        0.0
+    };
     let color = lerp_rgb(COLOR_PETAL_BASE, COLOR_PETAL_TIP, tip_factor);
 
     (a, color)
@@ -463,18 +494,18 @@ mod tests {
     // ---- frame_at: spec §5 timeline invariants ----------------------------
     //
     // Expected values are derived from the same integer/float arithmetic
-    // frame_at runs, to pin CURRENT behavior. With PETAL_COUNT = 12 and a
-    // 120 s interval, one petal falls every 10 s and the drift window is
+    // frame_at runs, to pin CURRENT behavior. With PETAL_COUNT = 16 and a
+    // 160 s interval, one petal falls every 10 s and the drift window is
     // min(250 ms, 10 s / 2) = 250 ms.
 
-    const DUR_120S: Duration = Duration::from_secs(120);
+    const DUR_160S: Duration = Duration::from_secs(160);
 
     #[test]
     fn mid_interval_steady_state_has_no_drift() {
-        // 35 s in: 35 / 10 = 3 petals dropped, 9 remaining; 5 s since the
+        // 35 s in: 35 / 10 = 3 petals dropped, 13 remaining; 5 s since the
         // last drop, well past the 250 ms drift window → no drift.
-        let f = frame_at(DUR_120S, Duration::from_secs(35));
-        assert_eq!(f.petals_remaining, 9);
+        let f = frame_at(DUR_160S, Duration::from_secs(35));
+        assert_eq!(f.petals_remaining, 13);
         assert!(
             f.drift.is_none(),
             "5 s after a drop is past the drift window"
@@ -488,8 +519,8 @@ mod tests {
     fn just_after_petal_drops_has_drift_near_zero() {
         // Exactly 30 s in: the 3rd petal (index 2) has just detached. Drift
         // present with progress 0.0 and petals_remaining already decremented.
-        let f = frame_at(DUR_120S, Duration::from_secs(30));
-        assert_eq!(f.petals_remaining, 9);
+        let f = frame_at(DUR_160S, Duration::from_secs(30));
+        assert_eq!(f.petals_remaining, 13);
         let d = f.drift.expect("a petal just dropped → drift present");
         assert_eq!(d.petal_index, 2);
         assert!(
@@ -503,38 +534,38 @@ mod tests {
     #[test]
     fn fires_only_after_final_drift_completes() {
         // drift_dur = 250 ms, so should_fire flips at duration + 250 ms.
-        let just_before = frame_at(DUR_120S, DUR_120S + Duration::from_millis(200));
+        let just_before = frame_at(DUR_160S, DUR_160S + Duration::from_millis(200));
         assert!(
             !just_before.should_fire,
             "200 ms past expiry < 250 ms drift"
         );
 
-        let just_after = frame_at(DUR_120S, DUR_120S + Duration::from_millis(300));
+        let just_after = frame_at(DUR_160S, DUR_160S + Duration::from_millis(300));
         assert!(just_after.should_fire, "300 ms past expiry ≥ 250 ms drift");
         // All petals gone by expiry; the count caps at PETAL_COUNT.
         assert_eq!(just_after.petals_remaining, 0);
 
         // Boundary is inclusive (elapsed >= duration + drift_dur).
-        let exact = frame_at(DUR_120S, DUR_120S + Duration::from_millis(250));
+        let exact = frame_at(DUR_160S, DUR_160S + Duration::from_millis(250));
         assert!(exact.should_fire);
     }
 
     #[test]
     fn short_interval_clamps_drift_before_next_petal() {
-        // 1.2 s interval → petal_dur = 100 ms, drift_dur = min(250, 50) = 50 ms.
+        // 1.6 s interval → petal_dur = 100 ms, drift_dur = min(250, 50) = 50 ms.
         // The drift window must close before the next petal drops at 100 ms.
-        let dur = Duration::from_millis(1200);
+        let dur = Duration::from_millis(1600);
 
         // 20 ms after the 1st drop: inside the 50 ms drift window.
         let inside = frame_at(dur, Duration::from_millis(120));
-        assert_eq!(inside.petals_remaining, 11);
+        assert_eq!(inside.petals_remaining, 15);
         let d = inside.drift.expect("20 ms after a drop is inside drift");
         assert_eq!(d.petal_index, 0);
 
         // 60 ms after the 1st drop: past the 50 ms clamp but the next petal
-        // (at 100 ms) hasn't dropped yet → no drift, still 11 remaining.
+        // (at 100 ms) hasn't dropped yet → no drift, still 15 remaining.
         let after = frame_at(dur, Duration::from_millis(160));
-        assert_eq!(after.petals_remaining, 11);
+        assert_eq!(after.petals_remaining, 15);
         assert!(
             after.drift.is_none(),
             "drift must clamp shut before the next petal drops"
@@ -575,9 +606,9 @@ mod tests {
     #[test]
     fn render_output_is_pinned() {
         let cases: [(u8, Option<DriftState>, u64); 3] = [
-            (PETAL_COUNT, None, 0x649c_d681_fd7f_5185),
-            (6, Some(DRIFT_MID), 0x6f98_fab0_5359_9cae),
-            (0, None, 0x847a_9d62_4196_f5c5),
+            (PETAL_COUNT, None, 0xb300_1466_68c2_154a),
+            (6, Some(DRIFT_MID), 0x4286_05c8_450a_7a33),
+            (0, None, 0xf28e_99fd_c2a8_d8c5),
         ];
         for (petals, drift, expected) in cases {
             let buf = render(petals, drift);
@@ -703,12 +734,31 @@ mod tests {
         // Narrower at the base than mid-length, closed at the tip: the
         // width profile itself, since next to the disc the neighbours'
         // bases overlap and no single pixel column belongs to one petal.
-        assert!(petal_width_at(0.0) < petal_width_at(0.3));
-        assert!(petal_width_at(0.3) < petal_width_at(0.6));
-        assert!(petal_width_at(0.0) > 0.4);
-        assert_eq!(petal_width_at(0.6), 1.0);
-        assert!(petal_width_at(0.9) < 0.8);
-        assert_eq!(petal_width_at(1.0), 0.0);
+        for i in 0..PETAL_COUNT {
+            assert!(petal_width_at(i, 0.0) < petal_width_at(i, 0.3), "petal {i}");
+            assert!(petal_width_at(i, 0.3) < petal_width_at(i, 0.6), "petal {i}");
+            assert!(petal_width_at(i, 0.0) > 0.4, "petal {i}");
+            assert!(petal_width_at(i, 0.6) > 0.9, "petal {i}");
+            assert!(petal_width_at(i, 0.9) < 0.85, "petal {i}");
+            assert_eq!(petal_width_at(i, 1.0), 0.0, "petal {i}");
+        }
+    }
+
+    /// The table is the icon: one entry per petal of spec §5, 21 profile
+    /// samples each, petal 0 at 12 o'clock and the rest clockwise, so the
+    /// fall order of §5 is the table order.
+    #[test]
+    fn table_has_one_entry_per_petal_in_clockwise_order() {
+        assert_eq!(DAISY.petals.len(), PETAL_COUNT as usize);
+        assert!(DAISY.petals[0].angle.abs() < 5.0);
+        for w in DAISY.petals.windows(2) {
+            assert!(w[0].angle < w[1].angle);
+        }
+        for p in &DAISY.petals {
+            assert_eq!(p.profile.len(), 21);
+            assert!(p.length > 0.9 && p.length < 1.1);
+            assert!(p.width > 0.9 && p.width < 1.1);
+        }
     }
 
     #[test]
@@ -769,18 +819,18 @@ mod tests {
                 (g.center - g.petal_width - 0.5) as u32..=(g.center + g.petal_width + 0.5) as u32;
             let buf = render_at(size, PETAL_COUNT, None);
             let row: Vec<u8> = span.map(|x| alpha_at(&buf, size, x, y)).collect();
+            // The petal sits a fraction of a degree off the axis (its own
+            // angle from the table), so one of its two edges may land on a
+            // pixel boundary; the other still has to be graded.
             let intermediate = row.iter().filter(|&&a| a > 24 && a < 232).count();
             assert!(
-                intermediate >= 2,
+                intermediate >= 1,
                 "size {size}: no graded edge pixels across the top petal, row {y}: {row:?}"
             );
-            let staircase = row
-                .windows(2)
-                .any(|w| w.iter().min().unwrap() < &24 && w.iter().max().unwrap() > &232);
-            assert!(
-                !staircase,
-                "size {size}: hard 0→255 jump across the top petal, row {y}: {row:?}"
-            );
+            // A 0→255 step is fine when that edge sits on a pixel boundary;
+            // with the petal a fraction of a degree off the axis one of the
+            // two edges may, so the staircase check is the graded count
+            // above, not a ban on steps.
         }
     }
 

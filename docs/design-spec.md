@@ -163,12 +163,21 @@ app is running and "ripens" instead of a numeric countdown.
 
 ### Icon as an object
 
-- Daisy (Bellis perennis): 12 plump petals around a bright yellow center.
-  Each petal is a strip that runs out from under the centre: narrowest where
-  it leaves the disc, widest about three fifths of the way out, closed by a
-  pointed-oval tip. Petal and centre meet with no gap between them. The white petal base softens
-  into a warm pink at the very tips — the daisy's signature, distinguishing
-  it from a generic field chamomile.
+- Daisy (Bellis perennis): 16 petals around a bright yellow center. Each
+  petal is a strip that runs out from under the centre: narrowest where it
+  leaves the disc, widest about three fifths of the way out, closed by a
+  pointed-oval tip. Petal and centre meet with no gap between them. The white
+  petal base softens into a warm pink at the very tips — the daisy's
+  signature, distinguishing it from a generic field chamomile.
+- The geometry is the table in `docs/daisy/daisy.json`: the disc radius, the
+  petal width and reach on a 64-unit canvas, and for every petal its angle,
+  length, width and width profile, so the small irregularities of a real
+  head are part of the icon and the same in every render. The table is
+  baked by `docs/daisy/constructor.html` from a petal profile traced on
+  Bellis perennis photographs plus a seeded, dialled-down spread; changing
+  the icon means baking a new table there, not editing a renderer. Both
+  implementations read the table and draw it at the host's pixel size with
+  supersampled edges; no bitmap or vector file is shipped.
 - Just the daisy and its center. No frame, background, shadow, digits, or
   any text inside the icon.
 - The palette is the only place in the app with an accent color (pink tip +
@@ -183,9 +192,9 @@ app is running and "ripens" instead of a numeric countdown.
 ### Link to the timer
 
 - The flower "counts down" the current interval, dropping petal by petal.
-- At the moment the timer is rearmed, all 12 petals are present.
-- Over the interval exactly 12 petals fall, evenly spaced (one per
-  `interval / 12`).
+- At the moment the timer is rearmed, all 16 petals are present.
+- Over the interval exactly 16 petals fall, evenly spaced (one per
+  `interval / 16`).
 - By the time the timer expires only the center remains on the stem.
 - Order: the top petal (12 o'clock) falls first, then clockwise. The order
   is deterministic, not random — it is part of the character's "life" and

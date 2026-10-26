@@ -1095,8 +1095,9 @@ mod tests {
 
     #[test]
     fn wake_animates_while_a_petal_is_falling() {
-        // 100ms into a petal drop, inside the 250ms drift window.
-        let remaining = Duration::from_millis(549_900);
+        // 100ms into a petal drop (the second, at 75 s of a 600 s interval
+        // with 16 petals), inside the 250ms drift window.
+        let remaining = Duration::from_millis(524_900);
         assert!(
             frame_with(remaining).drift.is_some(),
             "this is a drift frame"
