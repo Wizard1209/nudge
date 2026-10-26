@@ -25,18 +25,20 @@ const SUPERSAMPLE = 4;
 // Geometry on the reference canvas, in pixels.
 const REF_CENTER_R = 7; // radius of the yellow disc
 // Spec §5: "Each petal is a strip that runs out from under the centre:
-// narrowest where it leaves the disc, widest at mid-length, closed by a
-// rounded tip. Petal and centre meet with no gap between them." The strip
-// starts under the disc, so a falling petal's base shows only once it has
-// slid out; the proportions (base 0.7 of the full width, full width from
-// 35 % of the length, the tip's cap over the last 40 %) are from a traced
-// Bellis perennis, where the ray floret narrows into the disc.
+// narrowest where it leaves the disc, widest about three fifths of the way
+// out, closed by a pointed-oval tip. Petal and centre meet with no gap
+// between them." The strip starts under the disc, so a falling petal's base
+// shows only once it has slid out. The width along the petal is the median
+// profile of the ray florets traced on a Bellis perennis photo (eight
+// florets lying over both neighbours, so both edges were real), sampled
+// every 5 % of the visible length from the disc edge to the tip, as a share
+// of the full width: half as wide at the disc, full at 60 %, then the tip.
 const REF_PETAL_R_BASE = 3; // petal starts under the centre
 const REF_PETAL_R_TIP = 28; // petal tip stops shy of the canvas edge
 const REF_PETAL_HALF_WIDTH = 4.5;
-const PETAL_BASE_WIDTH = 0.7; // half-width at the base, as a share of the full one
-const PETAL_FULL_FROM = 0.35; // share of the length at which the strip reaches full width
-const PETAL_TIP_SHARE = 0.4; // share of the length taken by the tip's rounded cap
+const PETAL_PROFILE = [
+  0.479, 0.479, 0.479, 0.504, 0.555, 0.592, 0.623, 0.718, 0.822, 0.875, 0.919, 0.965, 1.000, 0.972, 0.931, 0.908, 0.858, 0.818, 0.723, 0.504, 0.000
+]; // share of the length taken by the tip's rounded cap
 // Spec §5 fall: petal slides outward from the centre, droops slightly under
 // "gravity", and fades to transparent over the fade window. These deltas
 // stay small — even 4 px of outward motion on the reference canvas is
@@ -163,19 +165,15 @@ function lerpRGBA(a: RGBA, b: RGBA, t: number): RGBA {
   ];
 }
 
-// Half-width of the petal strip at `t` (0 = base, 1 = tip), as a share of the
-// full half-width: rising from the base share to 1 by PETAL_FULL_FROM, flat
-// through the body, then an elliptical cap over the last PETAL_TIP_SHARE.
+// Half-width of the petal strip at `t` (0 = disc edge, 1 = tip) as a share of
+// the full half-width: PETAL_PROFILE interpolated; the hidden base under the
+// disc keeps the disc-edge width.
 export function petalWidthAt(t: number): number {
-  if (t < 0 || t >= 1) return 0;
-  if (t < PETAL_FULL_FROM) {
-    const u = t / PETAL_FULL_FROM;
-    return PETAL_BASE_WIDTH + (1 - PETAL_BASE_WIDTH) * Math.sin((u * Math.PI) / 2);
-  }
-  const capFrom = 1 - PETAL_TIP_SHARE;
-  if (t <= capFrom) return 1;
-  const u = (t - capFrom) / PETAL_TIP_SHARE;
-  return Math.sqrt(Math.max(0, 1 - u * u));
+  if (t >= 1) return 0;
+  if (t <= 0) return PETAL_PROFILE[0];
+  const x = t * (PETAL_PROFILE.length - 1);
+  const i = Math.floor(x);
+  return PETAL_PROFILE[i] + (PETAL_PROFILE[i + 1] - PETAL_PROFILE[i]) * (x - i);
 }
 
 // Returns the RGBA contribution of a single petal at the given offset from
@@ -187,7 +185,8 @@ function petalColorAt(g: Geometry, dx: number, dy: number, idx: number): RGBA | 
   const sin = Math.sin(theta);
   const u = dx * cos + dy * sin;
   const v = -dx * sin + dy * cos;
-  const t = (u - g.petalRBase) / (g.petalRTip - g.petalRBase);
+  if (u < g.petalRBase) return null;
+  const t = (u - g.centerR) / (g.petalRTip - g.centerR);
   if (Math.abs(v) > g.petalHalfWidth * petalWidthAt(t)) return null;
   // Pink over the outward half, concentrated at the very tip.
   const pink = Math.max(0, (t - 0.5) / 0.5) ** 2;

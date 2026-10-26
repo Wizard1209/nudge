@@ -165,8 +165,8 @@ app is running and "ripens" instead of a numeric countdown.
 
 - Daisy (Bellis perennis): 12 plump petals around a bright yellow center.
   Each petal is a strip that runs out from under the centre: narrowest where
-  it leaves the disc, widest at mid-length, closed by a rounded tip. Petal
-  and centre meet with no gap between them. The white petal base softens
+  it leaves the disc, widest about three fifths of the way out, closed by a
+  pointed-oval tip. Petal and centre meet with no gap between them. The white petal base softens
   into a warm pink at the very tips — the daisy's signature, distinguishing
   it from a generic field chamomile.
 - Just the daisy and its center. No frame, background, shadow, digits, or

@@ -83,9 +83,10 @@ describe("trayIcon / buildTrayIcon", () => {
   });
 
   // Spec §5: "Each petal is a strip that runs out from under the centre:
-  // narrowest where it leaves the disc, widest at mid-length, closed by a
-  // rounded tip. Petal and centre meet with no gap between them."
-  it("the top petal meets the centre with no gap and is narrower there than mid-length", () => {
+  // narrowest where it leaves the disc, widest about three fifths of the way
+  // out, closed by a pointed-oval tip. Petal and centre meet with no gap
+  // between them."
+  it("the top petal meets the centre with no gap and is narrowest there", () => {
     const size = 64;
     const { pixels } = decodeRawRGBA(buildTrayIcon(0, size));
     const px = (x: number, y: number) => {
@@ -98,16 +99,18 @@ describe("trayIcon / buildTrayIcon", () => {
     const discEdge = c - 7; // REF_CENTER_R on the 64 px canvas
     for (let y = discEdge - 1; y > 8; y--) {
       const [r, , b, a] = px(c, y);
-      expect(a, `gap at (${c},${y})`).toBeGreaterThan(200);
+      expect(a, `gap at (${c},${y})`).toBeGreaterThan(128);
       expect(r, `not petal at (${c},${y})`).toBeGreaterThan(200);
       expect(b).toBeGreaterThan(100);
     }
     // Narrower at the base than mid-length, closed at the tip: the width
     // profile itself, since next to the disc the neighbours' bases overlap
     // and no single pixel column belongs to one petal.
-    expect(petalWidthAt(0)).toBeLessThan(petalWidthAt(0.5));
-    expect(petalWidthAt(0)).toBeGreaterThan(0.5);
-    expect(petalWidthAt(0.5)).toBe(1);
+    expect(petalWidthAt(0)).toBeLessThan(petalWidthAt(0.3));
+    expect(petalWidthAt(0.3)).toBeLessThan(petalWidthAt(0.6));
+    expect(petalWidthAt(0)).toBeGreaterThan(0.4);
+    expect(petalWidthAt(0.6)).toBe(1);
+    expect(petalWidthAt(0.9)).toBeLessThan(0.8);
     expect(petalWidthAt(1)).toBe(0);
   });
 
