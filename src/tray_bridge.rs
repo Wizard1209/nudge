@@ -589,15 +589,27 @@ fn apply_config_reload(
     *previous_cfg = new_cfg;
 }
 
-/// One frame of the daisy as the notification-area icon: a 64 px bitmap,
-/// the largest size the shell normally asks for, which it scales down.
+/// One frame of the daisy as the notification-area icon, drawn at the size
+/// the shell shows it (spec §5) so the shell does not resample it.
 fn tray_icon_frame(
     petals_remaining: u8,
     drift: Option<daisy::DriftState>,
 ) -> Result<tray_icon::Icon, tray_icon::BadIcon> {
-    const SIZE: u32 = 64;
-    let rgba = daisy::render(SIZE, petals_remaining, drift);
-    tray_icon::Icon::from_rgba(rgba.to_vec(), SIZE, SIZE)
+    let size = tray_icon_pixels();
+    let rgba = daisy::render(size, petals_remaining, drift);
+    tray_icon::Icon::from_rgba(rgba.to_vec(), size, size)
+}
+
+/// The shell's small-icon size at the system DPI — 16 px at 100 %, 24 at
+/// 150 %, 32 at 200 % — which is what the notification area draws. Asked on
+/// every redraw: it is two cheap calls, and the answer moves when the
+/// process becomes DPI-aware, which winit does when the event loop starts.
+fn tray_icon_pixels() -> u32 {
+    use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetSystemMetricsForDpi};
+    use windows::Win32::UI::WindowsAndMessaging::SM_CXSMICON;
+    // SAFETY: plain metric queries, no pointers.
+    let px = unsafe { GetSystemMetricsForDpi(SM_CXSMICON, GetDpiForSystem()) };
+    if px > 0 { px as u32 } else { 16 }
 }
 
 fn wake_eframe() {
