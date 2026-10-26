@@ -89,6 +89,10 @@ let sprite: SpriteView | null = null;
 let pendingSprite: SpriteConfig | null = null;
 let tray: Tray | null = null;
 let timerId: ReturnType<typeof setTimeout> | null = null;
+// A deadline that came due behind a manually-opened popup. Spec §4: the timer
+// parks for the duration of the show, and the nudge it owes fires when the
+// popup closes without restarting it.
+let deadlineOwed = false;
 let timerStartMs = 0;
 let timerIntervalMs = 0;
 let lastTriggerSource: TriggerSource = INITIAL_TRIGGER_SOURCE;
@@ -187,13 +191,26 @@ function startConfigWatcher(): void {
 
 function startTimer(minutes: number) {
   if (timerId) clearTimeout(timerId);
+  deadlineOwed = false;
   timerIntervalMs = minutes * 60_000;
   timerStartMs = Date.now();
   // The 12th petal detaches at t = interval and finishes its fall at
   // t = interval + PETAL_FADE_MS; the popup waits for the daisy to be
   // fully empty before showing up.
-  timerId = setTimeout(() => showNudge("timer"), timerIntervalMs + PETAL_FADE_MS);
+  timerId = setTimeout(deadlineDue, timerIntervalMs + PETAL_FADE_MS);
   updateTray();
+}
+
+// The deadline. Behind a popup the user opened it is owed rather than shown:
+// a Leave from that popup delivers it (spec §4, "Deadline cannot arrive while
+// the popup is visible").
+function deadlineDue() {
+  if (win?.isVisible()) {
+    deadlineOwed = true;
+    return;
+  }
+  deadlineOwed = false;
+  showNudge("timer");
 }
 
 function showNudge(source: TriggerSource) {
@@ -201,7 +218,7 @@ function showNudge(source: TriggerSource) {
   // A trigger while the popup is up changes nothing — the hotkey, the tray
   // and its menu fire whether or not it is showing, and a re-placement here
   // would read the display afresh with the popup itself in front. The timer
-  // never gets here: it is parked while the popup is up (spec §4).
+  // does not come here while the popup is up: `deadlineDue` parks it.
   if (win.isVisible()) return;
   lastTriggerSource = source;
   positionCard();
@@ -683,6 +700,9 @@ function dismissOrSwitch(action: CloseAction, data: unknown) {
   hideNudge();
   if (restartsTimer(action, lastTriggerSource)) {
     startTimer(parseMinutes((data as { nextMinutes?: unknown } | undefined)?.nextMinutes));
+  } else if (deadlineOwed) {
+    // Spec §4: a Leave from Asking·Manual can be followed at once by Deadline.
+    deadlineDue();
   }
 }
 
