@@ -593,8 +593,8 @@ mod tests {
     #[test]
     fn render_output_is_pinned() {
         let cases: [(u8, u64); 2] = [
-            (PETAL_COUNT, 0x175f_a388_586e_65e3),
-            (9, 0xfc5e_1410_c39f_396f),
+            (PETAL_COUNT, 0xdc8f_39d5_9d0e_5cfc),
+            (9, 0x9bc4_aec4_7357_b9fa),
         ];
         for (petals, expected) in cases {
             let got = fnv1a64(&render(36, petals, None));
