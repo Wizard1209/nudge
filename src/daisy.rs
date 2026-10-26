@@ -1,9 +1,11 @@
 //! RGBA marguerite icon renderer for the system tray / menu bar.
 //!
-//! A Bellis perennis ("marguerite"): 12 plump elliptical petals around a
-//! bright yellow center, white at the base fading to a soft pink at the
-//! outermost tip — the signature look that distinguishes a marguerite from
-//! a plain field daisy. Petals fall one by one as the nudge timer counts down
+//! A Bellis perennis ("marguerite"): 12 plump petals around a bright yellow
+//! center, white at the base fading to a soft pink at the outermost tip —
+//! the signature look that distinguishes a marguerite from a plain field
+//! daisy. Each petal is a strip that runs out from under the centre (spec
+//! §5): narrowest where it leaves the disc, full width through the body,
+//! closed by a rounded tip, so petal and centre meet with no gap. Petals fall one by one as the nudge timer counts down
 //! (petal 0 at 12 o'clock falls first, then petal 1, …, clockwise).
 //! `DriftState` animates the just-fallen petal radially outward + slightly
 //! downward (gravity) while fading.
@@ -33,14 +35,22 @@ const SUPERSAMPLE: u32 = 4;
 
 // The flower is designed on a 64 px canvas; `Geometry::at` scales it.
 
-/// Distance from flower center to the center of each petal ellipse.
-const PETAL_ORBIT: f32 = 20.0;
-/// Half-length of a petal along its long (radial) axis.
-const PETAL_LEN: f32 = 11.0;
-/// Half-width of a petal along its short (tangential) axis. Wider than a
-/// classic field daisy — gives the plump rounded look that reads as a
-/// marguerite / tamagotchi-style flower.
+/// Where a petal starts, from the flower centre: under the disc, so a
+/// falling petal's base shows only once it has slid out.
+const PETAL_BASE: f32 = 3.0;
+/// Where a petal's tip ends, from the flower centre.
+const PETAL_TIP: f32 = 31.0;
+/// Full half-width of a petal across its body. Wider than a classic field
+/// daisy — gives the plump rounded look that reads as a marguerite /
+/// tamagotchi-style flower.
 const PETAL_WIDTH: f32 = 4.6;
+/// The strip's half-width at its base, as a share of [`PETAL_WIDTH`]; the
+/// share of the length at which it reaches full width; and the share of the
+/// length taken by the tip's rounded cap. The proportions are from a traced
+/// Bellis perennis, where the ray floret narrows into the disc.
+const PETAL_BASE_WIDTH: f32 = 0.7;
+const PETAL_FULL_FROM: f32 = 0.35;
+const PETAL_TIP_SHARE: f32 = 0.4;
 /// Radius of the central yellow disk.
 const CENTER_RADIUS: f32 = 6.5;
 /// How far a falling petal travels outward over the whole drift.
@@ -56,8 +66,8 @@ struct Geometry {
     /// Flower centre, in whichever pixel coordinate convention the caller
     /// samples with (see [`render`] vs [`render_at`]).
     center: f32,
-    orbit: f32,
-    petal_len: f32,
+    petal_base: f32,
+    petal_tip: f32,
     petal_width: f32,
     center_radius: f32,
     drift_outward: f32,
@@ -72,8 +82,8 @@ impl Geometry {
         let k = size as f32 / ICON_SIZE as f32;
         Self {
             center: size as f32 * 0.5,
-            orbit: PETAL_ORBIT * k,
-            petal_len: PETAL_LEN * k,
+            petal_base: PETAL_BASE * k,
+            petal_tip: PETAL_TIP * k,
             petal_width: PETAL_WIDTH * k,
             center_radius: CENTER_RADIUS * k,
             drift_outward: DRIFT_OUTWARD * k,
@@ -93,22 +103,24 @@ impl Geometry {
         }
     }
 
-    /// Where petal `i` (offset by a drift) sits and how it is oriented.
+    /// Where petal `i` (offset by a drift) is rooted and how it is oriented:
+    /// the frame's origin is the flower centre, moved by the drift, and the
+    /// petal runs out from it along `dir`.
     fn petal_frame(&self, i: u8, radial_off: f32, gravity_off: f32) -> PetalFrame {
         let theta = petal_angle(i);
         // Radial outward direction; y+ is down on screen.
         let dir_x = theta.sin();
         let dir_y = -theta.cos();
         PetalFrame {
-            cx: self.center + dir_x * (self.orbit + radial_off),
-            cy: self.center + dir_y * (self.orbit + radial_off) + gravity_off,
+            cx: self.center + dir_x * radial_off,
+            cy: self.center + dir_y * radial_off + gravity_off,
             dir_x,
             dir_y,
         }
     }
 }
 
-/// One petal's position and radial direction, resolved once per petal rather
+/// One petal's root and radial direction, resolved once per petal rather
 /// than once per sample.
 #[derive(Clone, Copy, Debug)]
 struct PetalFrame {
@@ -357,6 +369,26 @@ fn petal_angle(i: u8) -> f32 {
     (i as f32) * (2.0 * PI / PETAL_COUNT as f32)
 }
 
+/// Half-width of the petal strip at `t` (0 = base, 1 = tip), as a share of
+/// the full half-width: rising from the base share to 1 by
+/// [`PETAL_FULL_FROM`], flat through the body, then an elliptical cap over
+/// the last [`PETAL_TIP_SHARE`].
+fn petal_width_at(t: f32) -> f32 {
+    if !(0.0..1.0).contains(&t) {
+        return 0.0;
+    }
+    if t < PETAL_FULL_FROM {
+        let u = t / PETAL_FULL_FROM;
+        return PETAL_BASE_WIDTH + (1.0 - PETAL_BASE_WIDTH) * (u * PI / 2.0).sin();
+    }
+    let cap_from = 1.0 - PETAL_TIP_SHARE;
+    if t <= cap_from {
+        return 1.0;
+    }
+    let u = (t - cap_from) / PETAL_TIP_SHARE;
+    (1.0 - u * u).max(0.0).sqrt()
+}
+
 /// Returns (alpha, color) at point (px, py) for the petal at `frame`. Tip
 /// colour blends white→pink along the outward half of the petal.
 fn petal_sample(
@@ -380,16 +412,15 @@ fn petal_sample(
     let r_par = vx * dir_x + vy * dir_y;
     let r_per = vx * perp_x + vy * perp_y;
 
-    // Ellipse SDF with a soft falloff at the edge. `inside` is in normalised
-    // ellipse units, so the ramp's pixel width scales with the petal.
-    let n = (r_par / g.petal_len).powi(2) + (r_per / g.petal_width).powi(2);
-    let inside = 1.0 - n;
-    let a = (inside * 4.0 + 0.4).clamp(0.0, 1.0) * alpha_scale;
+    // In or out of the strip: a hard edge, graded by the caller's
+    // supersampling, like the Electron twin.
+    let t = (r_par - g.petal_base) / (g.petal_tip - g.petal_base);
+    let inside = r_per.abs() <= g.petal_width * petal_width_at(t);
+    let a = if inside { alpha_scale } else { 0.0 };
 
-    // Tip colouring: blend toward pink along the outward half. r_par > 0
-    // means "this pixel is on the side of the petal pointing away from the
-    // flower center". Squaring concentrates the pink near the very tip.
-    let tip_factor = (r_par / g.petal_len).max(0.0).powi(2);
+    // Tip colouring: blend toward pink over the outward half. Squaring
+    // concentrates the pink near the very tip.
+    let tip_factor = ((t - 0.5) / 0.5).max(0.0).powi(2);
     let color = lerp_rgb(COLOR_PETAL_BASE, COLOR_PETAL_TIP, tip_factor);
 
     (a, color)
@@ -546,8 +577,8 @@ mod tests {
     #[test]
     fn render_output_is_pinned() {
         let cases: [(u8, Option<DriftState>, u64); 3] = [
-            (PETAL_COUNT, None, 0x64fa_db5f_f031_ae26),
-            (6, Some(DRIFT_MID), 0x51fb_5d5d_0d98_d697),
+            (PETAL_COUNT, None, 0x7ad0_e728_057d_db05),
+            (6, Some(DRIFT_MID), 0x6d33_8cac_0d06_519a),
             (0, None, 0x847a_9d62_4196_f5c5),
         ];
         for (petals, drift, expected) in cases {
@@ -575,7 +606,7 @@ mod tests {
     #[test]
     fn top_petal_tip_is_pink() {
         let buf = render(PETAL_COUNT, None);
-        // Near the outer tip of the top petal (y ≈ 11.5 - PETAL_LEN ≈ 0.5)
+        // Near the outer tip of the top petal (y ≈ 31.5 - PETAL_TIP ≈ 0.5)
         let i = ((3 * ICON_SIZE + (Geometry::windows().center as u32)) * 4) as usize;
         let r = buf[i];
         let g = buf[i + 1];
@@ -640,11 +671,41 @@ mod tests {
     /// The sizes the macOS status item asks for: 18 px at 1x, 36 px at 2x.
     const HOST_SIZES: [u32; 2] = [18, 36];
 
-    /// Pixel on the vertical centreline, through the middle of the top petal
-    /// (petal 0, 12 o'clock) at `size`.
+    /// Pixel on the vertical centreline, through the top petal (petal 0,
+    /// 12 o'clock) at `size`, three quarters of the way out: the body is
+    /// still nearly full width there, and the neighbours' bases, which
+    /// overlap the top petal's own out to r ≈ 18 of 64, are clear of it.
     fn top_petal_pixel(size: u32) -> (u32, u32) {
         let g = Geometry::at(size);
-        (size / 2, (g.center - g.orbit) as u32)
+        (size / 2, (g.center - g.petal_tip * 0.75) as u32)
+    }
+
+    /// Spec §5: "Each petal is a strip that runs out from under the centre:
+    /// narrowest where it leaves the disc, widest at mid-length, closed by a
+    /// rounded tip. Petal and centre meet with no gap between them."
+    #[test]
+    fn top_petal_meets_the_centre_with_no_gap() {
+        for size in HOST_SIZES.into_iter().chain([ICON_SIZE]) {
+            let g = Geometry::at(size);
+            let buf = render_at(size, PETAL_COUNT, None);
+            let x = size / 2;
+            // Every pixel on the top petal's axis from the disc edge out to
+            // the tip's cap is covered by petal: no transparent ring.
+            let first = (g.center - g.center_radius - 1.0) as u32;
+            let last = (g.center - g.petal_tip + g.petal_width) as u32;
+            for y in (last..=first).rev() {
+                let [r, _, b, a] = rgba_at(&buf, size, x, y);
+                assert!(a > 200, "size {size}: gap at ({x},{y}), alpha {a}");
+                assert!(r > 200 && b > 100, "size {size}: not petal at ({x},{y})");
+            }
+        }
+        // Narrower at the base than mid-length, closed at the tip: the
+        // width profile itself, since next to the disc the neighbours'
+        // bases overlap and no single pixel column belongs to one petal.
+        assert!(petal_width_at(0.0) < petal_width_at(0.5));
+        assert!(petal_width_at(0.0) > 0.5);
+        assert_eq!(petal_width_at(0.5), 1.0);
+        assert_eq!(petal_width_at(1.0), 0.0);
     }
 
     #[test]
