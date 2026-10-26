@@ -28,6 +28,8 @@ export async function buildElectronFiles() {
           "node:child_process",
           "node:module",
           "node:zlib",
+          // A native binding: resolved from node_modules at run time.
+          "@resvg/resvg-js",
         ],
       },
       emptyOutDir: false,

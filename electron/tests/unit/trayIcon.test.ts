@@ -2,24 +2,22 @@ import { describe, it, expect } from "vitest";
 
 import {
   buildTrayIcon,
-  petalWidthAt,
-  PETALS,
+  editElements,
   PETAL_COUNT,
   visiblePetals,
   daisyFrame,
   formatTooltip,
 } from "../../src/electron/trayIcon";
 
-// Spec §5: daisy icon — 16 petals around a yellow centre, from the table in
-// docs/daisy/daisy.json. Petals fall one per `interval/16`, top petal (12 o'clock, index 0) first, then clockwise. At
+// Spec §5: daisy icon — 16 petals around a yellow centre, drawn from
+// assets/daisy.svg. Petals fall one per `interval/16`, top petal (12 o'clock, index 0) first, then clockwise. At
 // timer expiry only the centre remains. Tooltip is "~N min" (ceil to whole
 // minutes) and flips to "now" when the timer is at zero.
 
 describe("trayIcon / visiblePetals", () => {
-  it("returns all 16 petals at progress 0, one per table entry", () => {
+  it("returns all 16 petals at progress 0", () => {
     const petals = visiblePetals(0);
     expect(petals).toHaveLength(PETAL_COUNT);
-    expect(PETALS).toHaveLength(PETAL_COUNT);
     expect(petals).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
   });
 
@@ -49,86 +47,96 @@ describe("trayIcon / visiblePetals", () => {
   });
 });
 
+describe("trayIcon / the SVG", () => {
+  it("names the 16 petals and the disc by id", () => {
+    for (let k = 0; k < PETAL_COUNT; k++) expect(SVG).toContain(`id="petal-${k}"`);
+    expect(SVG).toContain('id="disc"');
+    expect(petalAngles()).toHaveLength(PETAL_COUNT);
+  });
+});
+
+describe("trayIcon / editElements", () => {
+  const doc = [
+    "<svg viewBox='0 0 64 64'>",
+    "<!-- <g id=\"a\"> in a comment is not an element -->",
+    "<g id=\"a\" data-note='x > y'><g id=\"inner\"><path/></g><path/></g>",
+    "<g data-id=\"a\"><circle id='b'/></g>",
+    "</svg>",
+  ].join("");
+
+  it("removes the whole element with its subtree, nested groups included", () => {
+    const out = editElements(doc, new Map([["a", null]]));
+    expect(out).not.toContain('id="inner"');
+    expect(out).toContain("<!-- <g id=\"a\">");
+    expect(out).toContain("<g data-id=\"a\"><circle id='b'/></g>");
+  });
+
+  it("removes a self-closing element, single-quoted id", () => {
+    expect(editElements(doc, new Map([["b", null]]))).toContain('<g data-id="a"></g>');
+  });
+
+  it("wraps an element when the edit is a function", () => {
+    const out = editElements(doc, new Map([["inner", (el: string) => `<g opacity="0.5">${el}</g>`]]));
+    expect(out).toContain('<g opacity="0.5"><g id="inner"><path/></g></g><path/>');
+  });
+
+  it("leaves the document alone when no id matches", () => {
+    expect(editElements(doc, new Map([["zzz", null]]))).toBe(doc);
+  });
+});
+
 describe("trayIcon / buildTrayIcon", () => {
-  // The tray icon is a 64x64 RGBA PNG. We verify the shape (PNG magic,
-  // dimensions) and the contract that progress controls petal visibility.
-  // Pixel-perfect rendering is intentionally not asserted — that's a visual
-  // concern best caught by eye, not pixel diffs.
-
-  const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-
-  it("returns a valid PNG buffer", () => {
-    const buf = buildTrayIcon(0);
-    expect(buf.subarray(0, 8).equals(PNG_MAGIC)).toBe(true);
+  it("renders the full daisy at 36 px: opaque body, yellow centre, pink near the top tip", () => {
+    const px = pixels(buildTrayIcon(0, 36), 36);
+    expect(px.count((p) => p[3] > 0)).toBeGreaterThan(36 * 36 * 0.3);
+    const [r, g, b, a] = px.at(18, 18);
+    expect([a, r > 230, g > 170, b < 120]).toEqual([255, true, true, true]);
+    // Near the tip of the top petal (petal-0, about 12 o'clock): the
+    // warmest pixel there is pink, not the white of the petal's body.
+    let pinkest = 0;
+    for (let y = 1; y <= 4; y++)
+      for (let x = 16; x <= 20; x++) {
+        const [pr, pg, , pa] = px.at(x, y);
+        if (pa > 128) pinkest = Math.max(pinkest, pr - pg);
+      }
+    expect(pinkest).toBeGreaterThan(30);
   });
 
-  it("has at least one yellow center pixel at every progress (centre never falls)", () => {
-    for (const p of [0, 0.25, 0.5, 0.75, 1]) {
-      const buf = buildTrayIcon(p);
-      expect(hasYellow(buf), `progress=${p}`).toBe(true);
+  it.each([16, 18, 20, 36])("renders a %i px square", (size) => {
+    const png = buildTrayIcon(0, size);
+    expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([size, size]);
+  });
+
+  // The petals on the flower are exactly the frame's stable ones: each is
+  // found by sampling its own axis, at 3/4 of the tip radius, at the angle
+  // the SVG's transform gives it.
+  it.each(Array.from({ length: PETAL_COUNT + 1 }, (_, k) => k))(
+    "with %i petals fallen, the rest are on the flower and only they",
+    (fallen) => {
+      const stable = Array.from({ length: PETAL_COUNT - fallen }, (_, i) => fallen + i);
+      expect(petalsOnFlower(buildTrayIcon({ stable }, 36), 36)).toEqual(stable);
+    },
+  );
+
+  it("keeps the centre at every progress", () => {
+    for (const p of [0, 0.5, 1]) {
+      const [r, g, b, a] = pixels(buildTrayIcon(p, 36), 36).at(18, 18);
+      expect([a, r > 230, g > 170, b < 120], `progress=${p}`).toEqual([255, true, true, true]);
     }
   });
 
-  it("renders petals at progress 0 and no petals at progress 1", () => {
-    expect(hasWhiteOrPink(buildTrayIcon(0))).toBe(true);
-    expect(hasWhiteOrPink(buildTrayIcon(1))).toBe(false);
+  it("draws the falling petal half faded mid-fall", () => {
+    const size = 36;
+    const falling = buildTrayIcon({ stable: [], falling: { index: 0, phase: 0.5 } }, size);
+    const px = pixels(falling, size);
+    let top = 0;
+    for (let y = 0; y < 9; y++) for (let x = 14; x <= 22; x++) top = Math.max(top, px.at(x, y)[3]);
+    expect(top).toBeGreaterThan(90);
+    expect(top).toBeLessThan(170);
   });
 
-  // The bitmap is rendered at the size a host asks for, so each density gets
-  // its own pixels instead of a resample of one big canvas: 18 and 36 px for
-  // a macOS menu bar icon at 1x and 2x, 16 px for a Windows tray at 100%.
-  it.each([16, 18, 36])("renders the daisy at %i px with centre and petals", (px) => {
-    const { width, height } = decodeRawRGBA(buildTrayIcon(0, px));
-    expect([width, height]).toEqual([px, px]);
-    expect(hasYellow(buildTrayIcon(0, px))).toBe(true);
-    expect(hasWhiteOrPink(buildTrayIcon(0, px))).toBe(true);
-    expect(hasWhiteOrPink(buildTrayIcon(1, px))).toBe(false);
-  });
-
-  // Spec §5: "Each petal is a strip that runs out from under the centre:
-  // narrowest where it leaves the disc, widest about three fifths of the way
-  // out, closed by a pointed-oval tip. Petal and centre meet with no gap
-  // between them."
-  it("the top petal meets the centre with no gap and is narrowest there", () => {
-    const size = 64;
-    const { pixels } = decodeRawRGBA(buildTrayIcon(0, size));
-    const px = (x: number, y: number) => {
-      const i = (y * size + x) * 4;
-      return [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]];
-    };
-    const c = size / 2;
-    // On the top petal's axis (x = 32), from the disc edge outwards, every
-    // pixel is covered: no transparent ring between centre and petal.
-    const discEdge = c - 8.5; // REF_CENTER_R on the 64 px canvas
-    for (let y = Math.floor(discEdge) - 1; y > 8; y--) {
-      const [r, , b, a] = px(c, y);
-      expect(a, `gap at (${c},${y})`).toBeGreaterThan(128);
-      expect(r, `not petal at (${c},${y})`).toBeGreaterThan(200);
-      expect(b).toBeGreaterThan(100);
-    }
-    // Narrower at the base than mid-length, closed at the tip: the width
-    // profile itself, since next to the disc the neighbours' bases overlap
-    // and no single pixel column belongs to one petal.
-    for (let k = 0; k < PETAL_COUNT; k++) {
-      expect(petalWidthAt(k, 0)).toBeLessThan(petalWidthAt(k, 0.3));
-      expect(petalWidthAt(k, 0.3)).toBeLessThan(petalWidthAt(k, 0.6));
-      expect(petalWidthAt(k, 0)).toBeGreaterThan(0.4);
-      expect(petalWidthAt(k, 0.6)).toBeGreaterThan(0.9);
-      expect(petalWidthAt(k, 0.9)).toBeLessThan(0.85);
-      expect(petalWidthAt(k, 1)).toBe(0);
-    }
-  });
-
-  it("petal area at progress 0 is roughly 16x larger than at progress 15/16", () => {
-    // Sanity check that visiblePetals actually drives the rendered output —
-    // fewer indices → fewer petal pixels.
-    const full = countPetalPixels(buildTrayIcon(0));
-    const last = countPetalPixels(buildTrayIcon(15 / 16 + 0.001));
-    expect(full).toBeGreaterThan(0);
-    expect(last).toBeGreaterThan(0);
-    // Allow generous slack; we only care about the order of magnitude.
-    expect(full).toBeGreaterThan(last * 6);
-    expect(full).toBeLessThan(last * 20);
+  it("returns the same buffer for a frame it has drawn before", () => {
+    expect(buildTrayIcon({ stable: [3, 4, 5] }, 18)).toBe(buildTrayIcon({ stable: [3, 4, 5] }, 18));
   });
 });
 
@@ -206,67 +214,43 @@ describe("trayIcon / formatTooltip", () => {
 
 // --- Helpers ------------------------------------------------------------
 
-// Decode raw pixels by re-using zlib + the IDAT chunk. The encoder uses no
-// filter (filter byte = 0 per row), so each row is N bytes of RGBA after a
-// leading filter byte. Good enough for spot-check assertions.
-import { inflateSync } from "node:zlib";
+import { readFileSync } from "node:fs";
+import { decodePng } from "../fixtures/png.js";
 
-function decodeRawRGBA(png: Buffer): { width: number; height: number; pixels: Uint8Array } {
-  // Skip 8-byte signature
-  let i = 8;
-  let width = 0;
-  let height = 0;
-  const idatChunks: Buffer[] = [];
-  while (i < png.length) {
-    const len = png.readUInt32BE(i);
-    const type = png.slice(i + 4, i + 8).toString("ascii");
-    const data = png.slice(i + 8, i + 8 + len);
-    if (type === "IHDR") {
-      width = data.readUInt32BE(0);
-      height = data.readUInt32BE(4);
-    } else if (type === "IDAT") {
-      idatChunks.push(data);
-    }
-    i += 8 + len + 4; // length + type + data + crc
+const SVG = readFileSync(new URL("../../../assets/daisy.svg", import.meta.url), "utf8");
+
+// Each petal's angle, degrees clockwise from 12 o'clock, from its group's
+// `rotate(a cx cy)`.
+function petalAngles(): number[] {
+  const out: number[] = [];
+  for (let k = 0; k < PETAL_COUNT; k++) {
+    const tag = new RegExp(`<g[^>]*\\sid="petal-${k}"[^>]*>`).exec(SVG)?.[0] ?? "";
+    out.push(Number(/rotate\(\s*([-\d.]+)/.exec(tag)?.[1]));
   }
-  const raw = inflateSync(Buffer.concat(idatChunks));
-  // strip the filter byte at the start of each row
-  const stride = width * 4;
-  const pixels = new Uint8Array(width * height * 4);
-  for (let y = 0; y < height; y++) {
-    const src = 1 + y * (stride + 1);
-    pixels.set(raw.subarray(src, src + stride), y * stride);
-  }
-  return { width, height, pixels };
+  return out;
 }
 
-function hasYellow(png: Buffer): boolean {
-  const { pixels } = decodeRawRGBA(png);
-  for (let i = 0; i < pixels.length; i += 4) {
-    const [r, g, b, a] = [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]];
-    // Warm yellow: R high, G high, B low, opaque.
-    if (a > 200 && r > 200 && g > 150 && b < 80) return true;
-  }
-  return false;
+function pixels(png: Buffer, size: number) {
+  const rgba = decodePng(png);
+  const at = (x: number, y: number) => Array.from(rgba.subarray((y * size + x) * 4, (y * size + x) * 4 + 4));
+  const count = (pred: (p: number[]) => boolean) => {
+    let n = 0;
+    for (let i = 0; i < size * size; i++) if (pred(at(i % size, Math.floor(i / size)))) n++;
+    return n;
+  };
+  return { at, count };
 }
 
-function hasWhiteOrPink(png: Buffer): boolean {
-  const { pixels } = decodeRawRGBA(png);
-  for (let i = 0; i < pixels.length; i += 4) {
-    const [r, g, b, a] = [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]];
-    // Exclude yellow centre (R/G high, B very low). Petals are white→pink
-    // (R high, G & B both substantial, B not near zero).
-    if (a > 200 && r > 200 && g > 150 && b > 130) return true;
-  }
-  return false;
-}
+/** Petal tip radius on the 64-unit canvas (the table's `petal_tip`). */
+const TIP_RADIUS = 31;
 
-function countPetalPixels(png: Buffer): number {
-  const { pixels } = decodeRawRGBA(png);
-  let n = 0;
-  for (let i = 0; i < pixels.length; i += 4) {
-    const [r, g, b, a] = [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]];
-    if (a > 200 && r > 200 && g > 150 && b > 130) n++;
-  }
-  return n;
+function petalsOnFlower(png: Buffer, size: number): number[] {
+  const px = pixels(png, size);
+  const r = 0.75 * TIP_RADIUS * (size / 64);
+  const c = size / 2;
+  return petalAngles().flatMap((deg, k) => {
+    const a = (deg * Math.PI) / 180;
+    const [, , , alpha] = px.at(Math.floor(c + r * Math.sin(a)), Math.floor(c - r * Math.cos(a)));
+    return alpha > 128 ? [k] : [];
+  });
 }

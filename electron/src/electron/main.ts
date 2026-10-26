@@ -424,9 +424,10 @@ function updateTray() {
   tray.setToolTip(formatTooltip(remainingMsForTooltip()));
 }
 
-// Refresh at 50ms (~20fps) so the petal-fade animation is smooth. The
-// daisy is a tiny 64×64 PNG — encoding cost per frame is negligible, and
-// the loop bails out instantly while the popup is open.
+// Refresh at 50ms (~20fps) so the petal-fade animation is smooth. A frame
+// with no petal in flight comes from buildTrayIcon's cache; a falling
+// petal's frame is a fresh render, a fraction of a millisecond. The loop
+// bails out instantly while the popup is open.
 const trayRefreshId = setInterval(updateTray, 50);
 
 // The only way the tray goes away. Stopping the refresh first matters: a
