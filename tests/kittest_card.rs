@@ -26,7 +26,9 @@ use nudge_web::app::NudgeApp;
 use nudge_web::autostart::AutostartProvider;
 use nudge_web::config::Config;
 use nudge_web::recorder::{self, EdgeSource, PhysicalKey, PressEdge, Verdict};
-use nudge_web::settings_app::{PersistFn, SettingsApp, SettingsForm, SpriteCheckFn};
+use nudge_web::settings_app::{
+    ConflictFn, MARGIN, PersistFn, SettingsApp, SettingsForm, SpriteCheckFn, WINDOW_SIZE,
+};
 
 // =============================================================================
 // NudgeApp — the spotlight card
@@ -231,6 +233,13 @@ fn no_op_persist() -> PersistFn {
     Box::new(|_cfg: &Config| Ok(()))
 }
 
+/// A conflict check that knows of no one: a save here must not ask the OS,
+/// which would register a real hotkey on the machine running the tests — and
+/// from every test thread at once.
+fn no_conflict() -> ConflictFn {
+    Box::new(|_hk| None)
+}
+
 /// A PNG check that passes everything: no test here reads a file.
 fn accept_any_sprite() -> SpriteCheckFn {
     Box::new(|_path: &std::path::Path| Ok(()))
@@ -253,6 +262,7 @@ fn settings_form_populates_from_a_config() {
             provider,
             no_op_persist(),
             accept_any_sprite(),
+            no_conflict(),
         )
     });
     harness.run();
@@ -313,6 +323,7 @@ fn settings_app_editing_a_field_round_trips_through_the_ui() {
             provider,
             no_op_persist(),
             accept_any_sprite(),
+            no_conflict(),
         )
     });
     harness.run();
@@ -360,6 +371,7 @@ fn toggling_autostart_goes_through_the_injected_provider_not_the_os() {
             boxed_provider,
             persist,
             accept_any_sprite(),
+            no_conflict(),
         )
     });
     harness.run();
@@ -403,7 +415,14 @@ fn settings_save_with_a_bad_sprite_shows_the_reason_and_persists_nothing() {
 
     let provider: Box<dyn AutostartProvider> = Box::new(RecordingProvider::new(false));
     let mut harness = Harness::new_eframe(|cc| {
-        SettingsApp::new(cc, cfg("Alt+J", 7.0, false), provider, persist, refuse)
+        SettingsApp::new(
+            cc,
+            cfg("Alt+J", 7.0, false),
+            provider,
+            persist,
+            refuse,
+            no_conflict(),
+        )
     });
     harness.run();
 
@@ -447,6 +466,8 @@ fn settings_save_with_a_bad_sprite_shows_the_reason_and_persists_nothing() {
 
 /// A settings window over a recording persist closure: what Save wrote, in
 /// order, so a case can assert on the write rather than on the window alone.
+/// The harness is the window's own size, so what the layout cases measure is
+/// the form as the window shows it.
 fn settings_harness<'a>(
     config: Config,
 ) -> (
@@ -461,9 +482,18 @@ fn settings_harness<'a>(
         Ok(())
     });
     let provider: Box<dyn AutostartProvider> = Box::new(RecordingProvider::new(false));
-    let mut harness = Harness::new_eframe(move |cc| {
-        SettingsApp::new(cc, config, provider, persist, accept_any_sprite())
-    });
+    let mut harness = Harness::builder()
+        .with_size(WINDOW_SIZE)
+        .build_eframe(move |cc| {
+            SettingsApp::new(
+                cc,
+                config,
+                provider,
+                persist,
+                accept_any_sprite(),
+                no_conflict(),
+            )
+        });
     harness.run();
     (harness, persisted)
 }
@@ -506,15 +536,18 @@ fn settings_harness_with_source<'a>(
         Ok(())
     });
     let provider: Box<dyn AutostartProvider> = Box::new(RecordingProvider::new(false));
-    let mut harness = Harness::new_eframe(move |_cc| {
-        SettingsApp::with_source(
-            config,
-            provider,
-            persist,
-            accept_any_sprite(),
-            Some(Box::new(source)),
-        )
-    });
+    let mut harness = Harness::builder()
+        .with_size(WINDOW_SIZE)
+        .build_eframe(move |_cc| {
+            SettingsApp::with_source(
+                config,
+                provider,
+                persist,
+                accept_any_sprite(),
+                no_conflict(),
+                Some(Box::new(source)),
+            )
+        });
     harness.run();
     (harness, persisted)
 }
@@ -783,4 +816,409 @@ fn settings_save_is_greyed_while_the_form_matches_the_file() {
     harness.get_by_label("Save").click();
     harness.run();
     assert_eq!(persisted.lock().unwrap().len(), 1);
+}
+
+// -----------------------------------------------------------------------------
+// §9 Window chrome and layout.
+//
+// One case per sentence of the subsection, against the Rust settings window;
+// their Electron twins, on the same sentences, are
+// electron/tests/native/settings.test.js. One sentence has no case here:
+// "rows in rounded boxes, a hairline between rows" is paint, not a node —
+// AccessKit cannot see a box or a line — and this tier renders no pixels
+// (see egui_kittest in Cargo.toml). The boxes are judged by eye on a capture
+// of the window; the guest test looks only for the filled button.
+// -----------------------------------------------------------------------------
+
+use egui_kittest::kittest::By;
+
+/// The autostart row's text on this platform (§9 Fields).
+#[cfg(target_os = "macos")]
+const AUTOSTART_ROW: &str = "Open at login";
+#[cfg(not(target_os = "macos"))]
+const AUTOSTART_ROW: &str = "Launch with Windows";
+
+/// The rect of the widget labelled `label`, or a failure that names it.
+fn rect_of(harness: &Harness<'_, SettingsApp>, label: &str) -> egui::Rect {
+    harness
+        .query_by_label(label)
+        .unwrap_or_else(|| panic!("no widget labelled {label:?} in the settings window"))
+        .rect()
+}
+
+/// The rect of the row text `text` itself — the label, never the control it
+/// labels (kittest hides a labelling node from label queries by default).
+fn row_text_rect(harness: &Harness<'_, SettingsApp>, text: &str) -> egui::Rect {
+    harness
+        .query_all(By::new().role(Role::Label).label(text).include_labels())
+        .next()
+        .unwrap_or_else(|| panic!("no row text {text:?} in the settings window"))
+        .rect()
+}
+
+/// The n-th text input in draw order: hotkey, interval, PNG path, X, Y,
+/// card width.
+fn input_rect(harness: &Harness<'_, SettingsApp>, nth: usize) -> egui::Rect {
+    harness
+        .get_all_by_role(Role::TextInput)
+        .nth(nth)
+        .unwrap_or_else(|| panic!("fewer than {} text inputs", nth + 1))
+        .rect()
+}
+
+/// The two checkboxes in draw order: autostart, sprite.
+fn checkbox_rects(harness: &Harness<'_, SettingsApp>) -> Vec<egui::Rect> {
+    let rects: Vec<egui::Rect> = harness
+        .get_all_by_role(Role::CheckBox)
+        .map(|n| n.rect())
+        .collect();
+    assert_eq!(rects.len(), 2, "two checkboxes: autostart and sprite");
+    rects
+}
+
+/// The texts of every label on screen.
+fn label_texts(harness: &Harness<'_, SettingsApp>) -> Vec<String> {
+    harness
+        .get_all_by_role(Role::Label)
+        .filter_map(|n| n.value())
+        .collect()
+}
+
+/// Whether all of `edges` lie within a point of each other.
+fn one_edge(edges: &[(&str, f32)]) -> bool {
+    let min = edges.iter().map(|e| e.1).fold(f32::MAX, f32::min);
+    let max = edges.iter().map(|e| e.1).fold(f32::MIN, f32::max);
+    max - min <= 1.0
+}
+
+/// §9: "Nothing inside the window repeats the title: the title bar carries
+/// it."
+#[test]
+fn settings_has_no_heading_repeating_the_title() {
+    let (harness, _persisted) = settings_harness(cfg("Alt+J", 7.0, false));
+    assert!(
+        harness.query_by_label("Settings").is_none(),
+        "a widget reads \"Settings\" inside the window — the title bar already carries it"
+    );
+    assert!(
+        harness
+            .query_by_label_contains("Nudge — Settings")
+            .is_none(),
+        "the window's title is repeated inside it"
+    );
+}
+
+/// §9: "`Cancel`, then `Save`, at the bottom right" — and, of the rows, "the
+/// buttons end where the boxes do": a box spans the form, so its right edge
+/// is one margin in from the window's.
+#[test]
+fn settings_cancel_then_save_at_the_bottom_right() {
+    let (harness, _persisted) = settings_harness(cfg("Alt+J", 7.0, false));
+    let cancel = rect_of(&harness, "Cancel");
+    let save = rect_of(&harness, "Save");
+    assert!(
+        cancel.max.x <= save.min.x + 0.5,
+        "Cancel spans x={}..{} and Save x={}..{}: Cancel is not left of Save",
+        cancel.min.x,
+        cancel.max.x,
+        save.min.x,
+        save.max.x
+    );
+    assert!(
+        (cancel.center().y - save.center().y).abs() <= 1.0,
+        "Cancel and Save are not on one line"
+    );
+
+    // At the bottom right: nothing of the form ends further right or lower.
+    let mut right = f32::MIN;
+    let mut bottom = f32::MIN;
+    for role in [Role::TextInput, Role::Button, Role::CheckBox, Role::Label] {
+        for node in harness.get_all_by_role(role) {
+            right = right.max(node.rect().max.x);
+            bottom = bottom.max(node.rect().max.y);
+        }
+    }
+    assert!(
+        save.max.x >= right - 1.0,
+        "Save ends at x={} but the form reaches x={right}: Save is not at the right",
+        save.max.x
+    );
+    assert!(
+        save.max.y >= bottom - 1.0,
+        "Save ends at y={} but the form reaches y={bottom}: Save is not at the bottom",
+        save.max.y
+    );
+    let box_right = WINDOW_SIZE[0] - f32::from(MARGIN);
+    assert!(
+        (save.max.x - box_right).abs() <= 1.0,
+        "Save ends at x={} and the boxes at x={box_right}: the buttons do not end where the boxes do",
+        save.max.x
+    );
+}
+
+/// §9: "The `Saved` note sits to their left after a save."
+#[test]
+fn settings_saved_note_sits_left_of_cancel() {
+    let (mut harness, _persisted) = settings_harness(cfg("Alt+J", 7.0, false));
+    type_into(&mut harness, 1, "5");
+    harness.get_by_label("Save").click();
+    harness.run();
+    assert!(says_saved(&harness), "the save did not say Saved");
+
+    let saved = rect_of(&harness, "Saved");
+    let cancel = rect_of(&harness, "Cancel");
+    assert!(
+        saved.max.x <= cancel.min.x + 0.5,
+        "Saved spans x={}..{} and Cancel x={}..{}: the note is not to the buttons' left",
+        saved.min.x,
+        saved.max.x,
+        cancel.min.x,
+        cancel.max.x
+    );
+    assert!(
+        saved.min.y < cancel.max.y && cancel.min.y < saved.max.y,
+        "Saved is not on the buttons' line"
+    );
+}
+
+/// §9: "In every row the label sits at the left and the control at the right
+/// edge — one left edge for every row's text and one right edge for every
+/// row's last control, so the groups read as one form". Six rows. The row
+/// texts are §9's Fields names; the PNG and position rows read `PNG` and
+/// `Position (pt)` (§10: "labelled in points").
+#[test]
+fn settings_row_texts_share_a_left_edge_and_controls_a_right_edge() {
+    let (harness, _persisted) = settings_harness(cfg("Alt+J", 7.0, false));
+
+    let texts = [
+        "Global hotkey",
+        "Default interval",
+        AUTOSTART_ROW,
+        "Sprite",
+        "PNG",
+        "Position (pt)",
+    ];
+    let lefts: Vec<(&str, f32)> = texts
+        .iter()
+        .map(|t| (*t, row_text_rect(&harness, t).min.x))
+        .collect();
+
+    // The last control of each row. The hotkey row ends with Record where a
+    // recorder exists, the PNG row with Browse… where a file dialog does;
+    // otherwise with the field itself.
+    let checkboxes = checkbox_rects(&harness);
+    let hotkey_end = harness
+        .query_by_label("Record")
+        .map(|n| n.rect())
+        .unwrap_or_else(|| input_rect(&harness, 0));
+    let png_end = harness
+        .query_by_label("Browse…")
+        .map(|n| n.rect())
+        .unwrap_or_else(|| input_rect(&harness, 2));
+    let rights = [
+        ("hotkey", hotkey_end.max.x),
+        ("interval (min)", rect_of(&harness, "min").max.x),
+        ("autostart", checkboxes[0].max.x),
+        ("sprite", checkboxes[1].max.x),
+        ("PNG", png_end.max.x),
+        ("position", input_rect(&harness, 5).max.x),
+    ];
+
+    assert!(
+        one_edge(&lefts),
+        "the row texts start at {lefts:?}, not at one left edge"
+    );
+    assert!(
+        one_edge(&rights),
+        "the rows' last controls end at {rights:?}, not at one right edge"
+    );
+}
+
+/// §9: "A checkbox sits at the right of its row; the row's text is its label."
+#[test]
+fn settings_checkboxes_sit_at_the_right_of_their_rows() {
+    let (harness, _persisted) = settings_harness(cfg("Alt+J", 7.0, false));
+    let checkboxes = checkbox_rects(&harness);
+    // The right edge every row's control ends at: the hotkey row's last one.
+    // (Not Save's — the buttons sit at the window's margin, the rows inside
+    // their boxes.)
+    let right_edge = harness
+        .query_by_label("Record")
+        .map(|n| n.rect())
+        .unwrap_or_else(|| input_rect(&harness, 0))
+        .max
+        .x;
+    for (text, checkbox) in [AUTOSTART_ROW, "Sprite"].into_iter().zip(checkboxes) {
+        let label = row_text_rect(&harness, text);
+        assert!(
+            label.max.x <= checkbox.min.x,
+            "the {text:?} checkbox at x={} is not to the right of its text, which ends at x={}",
+            checkbox.min.x,
+            label.max.x
+        );
+        assert!(
+            (checkbox.max.x - right_edge).abs() <= 1.0,
+            "the {text:?} checkbox ends at x={}, the form's right edge is at x={right_edge}",
+            checkbox.max.x
+        );
+    }
+}
+
+/// §9: "The hotkey vocabulary is a footnote under its group."
+#[test]
+fn settings_vocabulary_is_a_footnote_under_the_hotkey_group() {
+    let (harness, _persisted) = settings_harness(cfg("Alt+J", 7.0, false));
+    let vocabulary = rect_of(&harness, nudge_web::hotkey::VOCABULARY);
+    let hotkey = input_rect(&harness, 0);
+    let interval = input_rect(&harness, 1);
+    assert!(
+        vocabulary.min.y >= hotkey.max.y - 0.5,
+        "the vocabulary (y={}) is not below the hotkey row (ending y={})",
+        vocabulary.min.y,
+        hotkey.max.y
+    );
+    assert!(
+        vocabulary.max.y <= interval.min.y + 0.5,
+        "the vocabulary (ending y={}) is not above the interval row (y={})",
+        vocabulary.max.y,
+        interval.min.y
+    );
+    assert!(
+        vocabulary.min.y - hotkey.max.y < interval.min.y - vocabulary.max.y,
+        "the vocabulary sits nearer the interval row than the hotkey row: not that group's footnote"
+    );
+}
+
+/// §9: "The banner has its line above the buttons whether or not it has
+/// anything to say, so the window never changes size."
+#[test]
+fn settings_banner_line_keeps_its_height_when_empty() {
+    let (mut harness, persisted) = settings_harness(cfg("Alt+J", 7.0, false));
+    let quiet_save = rect_of(&harness, "Save");
+    let quiet_labels = label_texts(&harness);
+
+    // "7" -> "7x": refused, so the banner has something to say.
+    type_into(&mut harness, 1, "x");
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    assert!(
+        persisted.lock().unwrap().is_empty(),
+        "the refused save must not write"
+    );
+    let banner = harness
+        .get_all_by_role(Role::Label)
+        .find(|n| !quiet_labels.contains(&n.value().unwrap_or_default()))
+        .expect("the refused save raised no banner")
+        .rect();
+
+    let save = rect_of(&harness, "Save");
+    let last_row = input_rect(&harness, 5);
+    assert!(
+        banner.min.y >= last_row.max.y - 0.5 && banner.max.y <= save.min.y + 0.5,
+        "the banner (y={}..{}) is not on its line between the last row (ending y={}) and the buttons (y={})",
+        banner.min.y,
+        banner.max.y,
+        last_row.max.y,
+        save.min.y
+    );
+    assert!(
+        (save.min.y - quiet_save.min.y).abs() <= 0.5,
+        "the buttons moved from y={} to y={} when the banner appeared: its line was not reserved while empty",
+        quiet_save.min.y,
+        save.min.y
+    );
+}
+
+/// §9: "The window is sized to the form" — "on the native build the content
+/// is 560 × 537 pt". The form, laid out at that width, ends one margin above
+/// the window's bottom and one margin short of its right edge: the number in
+/// the spec is what the form adds up to, not a guess the window asks for.
+/// The native build is the macOS one — the footnote's wrap, and so the sum,
+/// is this platform's vocabulary in this platform's spelling.
+#[cfg(target_os = "macos")]
+#[test]
+fn settings_form_adds_up_to_the_window() {
+    let (harness, _persisted) = settings_harness(cfg("Alt+J", 7.0, false));
+    let mut right = f32::MIN;
+    let mut bottom = f32::MIN;
+    for role in [Role::TextInput, Role::Button, Role::CheckBox, Role::Label] {
+        for node in harness.get_all_by_role(role) {
+            right = right.max(node.rect().max.x);
+            bottom = bottom.max(node.rect().max.y);
+        }
+    }
+    let margin = f32::from(MARGIN);
+    assert!(
+        (bottom + margin - WINDOW_SIZE[1]).abs() <= 1.0,
+        "the form ends at y={bottom}, one margin above {} — the window is {} tall",
+        bottom + margin,
+        WINDOW_SIZE[1]
+    );
+    assert!(
+        (right + margin - WINDOW_SIZE[0]).abs() <= 1.0,
+        "the form ends at x={right}, one margin short of {} — the window is {} wide",
+        right + margin,
+        WINDOW_SIZE[0]
+    );
+}
+
+/// §9: "The banner has its line above the buttons whether or not it has
+/// anything to say, so the window never changes size." A refused hotkey
+/// echoes what was typed, and what was typed can be anything: the message
+/// has to stay on its line whatever it quotes, and the form has to keep its
+/// shape under it — the buttons where they were, nothing past the margin.
+/// Two shapes of anything: one word that no line can hold, which pushes
+/// sideways, and a run of words, which wraps and pushes up.
+#[test]
+fn settings_long_hotkey_token_stays_on_the_message_line() {
+    let one_word: String = std::iter::repeat_n("abcdefghij", 15).collect();
+    let many_words: String = std::iter::repeat_n("abcde ", 25).collect();
+    for token in [one_word, many_words] {
+        long_token_stays_on_the_message_line(&token);
+    }
+}
+
+fn long_token_stays_on_the_message_line(token: &str) {
+    let (mut harness, persisted) = settings_harness(cfg("Alt+J", 7.0, false));
+    let quiet_save = rect_of(&harness, "Save");
+    let quiet_cancel = rect_of(&harness, "Cancel");
+    let quiet_labels = label_texts(&harness);
+
+    type_into(&mut harness, 0, token);
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+    assert!(
+        persisted.lock().unwrap().is_empty(),
+        "the refused save must not write"
+    );
+    let banner = harness
+        .get_all_by_role(Role::Label)
+        .find(|n| !quiet_labels.contains(&n.value().unwrap_or_default()))
+        .expect("the refused save raised no banner");
+    let text = banner.value().unwrap_or_default();
+    let banner = banner.rect();
+
+    let save = rect_of(&harness, "Save");
+    let cancel = rect_of(&harness, "Cancel");
+    let last_row = input_rect(&harness, 5);
+    assert_eq!(save, quiet_save, "Save moved when the banner appeared");
+    assert_eq!(
+        cancel, quiet_cancel,
+        "Cancel moved when the banner appeared"
+    );
+    assert!(
+        banner.min.y >= last_row.max.y - 0.5 && banner.max.y <= save.min.y + 0.5,
+        "the banner (y={}..{}) overflows its line between the last row (ending y={}) and the buttons (y={}): {text:?}",
+        banner.min.y,
+        banner.max.y,
+        last_row.max.y,
+        save.min.y
+    );
+    let margin = f32::from(MARGIN);
+    assert!(
+        banner.min.x >= margin - 0.5 && banner.max.x <= WINDOW_SIZE[0] - margin + 0.5,
+        "the banner (x={}..{}) reaches past the form's margins: {text:?}",
+        banner.min.x,
+        banner.max.x
+    );
 }

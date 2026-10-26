@@ -158,6 +158,23 @@ impl SandboxedApp {
         Self::launch_inner(config, true)
     }
 
+    /// `nudge --settings`: the settings window alone, no popup process beside
+    /// it. HOME is redirected like `launch`, so the config it shows and saves
+    /// is the sandbox's.
+    fn launch_settings() -> Self {
+        let home = tempfile::tempdir().expect("temp HOME");
+        std::fs::create_dir_all(home.path().join("Documents")).expect("Documents");
+
+        let child = Command::new(binary_path())
+            .arg("--settings")
+            .env("HOME", home.path())
+            .spawn()
+            .expect("spawn nudge — run `cargo build --bin nudge` first");
+
+        std::thread::sleep(STARTUP_GRACE);
+        Self { child, home }
+    }
+
     fn launch_inner(config: &str, capture_stderr: bool) -> Self {
         let home = tempfile::tempdir().expect("temp HOME");
         std::fs::create_dir_all(home.path().join("Documents")).expect("Documents");
@@ -3177,6 +3194,8 @@ const VK_COMMAND: CGKeyCode = 0x37;
 const VK_SHIFT: CGKeyCode = 0x38;
 const VK_OPTION: CGKeyCode = 0x3A;
 const VK_CONTROL: CGKeyCode = 0x3B;
+const VK_RETURN: CGKeyCode = 0x24;
+const VK_J: CGKeyCode = 0x26;
 
 /// Press and release one key with `modifiers` held, each modifier cap pressed
 /// and released as its own flags-changed edge around it. The window server
@@ -3300,5 +3319,227 @@ fn sprite_turned_on_while_hidden_is_drawn_at_the_next_reveal() {
     assert!(
         after.sprite.is_some(),
         "the popup came back without the sprite that was turned on while it was hidden"
+    );
+}
+
+// -----------------------------------------------------------------------------
+// §9 Window chrome and layout — the settings window.
+// -----------------------------------------------------------------------------
+
+/// What §9 sizes the settings window's content to, in points: the form at
+/// 560 wide, measured on the native build — the window asks for exactly this
+/// (`settings_app::WINDOW_SIZE`), and tests/kittest_card.rs pins that the
+/// form adds up to it.
+const SETTINGS_CONTENT: (f64, f64) = (560.0, 537.0);
+
+/// The standard title bar's share of a framed window's frame on this macOS,
+/// in points: `CGWindowListCopyWindowInfo` reports a 560-point-tall content
+/// area as a 592-point frame (measured on macOS 26 for `with_inner_size`).
+const TITLE_BAR_HEIGHT: f64 = 32.0;
+
+/// Pixels of a solid fill: a colour, not a grey. Text, hairlines and a
+/// neutral button are all below this; an accent fill is well above it.
+const FILL_SATURATION: i32 = 60;
+
+/// The settings window of `pid`: the named window, which the process's
+/// unnamed bookkeeping surfaces (a 500×500 AppKit one, the menu bar's) are
+/// not.
+fn settings_window(pid: u32) -> Option<WindowInfo> {
+    list_windows()
+        .into_iter()
+        .filter(|w| w.owner == i64::from(pid) && w.named)
+        .max_by(|a, b| (a.rect.w * a.rect.h).total_cmp(&(b.rect.w * b.rect.h)))
+        .map(|w| WindowInfo {
+            id: w.id,
+            rect: w.rect,
+            on_screen: w.on_screen,
+        })
+}
+
+/// Makes the process with `pid` frontmost, so posted keystrokes reach it.
+fn bring_to_front(pid: u32) {
+    let status = Command::new("osascript")
+        .arg("-e")
+        .arg(format!(
+            r#"tell application "System Events" to set frontmost of (first process whose unix id is {pid}) to true"#
+        ))
+        .status()
+        .expect("osascript not runnable");
+    assert!(
+        status.success(),
+        "osascript failed to focus the settings process — is a GUI session active?"
+    );
+}
+
+/// A left-button drag from `from` by `dx` points, as real HID mouse events:
+/// the gesture that resizes a resizable window grabbed by its right edge.
+fn drag_right((x, y): (f64, f64), dx: f64) {
+    use core_graphics::event::{CGEvent, CGEventTapLocation, CGEventType, CGMouseButton};
+    use core_graphics::geometry::CGPoint;
+
+    let post = |kind: CGEventType, p: CGPoint, pause: u64| {
+        CGEvent::new_mouse_event(event_source(), kind, p, CGMouseButton::Left)
+            .expect("CGEventCreateMouseEvent failed")
+            .post(CGEventTapLocation::HID);
+        std::thread::sleep(Duration::from_millis(pause));
+    };
+    post(CGEventType::MouseMoved, CGPoint::new(x, y), 150);
+    post(CGEventType::LeftMouseDown, CGPoint::new(x, y), 100);
+    for step in 1..=8 {
+        let p = CGPoint::new(x + dx * f64::from(step) / 8.0, y);
+        post(CGEventType::LeftMouseDragged, p, 40);
+    }
+    post(CGEventType::LeftMouseUp, CGPoint::new(x + dx, y), 150);
+}
+
+/// The one solid block of colour in the window's own pixels below the title
+/// bar, as a rect in window points: rows on which a run of saturated pixels
+/// at least 50 points long stands, at least 8 such rows in a row. A filled
+/// button is that; a focus ring, a line of amber text and a grey button are
+/// not.
+fn filled_block(img: &image::RgbaImage, scale: f64, below: f64) -> Option<Rect> {
+    let saturated = |p: &image::Rgba<u8>| {
+        let (r, g, b) = (i32::from(p[0]), i32::from(p[1]), i32::from(p[2]));
+        r.max(g).max(b) - r.min(g).min(b) >= FILL_SATURATION
+    };
+    let min_run = (50.0 * scale) as u32;
+    let min_rows = (8.0 * scale) as usize;
+    let first_row = (below * scale) as u32;
+
+    // Per row, the longest saturated run as (start, end).
+    let runs: Vec<Option<(u32, u32)>> = (0..img.height())
+        .map(|y| {
+            if y < first_row {
+                return None;
+            }
+            let mut best: Option<(u32, u32)> = None;
+            let mut start: Option<u32> = None;
+            for x in 0..=img.width() {
+                let on = x < img.width() && saturated(img.get_pixel(x, y));
+                match (on, start) {
+                    (true, None) => start = Some(x),
+                    (false, Some(s)) => {
+                        if x - s >= min_run && best.is_none_or(|(bs, be)| x - s > be - bs) {
+                            best = Some((s, x));
+                        }
+                        start = None;
+                    }
+                    _ => {}
+                }
+            }
+            best
+        })
+        .collect();
+
+    // The tallest stretch of consecutive such rows.
+    let mut block: Option<(usize, usize)> = None;
+    let mut y = 0;
+    while y < runs.len() {
+        if runs[y].is_none() {
+            y += 1;
+            continue;
+        }
+        let top = y;
+        while y < runs.len() && runs[y].is_some() {
+            y += 1;
+        }
+        if y - top >= min_rows && block.is_none_or(|(t, b)| y - top > b - t) {
+            block = Some((top, y));
+        }
+    }
+    let (top, bottom) = block?;
+    let x0 = (top..bottom).filter_map(|y| runs[y]).map(|r| r.0).min()?;
+    let x1 = (top..bottom).filter_map(|y| runs[y]).map(|r| r.1).max()?;
+    Some(Rect {
+        x: f64::from(x0) / scale,
+        y: top as f64 / scale,
+        w: f64::from(x1 - x0) / scale,
+        h: (bottom - top) as f64 / scale,
+    })
+}
+
+/// §9 "Window chrome and layout": "The window is sized to the form and is not
+/// resizable. The banner has its line above the buttons whether or not it has
+/// anything to say, so the window never changes size." And, of the same
+/// subsection, "`Cancel`, then `Save`, at the bottom right; `Save` is the one
+/// filled button".
+///
+/// Geometry comes from `CGWindowListCopyWindowInfo` like everywhere else in
+/// this file, and "not resizable" is observed the way a user meets it: a drag
+/// on the right edge that moves nothing. Nothing is read through System
+/// Events: what it reports for this process depends on the Accessibility
+/// grant the session happens to hold, so there is no `resizable` attribute
+/// to rely on and no button to find by name. The filled button is found in
+/// the window's own pixels instead.
+#[test]
+#[ignore = "needs a GUI session + Accessibility and Screen Recording grants; run via --ignored"]
+fn settings_window_is_fixed_size_and_not_resizable() {
+    let app = SandboxedApp::launch_settings();
+    let window = settings_window(app.pid()).expect("no settings window found");
+    eprintln!("settings window={:?}", window.rect);
+    assert!(window.on_screen, "the settings window is not on screen");
+
+    // Sized to the form.
+    let content = (window.rect.w, window.rect.h - TITLE_BAR_HEIGHT);
+    assert!(
+        (content.0 - SETTINGS_CONTENT.0).abs() <= 1.0
+            && (content.1 - SETTINGS_CONTENT.1).abs() <= 1.0,
+        "the content area is {}×{} pt; §9 sizes the form to {}×{}",
+        content.0,
+        content.1,
+        SETTINGS_CONTENT.0,
+        SETTINGS_CONTENT.1
+    );
+
+    // Not resizable: a drag on the right edge, outward, moves nothing.
+    bring_to_front(app.pid());
+    drag_right(
+        (
+            window.rect.x + window.rect.w - 1.0,
+            window.rect.y + window.rect.h / 2.0,
+        ),
+        80.0,
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    let dragged = settings_window(app.pid()).expect("the settings window vanished during the drag");
+    assert!(
+        dragged.rect.same_as(&window.rect),
+        "a drag on the right edge took the window from {:?} to {:?}: it is resizable",
+        window.rect,
+        dragged.rect
+    );
+
+    // Never changes size: a refused save raises the banner — a bare key in the
+    // first field, refused with the vocabulary after it, the longest message
+    // the banner carries — and the window stays as it was.
+    bring_to_front(app.pid());
+    press_chord(VK_TAB, CGEventFlags::CGEventFlagNull);
+    press_chord(VK_J, CGEventFlags::CGEventFlagNull);
+    press_chord(VK_RETURN, CGEventFlags::CGEventFlagNull);
+    std::thread::sleep(Duration::from_millis(500));
+    let spoken =
+        settings_window(app.pid()).expect("the settings window vanished after the refused save");
+    assert!(
+        spoken.rect.same_as(&dragged.rect),
+        "the banner took the window from {:?} to {:?}: §9 says it never changes size",
+        dragged.rect,
+        spoken.rect
+    );
+
+    // Save — live now, the form differs from the file — is the one filled
+    // button, and it sits inside the window, at its bottom right.
+    let img = capture_window(spoken.id, &app.home.path().join("settings.png"));
+    let scale = capture_scale(&img, &spoken);
+    let save = filled_block(&img, scale, TITLE_BAR_HEIGHT)
+        .expect("no filled button in the window's pixels — §9 makes Save the one filled button");
+    eprintln!("filled block={save:?} (window points)");
+    let (w, h) = (spoken.rect.w, spoken.rect.h);
+    assert!(
+        save.x >= 0.0 && save.y >= 0.0 && save.x + save.w <= w && save.y + save.h <= h,
+        "the filled button {save:?} runs past the {w}×{h} window"
+    );
+    assert!(
+        save.x + save.w / 2.0 > w / 2.0 && save.y + save.h / 2.0 > h / 2.0,
+        "the filled button {save:?} is not at the bottom right of the {w}×{h} window"
     );
 }
