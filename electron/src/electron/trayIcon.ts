@@ -24,9 +24,19 @@ const SUPERSAMPLE = 4;
 
 // Geometry on the reference canvas, in pixels.
 const REF_CENTER_R = 7; // radius of the yellow disc
-const REF_PETAL_R_IN = 8; // petal starts just outside the centre
-const REF_PETAL_R_OUT = 28; // petal tip stops shy of the canvas edge
+// Spec §5: "Each petal is a strip that runs out from under the centre:
+// narrowest where it leaves the disc, widest at mid-length, closed by a
+// rounded tip. Petal and centre meet with no gap between them." The strip
+// starts under the disc, so a falling petal's base shows only once it has
+// slid out; the proportions (base 0.7 of the full width, full width from
+// 35 % of the length, the tip's cap over the last 40 %) are from a traced
+// Bellis perennis, where the ray floret narrows into the disc.
+const REF_PETAL_R_BASE = 3; // petal starts under the centre
+const REF_PETAL_R_TIP = 28; // petal tip stops shy of the canvas edge
 const REF_PETAL_HALF_WIDTH = 4.5;
+const PETAL_BASE_WIDTH = 0.7; // half-width at the base, as a share of the full one
+const PETAL_FULL_FROM = 0.35; // share of the length at which the strip reaches full width
+const PETAL_TIP_SHARE = 0.4; // share of the length taken by the tip's rounded cap
 // Spec §5 fall: petal slides outward from the centre, droops slightly under
 // "gravity", and fades to transparent over the fade window. These deltas
 // stay small — even 4 px of outward motion on the reference canvas is
@@ -38,8 +48,8 @@ interface Geometry {
   size: number;
   center: number;
   centerR: number;
-  petalRIn: number;
-  petalROut: number;
+  petalRBase: number;
+  petalRTip: number;
   petalHalfWidth: number;
   fallOutward: number;
   fallGravity: number;
@@ -51,8 +61,8 @@ function geometryFor(size: number): Geometry {
     size,
     center: size / 2,
     centerR: REF_CENTER_R * k,
-    petalRIn: REF_PETAL_R_IN * k,
-    petalROut: REF_PETAL_R_OUT * k,
+    petalRBase: REF_PETAL_R_BASE * k,
+    petalRTip: REF_PETAL_R_TIP * k,
     petalHalfWidth: REF_PETAL_HALF_WIDTH * k,
     fallOutward: REF_FALL_OUTWARD * k,
     fallGravity: REF_FALL_GRAVITY * k,
@@ -153,22 +163,35 @@ function lerpRGBA(a: RGBA, b: RGBA, t: number): RGBA {
   ];
 }
 
+// Half-width of the petal strip at `t` (0 = base, 1 = tip), as a share of the
+// full half-width: rising from the base share to 1 by PETAL_FULL_FROM, flat
+// through the body, then an elliptical cap over the last PETAL_TIP_SHARE.
+export function petalWidthAt(t: number): number {
+  if (t < 0 || t >= 1) return 0;
+  if (t < PETAL_FULL_FROM) {
+    const u = t / PETAL_FULL_FROM;
+    return PETAL_BASE_WIDTH + (1 - PETAL_BASE_WIDTH) * Math.sin((u * Math.PI) / 2);
+  }
+  const capFrom = 1 - PETAL_TIP_SHARE;
+  if (t <= capFrom) return 1;
+  const u = (t - capFrom) / PETAL_TIP_SHARE;
+  return Math.sqrt(Math.max(0, 1 - u * u));
+}
+
 // Returns the RGBA contribution of a single petal at the given offset from
-// the centre. Local frame is rotated to the petal's radial direction, with
-// the petal modelled as an ellipse. Returns null if the point is outside.
+// the centre. Local frame is rotated to the petal's radial direction; `u` runs
+// along the petal, `v` across it. Returns null if the point is outside.
 function petalColorAt(g: Geometry, dx: number, dy: number, idx: number): RGBA | null {
   const theta = petalAngle(idx);
   const cos = Math.cos(theta);
   const sin = Math.sin(theta);
   const u = dx * cos + dy * sin;
   const v = -dx * sin + dy * cos;
-  if (u < g.petalRIn || u > g.petalROut) return null;
-  const cu = (g.petalRIn + g.petalROut) / 2;
-  const a = (g.petalROut - g.petalRIn) / 2;
-  const norm = ((u - cu) / a) ** 2 + (v / g.petalHalfWidth) ** 2;
-  if (norm > 1) return null;
-  const t = (u - g.petalRIn) / (g.petalROut - g.petalRIn);
-  return lerpRGBA(PETAL_BASE, PETAL_TIP, t);
+  const t = (u - g.petalRBase) / (g.petalRTip - g.petalRBase);
+  if (Math.abs(v) > g.petalHalfWidth * petalWidthAt(t)) return null;
+  // Pink over the outward half, concentrated at the very tip.
+  const pink = Math.max(0, (t - 0.5) / 0.5) ** 2;
+  return lerpRGBA(PETAL_BASE, PETAL_TIP, pink);
 }
 
 // Colour of one sample point, (sx, sy) in canvas coordinates.

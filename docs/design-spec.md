@@ -163,9 +163,12 @@ app is running and "ripens" instead of a numeric countdown.
 
 ### Icon as an object
 
-- Daisy (Bellis perennis): 12 plump elliptical petals around a bright yellow
-  center. The white petal base softens into a warm pink at the very tips —
-  the daisy's signature, distinguishing it from a generic field chamomile.
+- Daisy (Bellis perennis): 12 plump petals around a bright yellow center.
+  Each petal is a strip that runs out from under the centre: narrowest where
+  it leaves the disc, widest at mid-length, closed by a rounded tip. Petal
+  and centre meet with no gap between them. The white petal base softens
+  into a warm pink at the very tips — the daisy's signature, distinguishing
+  it from a generic field chamomile.
 - Just the daisy and its center. No frame, background, shadow, digits, or
   any text inside the icon.
 - The palette is the only place in the app with an accent color (pink tip +

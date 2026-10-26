@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 
 import {
   buildTrayIcon,
+  petalWidthAt,
   visiblePetals,
   daisyFrame,
   formatTooltip,
@@ -79,6 +80,35 @@ describe("trayIcon / buildTrayIcon", () => {
     expect(hasYellow(buildTrayIcon(0, px))).toBe(true);
     expect(hasWhiteOrPink(buildTrayIcon(0, px))).toBe(true);
     expect(hasWhiteOrPink(buildTrayIcon(1, px))).toBe(false);
+  });
+
+  // Spec §5: "Each petal is a strip that runs out from under the centre:
+  // narrowest where it leaves the disc, widest at mid-length, closed by a
+  // rounded tip. Petal and centre meet with no gap between them."
+  it("the top petal meets the centre with no gap and is narrower there than mid-length", () => {
+    const size = 64;
+    const { pixels } = decodeRawRGBA(buildTrayIcon(0, size));
+    const px = (x: number, y: number) => {
+      const i = (y * size + x) * 4;
+      return [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]];
+    };
+    const c = size / 2;
+    // On the top petal's axis (x = 32), from the disc edge outwards, every
+    // pixel is covered: no transparent ring between centre and petal.
+    const discEdge = c - 7; // REF_CENTER_R on the 64 px canvas
+    for (let y = discEdge - 1; y > 8; y--) {
+      const [r, , b, a] = px(c, y);
+      expect(a, `gap at (${c},${y})`).toBeGreaterThan(200);
+      expect(r, `not petal at (${c},${y})`).toBeGreaterThan(200);
+      expect(b).toBeGreaterThan(100);
+    }
+    // Narrower at the base than mid-length, closed at the tip: the width
+    // profile itself, since next to the disc the neighbours' bases overlap
+    // and no single pixel column belongs to one petal.
+    expect(petalWidthAt(0)).toBeLessThan(petalWidthAt(0.5));
+    expect(petalWidthAt(0)).toBeGreaterThan(0.5);
+    expect(petalWidthAt(0.5)).toBe(1);
+    expect(petalWidthAt(1)).toBe(0);
   });
 
   it("petal area at progress 0 is roughly 12x larger than at progress 11/12", () => {
