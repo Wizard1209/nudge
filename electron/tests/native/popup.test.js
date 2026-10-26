@@ -159,33 +159,60 @@ describe('popup — the display is the one holding the front window', () => {
 });
 
 // Spec §1 places the popup "when the popup is shown, on every trigger alike"
-// — and a trigger that finds it already up is not a show. The hotkey, the tray
-// click and its menu all fire while the popup is visible; placing it again
-// then would read the display with the popup itself (or Settings) in front,
-// and the spot could change under the user's hands. One display here, so the
-// spec spot is the same either way: the window is nudged off it first, and a
-// trigger that re-placed it would put it back. The trigger source is the
-// other tell — the launch popup is the timer's, a trigger counts as manual.
-describe('popup — a trigger while it is up leaves it where it is', () => {
+// — and a trigger that finds it already up, in the user's hands, is not a
+// show. The hotkey, the tray click and its menu all fire while the popup is
+// visible; placing it again then would read the display with the popup itself
+// (or Settings) in front, and the spot could change under the user's hands.
+// One display here, so the spec spot is the same either way: the window is
+// nudged off it first, and a trigger that re-placed it would put it back. The
+// trigger source is the other tell — the launch popup is the timer's, a
+// trigger counts as manual.
+//
+// "In the user's hands" is the popup being key. This window is a plain panel
+// that does not cover the work area, so the desktop can move it aside while it
+// is visible — a reveal-desktop sweep does — and a popup that opened over a
+// full-screen app may never have taken the keyboard at all. A trigger that
+// finds the popup visible but not key is the user asking for it back: it is
+// placed and focused again.
+describe('popup — a trigger while it is up', () => {
   let app;
   afterEach(async () => {
     await app?.close();
     app = undefined;
   });
 
-  it('two triggers on a visible popup change neither its bounds nor its source', async () => {
+  async function launchFocused(ctx) {
     ({ app } = await launchApp());
     await expect.poll(async () => (await popupState(app))?.visible).toBe(true);
-    const before = await popupState(app);
-    const state = () => app.evaluate(() => globalThis.__nudgeTest.getState());
-    expect((await state()).lastTriggerSource).toBe('timer');
+    // The popup must hold the keyboard for "in the user's hands" to mean
+    // anything here; a host that will not give it (a lock screen, a
+    // full-screen Space) cannot run these.
+    const isKey = () =>
+      app.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows().find((x) => x.getTitle() === 'Nudge').isFocused(),
+      );
+    for (const deadline = Date.now() + 3000; !(await isKey()) && Date.now() < deadline; ) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    if (!(await isKey())) ctx.skip('the launch popup did not take the keyboard on this host');
+    return isKey;
+  }
 
-    const moved = await app.evaluate(({ BrowserWindow }) => {
+  const nudgeOff = () =>
+    app.evaluate(({ BrowserWindow }) => {
       const w = BrowserWindow.getAllWindows().find((x) => x.getTitle() === 'Nudge');
       const b = w.getBounds();
       w.setPosition(b.x + 40, b.y + 60);
       return w.getBounds();
     });
+
+  it('two triggers on a key popup change neither its bounds nor its source', async (ctx) => {
+    await launchFocused(ctx);
+    const before = await popupState(app);
+    const state = () => app.evaluate(() => globalThis.__nudgeTest.getState());
+    expect((await state()).lastTriggerSource).toBe('timer');
+
+    const moved = await nudgeOff();
     expect([moved.x, moved.y]).toEqual([before.bounds.x + 40, before.bounds.y + 60]);
 
     await app.evaluate(() => globalThis.__nudgeTest.show());
@@ -196,6 +223,31 @@ describe('popup — a trigger while it is up leaves it where it is', () => {
     expect(after.visible).toBe(true);
     expect(after.bounds).toEqual(moved);
     expect((await state()).lastTriggerSource).toBe('timer');
+  });
+
+  it('a trigger on a visible popup that is not key puts it back on its spot and makes it key', async (ctx) => {
+    const isKey = await launchFocused(ctx);
+    const before = await popupState(app);
+
+    // The keyboard goes to another window of the app without the popup
+    // closing — as the renderer behaves when the popup never took focus at
+    // its open (spec §4 gates Switch-on-blur on that), which is also the one
+    // case where the popup is left visible and not key.
+    await app.evaluate(({ BrowserWindow }) => {
+      const w = BrowserWindow.getAllWindows().find((x) => x.getTitle() === 'Nudge');
+      w.webContents.send('nudge:show', { gotFocus: false });
+      const other = new BrowserWindow({ width: 200, height: 100, title: 'other', show: false });
+      other.show();
+      other.focus();
+    });
+    await expect.poll(isKey).toBe(false);
+    const moved = await nudgeOff();
+    expect([moved.x, moved.y]).toEqual([before.bounds.x + 40, before.bounds.y + 60]);
+    expect((await popupState(app)).visible).toBe(true);
+
+    await app.evaluate(() => globalThis.__nudgeTest.show());
+    await expect.poll(async () => (await popupState(app)).bounds).toEqual(before.bounds);
+    await expect.poll(isKey).toBe(true);
   });
 });
 

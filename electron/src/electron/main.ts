@@ -215,11 +215,15 @@ function deadlineDue() {
 
 function showNudge(source: TriggerSource) {
   if (!win) return;
-  // A trigger while the popup is up changes nothing — the hotkey, the tray
-  // and its menu fire whether or not it is showing, and a re-placement here
-  // would read the display afresh with the popup itself in front. The timer
-  // does not come here while the popup is up: `deadlineDue` parks it.
-  if (win.isVisible()) return;
+  // A trigger while the popup is up, in the user's hands, changes nothing —
+  // the hotkey, the tray and its menu fire whether or not it is showing, and
+  // a re-placement here would read the display afresh with the popup itself
+  // in front. "In the user's hands" is the popup being key: this panel does
+  // not cover the work area, so a reveal-desktop sweep moves it aside while
+  // it is visible, and over a full-screen app it may never have taken the
+  // keyboard; a trigger then is the user asking for it back. The timer does
+  // not come here while the popup is up: `deadlineDue` parks it.
+  if (win.isVisible() && win.isFocused()) return;
   lastTriggerSource = source;
   positionCard();
   win.show();
