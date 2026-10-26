@@ -2337,8 +2337,9 @@ fn bring_frontmost(pid: u32) {
 ///
 /// A window of another app is made frontmost, the hotkey summons the popup,
 /// and after it closes that app must be the frontmost one again — once by
-/// Esc, once by Enter. Both keystrokes are raw, posted to whatever holds the
-/// keyboard, so a popup that never took it fails here too. Without the
+/// Esc, once by Enter on a typed answer, the journaled Submit. Both
+/// keystrokes are raw, posted to whatever holds the keyboard, so a popup that
+/// never took it fails here too. Without the
 /// hand-back, nudge stays the active application with no key window: every
 /// keystroke goes nowhere until the user clicks, and the next show reads
 /// nudge as the frontmost app, finds no window of its own at the ordinary
@@ -2393,6 +2394,11 @@ fn closing_the_popup_hands_the_keyboard_back_to_the_app_that_had_it() {
         );
         std::thread::sleep(Duration::from_millis(300));
 
+        // Return on empty fields is the change-interval path (spec §4); an
+        // answer makes it the Submit that writes a journal line.
+        if name == "Enter" {
+            type_text("handing back");
+        }
         close();
         assert!(
             wait_until(Duration::from_secs(2), || !popup_visible(app.pid())),
