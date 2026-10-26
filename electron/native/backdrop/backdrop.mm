@@ -162,11 +162,51 @@ static Napi::Value State(const Napi::CallbackInfo &info) {
   return out;
 }
 
+// frontWindowBounds(): the frontmost application's front window — its
+// first on-screen window at the normal layer, the list being front to back
+// (a strip an app draws as a window of its own, iTerm2's 1470×68, sits on
+// the same display as its main window) — as {x, y, width, height} in CG
+// coordinates (origin at the primary display's top left, y down), or null
+// when the frontmost app has no such window (the desktop, say). The display
+// that holds it is where the popup goes (spec §1, "Which monitor"); the
+// choice itself is made in the pure displayFor, this only reads the window.
+// No Screen Recording consent is needed for bounds and owner pids, only for
+// window names.
+static Napi::Value FrontWindowBounds(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  NSRunningApplication *front = NSWorkspace.sharedWorkspace.frontmostApplication;
+  if (!front) return env.Null();
+  pid_t pid = front.processIdentifier;
+  CFArrayRef list = CGWindowListCopyWindowInfo(
+      kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID);
+  if (!list) return env.Null();
+  CGRect bounds = CGRectNull;
+  for (NSDictionary *entry in (__bridge NSArray *)list) {
+    if ([entry[(id)kCGWindowOwnerPID] intValue] != pid) continue;
+    if ([entry[(id)kCGWindowLayer] intValue] != 0) continue;
+    // Into a rect of its own: the conversion leaves its output unspecified
+    // when it fails, and `bounds` must stay null until an entry converts.
+    CGRect rect;
+    if (!CGRectMakeWithDictionaryRepresentation((__bridge CFDictionaryRef)entry[(id)kCGWindowBounds], &rect)) continue;
+    bounds = rect;
+    break;
+  }
+  CFRelease(list);
+  if (CGRectIsNull(bounds)) return env.Null();
+  Napi::Object out = Napi::Object::New(env);
+  out.Set("x", bounds.origin.x);
+  out.Set("y", bounds.origin.y);
+  out.Set("width", bounds.size.width);
+  out.Set("height", bounds.size.height);
+  return out;
+}
+
 static Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("attach", Napi::Function::New(env, Attach));
   exports.Set("setFrame", Napi::Function::New(env, SetFrameJs));
   exports.Set("detach", Napi::Function::New(env, Detach));
   exports.Set("state", Napi::Function::New(env, State));
+  exports.Set("frontWindowBounds", Napi::Function::New(env, FrontWindowBounds));
   return exports;
 }
 

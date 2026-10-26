@@ -3,6 +3,9 @@
  * addon in native/backdrop puts an NSVisualEffectView, clipped to the card,
  * under the window's content view. Everywhere else, and when the addon is not
  * built, the popup simply has no glass behind it.
+ *
+ * The same addon is also where macOS is asked which window has the keyboard
+ * focus (`frontWindowBounds`, spec §1): one native module, one load.
  */
 
 import path from "node:path";
@@ -16,6 +19,7 @@ interface BackdropAddon {
   setFrame(x: number, y: number, width: number, height: number): void;
   detach(): void;
   state(): BackdropState | null;
+  frontWindowBounds(): Rect | null;
 }
 
 export interface BackdropState {
@@ -67,4 +71,14 @@ export function backdropAttached(): boolean {
 export function backdropState(): { loaded: boolean } & Partial<BackdropState> {
   const backdrop = load();
   return { loaded: !!backdrop, ...(backdrop?.state() ?? {}) };
+}
+
+/**
+ * The frontmost application's front window in screen coordinates (its
+ * first normal-layer window on screen, front to back), for choosing the
+ * popup's display:
+ * null when it has none, and off macOS, where the addon is not built.
+ */
+export function frontWindowBounds(): Rect | null {
+  return load()?.frontWindowBounds() ?? null;
 }

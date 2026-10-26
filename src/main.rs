@@ -18,6 +18,10 @@ mod nudge_state;
 #[cfg(not(target_arch = "wasm32"))]
 mod platform;
 mod recorder;
+// Only the macOS backend feeds it so far; the Windows port lifts this cfg
+// (`platform::windows::screen_geometry`).
+#[cfg(target_os = "macos")]
+mod screen_pick;
 #[cfg(not(target_arch = "wasm32"))]
 mod settings_app;
 #[cfg(not(target_arch = "wasm32"))]

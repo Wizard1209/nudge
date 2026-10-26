@@ -54,3 +54,53 @@ describe('timer lifecycle — survives the first launch', () => {
     expect(await timerArmed()).toBe(true);
   });
 });
+
+// Spec §4: "Deadline cannot arrive while the popup is visible — the timer
+// parks for the duration of the show, so an interval that elapses behind an
+// open popup is still overdue when it closes and fires then." A manual open
+// leaves the timer running behind the card; when it comes due there, the
+// nudge it owes is delivered the moment the card closes without restarting
+// the timer, and that nudge is the timer's — its Esc re-arms the timer.
+describe('timer lifecycle — a deadline behind a manual popup fires when it closes', () => {
+  let app;
+  afterEach(async () => {
+    await app?.close();
+    app = undefined;
+  });
+
+  it('Esc on the manual popup is followed at once by the timer popup', async () => {
+    ({ app } = await launchApp());
+    const popup = await app.firstWindow();
+    await popup.waitForSelector('[data-testid="field-doing"]', { state: 'visible' });
+    const state = () => app.evaluate(() => globalThis.__nudgeTest.getState());
+    const dismiss = () => popup.evaluate(() => window.nudge.dismiss({ nextMinutes: 0.02 }));
+
+    // The launch popup is the timer's: Esc with 0.02 min arms a 1.2 s deadline
+    // (plus the petal fade).
+    await dismiss();
+    await expect.poll(async () => (await state()).popupVisible).toBe(false);
+    await app.evaluate(() => globalThis.__nudgeTest.show());
+    expect(await state()).toMatchObject({ lastTriggerSource: 'manual', popupVisible: true });
+
+    // The deadline passes behind the manual card: nothing changes under the
+    // user's hands.
+    await popup.waitForTimeout(2500);
+    expect(await state()).toMatchObject({ lastTriggerSource: 'manual', popupVisible: true });
+
+    // Leave from Asking·Manual leaves the timer alone — and the overdue
+    // Deadline follows at once.
+    await dismiss();
+    await expect.poll(async () => await state(), { timeout: 2000 }).toMatchObject({
+      lastTriggerSource: 'timer',
+      popupVisible: true,
+    });
+
+    // That popup is the timer's: closing it re-arms the timer and it stays
+    // closed.
+    await dismiss();
+    await expect.poll(async () => (await state()).popupVisible).toBe(false);
+    expect((await state()).timerArmed).toBe(true);
+    await popup.waitForTimeout(500);
+    expect((await state()).popupVisible).toBe(false);
+  });
+});

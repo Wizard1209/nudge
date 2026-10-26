@@ -345,8 +345,8 @@ impl NudgeApp {
         self
     }
 
-    /// Make the window the work area of the monitor it is on (spec §1) and
-    /// lay the card and the sprite out in it. Runs every frame, hidden ones
+    /// Make the window the work area of the monitor spec §1 chose for it
+    /// and lay the card and the sprite out in it. Runs every frame, hidden ones
     /// included, so the window is already right when it is revealed; it
     /// only talks to the OS when something it was placed for has changed.
     ///

@@ -62,10 +62,13 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use muda::{Menu, MenuEvent, MenuId, MenuItem};
 use objc2::rc::Retained;
+use objc2::runtime::NSObjectProtocol;
+use objc2::{ClassType, sel};
 use objc2_app_kit::{
-    NSAppearance, NSAppearanceCustomization, NSAppearanceNameVibrantDark, NSApplication, NSScreen,
-    NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
-    NSVisualEffectView, NSWindowCollectionBehavior, NSWindowOrderingMode,
+    NSAppearance, NSAppearanceCustomization, NSAppearanceNameVibrantDark, NSApplication,
+    NSApplicationActivationOptions, NSEvent, NSRunningApplication, NSScreen, NSView,
+    NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
+    NSWindowCollectionBehavior, NSWindowOrderingMode, NSWorkspace,
 };
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -75,8 +78,10 @@ use crate::config_watcher::{self, ConfigChange};
 use crate::daisy;
 use crate::hotkey::{self, Hotkey};
 use crate::nudge_state;
+use crate::screen_pick;
 use crate::sprite::ScreenGeometry;
 
+pub mod front_window;
 pub mod hotkey_carbon;
 pub mod key_monitor;
 pub mod keycode;
@@ -133,6 +138,20 @@ static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// by `App::hide_popup`. Both raise sites matter — see [`reveal`] for what the
 /// gap between them used to cost.
 static POPUP_VISIBLE: AtomicBool = AtomicBool::new(true);
+
+/// The application that had the keyboard when the popup took it, by pid:
+/// what [`hand_back_activation`] gives it back to (spec §1). Written by
+/// [`focus_popup`] on the first activation of a show, taken by the hide.
+/// `None` while hidden, and while shown when nothing else was active at
+/// the moment the popup took the keyboard.
+static PREVIOUS_FRONT: Mutex<Option<i32>> = Mutex::new(None);
+
+/// The display spec §1 chose the last time the popup was shown, by its
+/// frame in AppKit's screen space — the one identity a display keeps across
+/// `NSScreen::screens` calls, whose order is not promised. Written by
+/// [`choose_screen`], read by [`screen_geometry`]; `None` until the first
+/// choice, when the window's own screen stands in.
+static CHOSEN_SCREEN: Mutex<Option<NSRect>> = Mutex::new(None);
 
 /// What [`start`] recorded for [`start_on_event_loop`] to build. Taken once.
 static PENDING_START: Mutex<Option<(Option<Hotkey>, PathBuf, config::Config)>> = Mutex::new(None);
@@ -210,6 +229,13 @@ pub fn start(hotkey: Option<Hotkey>, config_path: PathBuf, initial: config::Conf
 /// item and the Carbon hotkey both have.
 pub fn start_on_event_loop(ctx: &egui::Context) {
     *WAKE_CTX.lock().unwrap() = Some(ctx.clone());
+
+    // The launch popup is a show like any other (spec §1, "on every trigger
+    // alike"), and this runs before its first frame — so before
+    // `show_popup` makes Nudge the frontmost application.
+    if let Some(mtm) = MainThreadMarker::new() {
+        choose_screen(mtm);
+    }
 
     let Some((hotkey, config_path, initial)) = PENDING_START.lock().unwrap().take() else {
         // No `start` — a test harness driving `NudgeApp` directly. The timer
@@ -364,6 +390,75 @@ pub fn set_popup_visible(visible: bool) {
         // frosting its patch of desktop for the whole interval the popup is
         // away. `sync_card_backdrop` unhides it on the next open.
         hide_card_backdrop();
+        hand_back_activation();
+    }
+}
+
+/// Spec §1: the popup "hands [the keyboard] back to the application that
+/// had it when it closes". AppKit does not do that on its own: ordering the
+/// window out leaves this app the active one with no key window, so every
+/// keystroke goes nowhere until the user clicks, and the next show reads
+/// nudge as the frontmost application, finds no ordinary-level window of
+/// its own and falls through to the pointer's display.
+///
+/// Only while this app still is the active one: a Leave by focus loss means
+/// the user has already put another application in front, and taking that
+/// from them is the opposite of handing back. The remembered application
+/// gets the activation; one that is gone, or none remembered, means hiding
+/// instead, which has the system pick the next application the way ⌘H does.
+fn hand_back_activation() {
+    let previous = PREVIOUS_FRONT.lock().unwrap().take();
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let app = NSApplication::sharedApplication(mtm);
+    // SAFETY: plain accessors and requests on the shared application, on
+    // the main thread; the running application is returned retained.
+    unsafe {
+        if !app.isActive() {
+            return;
+        }
+        let target = previous
+            .and_then(|pid| NSRunningApplication::runningApplicationWithProcessIdentifier(pid))
+            .filter(|target| !target.isTerminated());
+        let handed = target.is_some_and(|target| {
+            let options = NSApplicationActivationOptions::empty();
+            // macOS 14 made activation cooperative: the active application
+            // names the one it hands over to. Older systems take the plain
+            // request, and do not have the selector.
+            if target.respondsToSelector(sel!(activateFromApplication:options:)) {
+                target.activateFromApplication_options(
+                    &NSRunningApplication::currentApplication(),
+                    options,
+                )
+            } else {
+                target.activateWithOptions(options)
+            }
+        });
+        if !handed {
+            app.hide(None);
+        }
+    }
+}
+
+/// Note which application is about to lose the keyboard to the popup, for
+/// [`hand_back_activation`] — once per show: the first call of a show is
+/// the one made before the activation, and the retries that follow it on a
+/// popup not yet key would otherwise read this app as the previous one.
+fn remember_front_application() {
+    let mut previous = PREVIOUS_FRONT.lock().unwrap();
+    if previous.is_some() {
+        return;
+    }
+    // SAFETY: `sharedWorkspace` is a plain class accessor; the frontmost
+    // application is returned retained, and `processIdentifier` only reads it.
+    let pid = unsafe {
+        NSWorkspace::sharedWorkspace()
+            .frontmostApplication()
+            .map(|front| front.processIdentifier())
+    };
+    if pid.is_some_and(|pid| pid != std::process::id() as i32) {
+        *previous = pid;
     }
 }
 
@@ -482,10 +577,56 @@ pub fn tick(ctx: &egui::Context) {
 /// card `ui()` is about to show. An expiry that fell inside a manual reveal is
 /// simply still armed and still overdue when that card closes, and fires then.
 fn reveal(ctx: &egui::Context) {
+    // First, while the user's application is still the frontmost one: the
+    // activation two lines down makes it Nudge, whose only window is the
+    // floating popup — not an ordinary-level window, so the read would find
+    // nothing and the rule would fall through to the pointer.
+    if let Some(mtm) = MainThreadMarker::new() {
+        choose_screen(mtm);
+    }
     set_popup_visible(true);
     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
     focus_popup(ctx);
     ctx.request_repaint();
+}
+
+/// Spec §1, "Which monitor": the display holding the frontmost
+/// application's front window, else the one under the pointer, else the
+/// primary — decided here, at the moment the popup is shown, and remembered
+/// in [`CHOSEN_SCREEN`] for `screen_geometry` to lay the window out on.
+///
+/// The arithmetic is `screen_pick::pick_screen`, over rects in one space:
+/// AppKit points with a top-left origin. The window list reports bounds in
+/// CoreGraphics' global space, which is already that; screens and the
+/// pointer come from AppKit with a bottom-left origin and are flipped
+/// through the primary screen's height, as `screen_geometry` flips them.
+fn choose_screen(mtm: MainThreadMarker) {
+    let screens = NSScreen::screens(mtm);
+    // SAFETY: the array is a fresh retained copy; `firstObject` only reads it.
+    let Some(primary) = (unsafe { screens.firstObject() }) else {
+        return;
+    };
+    let primary_height = primary.frame().size.height;
+    let flip = |r: NSRect| {
+        let top = primary_height - (r.origin.y + r.size.height);
+        egui::Rect::from_min_size(
+            egui::pos2(r.origin.x as f32, top as f32),
+            egui::vec2(r.size.width as f32, r.size.height as f32),
+        )
+    };
+    let frames: Vec<NSRect> = screens.iter().map(|s| s.frame()).collect();
+    let rects: Vec<egui::Rect> = frames.iter().copied().map(flip).collect();
+    let front = front_window::front_window_bounds().map(|r| {
+        egui::Rect::from_min_size(
+            egui::pos2(r.origin.x as f32, r.origin.y as f32),
+            egui::vec2(r.size.width as f32, r.size.height as f32),
+        )
+    });
+    // SAFETY: a plain class accessor with no preconditions.
+    let mouse = unsafe { NSEvent::mouseLocation() };
+    let pointer = egui::pos2(mouse.x as f32, (primary_height - mouse.y) as f32);
+    let chosen = screen_pick::pick_screen(front, pointer, &rects);
+    *CHOSEN_SCREEN.lock().unwrap() = frames.get(chosen).copied();
 }
 
 /// Reveal-and-focus, called on every path that puts the popup back on screen.
@@ -506,17 +647,34 @@ fn reveal(ctx: &egui::Context) {
 /// activate there, and asking anyway is the unsound path, not the safe one.
 pub fn focus_popup(ctx: &egui::Context) {
     if let Some(mtm) = MainThreadMarker::new() {
+        remember_front_application();
+        let app = NSApplication::sharedApplication(mtm);
+        // SAFETY: plain accessors on the shared application, on the main
+        // thread. A hide after the previous close (`hand_back_activation`)
+        // keeps the window off screen until the app is unhidden.
+        unsafe {
+            if app.isHidden() {
+                app.unhideWithoutActivation();
+            }
+        }
         #[allow(deprecated)]
-        NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
+        app.activateIgnoringOtherApps(true);
     }
     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
 }
 
 // ---------- window placement -----------------------------------------------
 
-/// The monitor the spotlight window is on, in egui points with a top-left
+/// The monitor the spotlight window goes on, in egui points with a top-left
 /// origin: its whole frame and the part the menu bar and the Dock leave
 /// free. `NudgeApp::place_window` makes the window the latter (spec §1).
+///
+/// Which monitor is the one [`choose_screen`] picked when the popup was
+/// shown — looked up afresh among today's screens on every call, so its
+/// work area is re-read when the Dock moves and a display change under a
+/// visible popup lays it out again (§10). The window's own screen stands in
+/// when nothing has been chosen yet, and when the chosen display is gone:
+/// AppKit has then moved the window somewhere, and that is where it is.
 ///
 /// This cannot be known in the `ViewportBuilder` the way the position is on
 /// Windows, because no screen is knowable before the event loop exists — and
@@ -537,17 +695,20 @@ pub fn screen_geometry(ctx: &egui::Context, frame: &eframe::Frame) -> Option<Scr
     // SAFETY: the handle is winit's own content view, alive for as long as the
     // window is, and we are on the thread that owns it.
     let content: &NSView = unsafe { &*appkit.ns_view.as_ptr().cast::<NSView>() };
+    let screens = NSScreen::screens(mtm);
+    let chosen = *CHOSEN_SCREEN.lock().unwrap();
     // A window off every screen has none; the main one is where it will show.
-    let screen = content
-        .window()
-        .and_then(|w| w.screen())
+    let screen = chosen
+        .and_then(|frame| screens.iter().find(|s| s.frame() == frame))
+        .map(|s| s.retain())
+        .or_else(|| content.window().and_then(|w| w.screen()))
         .or_else(|| NSScreen::mainScreen(mtm))?;
     // AppKit's screen space has its origin at the primary screen's bottom
     // left, y up. winit flips through the primary screen's height too, so
     // what goes back out through `ViewportCommand::OuterPosition` lands where
     // this read it.
     // SAFETY: the array is a fresh retained copy; `firstObject` only reads it.
-    let primary = unsafe { NSScreen::screens(mtm).firstObject() }?;
+    let primary = unsafe { screens.firstObject() }?;
     let primary_height = primary.frame().size.height;
     let zoom = f64::from(ctx.zoom_factor());
     let flip = |r: NSRect| {

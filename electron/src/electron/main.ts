@@ -31,6 +31,7 @@ import {
   type SpriteConfig,
 } from "./config";
 import { normalizeSprite } from "../shared/config";
+import { displayFor } from "../shared/display";
 import { parseHotkey, hotkeyToAccelerator } from "../shared/hotkey";
 import {
   restartsTimer,
@@ -54,7 +55,7 @@ import {
   type SpriteView,
 } from "../shared/sprite";
 import { ElectronAutostartProvider } from "./autostart";
-import { backdropAttached, backdropState, hideBackdrop, syncBackdrop } from "./backdrop";
+import { backdropAttached, backdropState, frontWindowBounds, hideBackdrop, syncBackdrop } from "./backdrop";
 import { buildTrayIcon, daisyFrame, formatTooltip, type DaisyFrame } from "./trayIcon";
 
 // An uncaught exception in the main process would otherwise come up as a
@@ -88,6 +89,10 @@ let sprite: SpriteView | null = null;
 let pendingSprite: SpriteConfig | null = null;
 let tray: Tray | null = null;
 let timerId: ReturnType<typeof setTimeout> | null = null;
+// A deadline that came due behind a manually-opened popup. Spec §4: the timer
+// parks for the duration of the show, and the nudge it owes fires when the
+// popup closes without restarting it.
+let deadlineOwed = false;
 let timerStartMs = 0;
 let timerIntervalMs = 0;
 let lastTriggerSource: TriggerSource = INITIAL_TRIGGER_SOURCE;
@@ -186,17 +191,39 @@ function startConfigWatcher(): void {
 
 function startTimer(minutes: number) {
   if (timerId) clearTimeout(timerId);
+  deadlineOwed = false;
   timerIntervalMs = minutes * 60_000;
   timerStartMs = Date.now();
   // The 12th petal detaches at t = interval and finishes its fall at
   // t = interval + PETAL_FADE_MS; the popup waits for the daisy to be
   // fully empty before showing up.
-  timerId = setTimeout(() => showNudge("timer"), timerIntervalMs + PETAL_FADE_MS);
+  timerId = setTimeout(deadlineDue, timerIntervalMs + PETAL_FADE_MS);
   updateTray();
+}
+
+// The deadline. Behind a popup the user opened it is owed rather than shown:
+// a Leave from that popup delivers it (spec §4, "Deadline cannot arrive while
+// the popup is visible").
+function deadlineDue() {
+  if (win?.isVisible()) {
+    deadlineOwed = true;
+    return;
+  }
+  deadlineOwed = false;
+  showNudge("timer");
 }
 
 function showNudge(source: TriggerSource) {
   if (!win) return;
+  // A trigger while the popup is up, in the user's hands, changes nothing —
+  // the hotkey, the tray and its menu fire whether or not it is showing, and
+  // a re-placement here would read the display afresh with the popup itself
+  // in front. "In the user's hands" is the popup being key: this panel does
+  // not cover the work area, so a reveal-desktop sweep moves it aside while
+  // it is visible, and over a full-screen app it may never have taken the
+  // keyboard; a trigger then is the user asking for it back. The timer does
+  // not come here while the popup is up: `deadlineDue` parks it.
+  if (win.isVisible() && win.isFocused()) return;
   lastTriggerSource = source;
   positionCard();
   win.show();
@@ -248,9 +275,15 @@ function positionCard(display: Electron.Display = currentDisplay()) {
   syncBackdrop(win, cardRect());
 }
 
-/** The display the popup goes on: the one under the cursor. */
+/**
+ * The display the popup goes on (spec §1, "Which monitor"): the one with the
+ * keyboard focus — holding the frontmost application's front window — and
+ * with no such window the one under the cursor. Read afresh on every show,
+ * whatever the trigger. Off macOS the addon that reads the front window is
+ * absent and the cursor's display is all there is.
+ */
 function currentDisplay(): Electron.Display {
-  return screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  return displayFor(frontWindowBounds(), screen.getCursorScreenPoint(), screen.getAllDisplays());
 }
 
 function hideNudge() {
@@ -648,6 +681,9 @@ function dismissOrSwitch(action: CloseAction, data: unknown) {
   hideNudge();
   if (restartsTimer(action, lastTriggerSource)) {
     startTimer(parseMinutes((data as { nextMinutes?: unknown } | undefined)?.nextMinutes));
+  } else if (deadlineOwed) {
+    // Spec §4: a Leave from Asking·Manual can be followed at once by Deadline.
+    deadlineDue();
   }
 }
 
@@ -744,8 +780,9 @@ app.whenReady().then(async () => {
   startConfigWatcher();
   // A display's scale factor can change under an open popup (an external
   // monitor plugged in, a resolution switch): lay the sprite out again on
-  // the display the popup is on — the cursor may have gone elsewhere since
-  // it was shown. A hidden popup is laid out when it next shows.
+  // the display the popup is on — the focus or the cursor may have gone
+  // elsewhere since it was shown. A hidden popup is laid out when it next
+  // shows.
   screen.on("display-metrics-changed", () => {
     if (win?.isVisible()) positionCard(screen.getDisplayMatching(win.getBounds()));
   });
@@ -799,6 +836,10 @@ if (process.env.NUDGE_E2E) {
     // The macOS glass under the card: whether the addon loaded and where the
     // view sits, in the page's coordinates.
     backdrop: () => backdropState(),
+    // What the addon reads as the front window (null off macOS), and the
+    // display the popup would go on right now.
+    frontWindowBounds: () => frontWindowBounds(),
+    currentDisplay: () => currentDisplay(),
   };
 }
 
