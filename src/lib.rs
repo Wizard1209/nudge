@@ -3,7 +3,7 @@ mod wasm_entry {
     use crate::app::NudgeApp;
     use crate::autostart::FakeProvider;
     use crate::config;
-    use crate::settings_app::{PersistFn, SettingsApp};
+    use crate::settings_app::{ConflictFn, PersistFn, SettingsApp, SpriteCheckFn};
     use wasm_bindgen::prelude::*;
 
     /// True when the page wants the settings UI instead of the main popup.
@@ -48,13 +48,24 @@ mod wasm_entry {
                     Box::new(FakeProvider::new(cfg.autostart));
                 let persist: PersistFn =
                     Box::new(|c: &config::Config| config::save_to_localstorage(c));
+                // TODO: the browser has no file access; an enabled sprite saves unchecked here.
+                let sprite_check: SpriteCheckFn = Box::new(|_path: &std::path::Path| Ok(()));
+                // The browser cannot ask who else holds a combination.
+                let conflict: ConflictFn = Box::new(|_hk| None);
 
                 eframe::WebRunner::new()
                     .start(
                         canvas,
                         web_options,
                         Box::new(move |cc| {
-                            Ok(Box::new(SettingsApp::new(cc, cfg, provider, persist)))
+                            Ok(Box::new(SettingsApp::new(
+                                cc,
+                                cfg,
+                                provider,
+                                persist,
+                                sprite_check,
+                                conflict,
+                            )))
                         }),
                     )
                     .await
@@ -93,7 +104,11 @@ pub mod nudge_state;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod platform;
 pub mod recorder;
+pub mod screen_pick;
 pub mod settings_app;
+pub mod sprite;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod sprite_png;
 pub mod timer;
 #[cfg(target_os = "windows")]
 pub mod tray_bridge;

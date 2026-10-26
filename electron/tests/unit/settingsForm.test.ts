@@ -93,6 +93,7 @@ describe("SettingsForm.toConfig", () => {
         hotkey: "⌥⌘J",
         default_interval_minutes: 15,
         autostart: true,
+        sprite: DEFAULT_CONFIG.sprite,
       },
     });
   });
@@ -142,5 +143,83 @@ describe("respell", () => {
 
   it("leaves a value that does not parse alone", () => {
     expect(respell("nonsense", "macos")).toBe("nonsense");
+  });
+});
+
+describe("SettingsForm sprite fields", () => {
+  const sprite = { enabled: true, path: "C:\\art\\s.png", x: -41, y: -277, card_width: 679 };
+
+  it("seeds the sprite fields from the config", () => {
+    const form = SettingsForm.fromConfig(cfg({ sprite }), "windows");
+    expect(form.spriteEnabled).toBe(true);
+    expect(form.spritePath).toBe("C:\\art\\s.png");
+    expect([form.spriteXText, form.spriteYText, form.cardWidthText]).toEqual(["-41", "-277", "679"]);
+    expect(form.isDirty()).toBe(false);
+  });
+
+  it("round-trips the sprite block through toConfig, trimming text", () => {
+    const form = SettingsForm.fromConfig(cfg(), "windows");
+    form.spriteEnabled = true;
+    form.spritePath = "  C:\\art\\s.png ";
+    form.spriteXText = " -41";
+    form.spriteYText = "-277 ";
+    form.cardWidthText = "679";
+    const result = form.toConfig();
+    expect(result.ok && result.config.sprite).toEqual(sprite);
+  });
+
+  it("tracks every sprite field as dirty", () => {
+    const edits: Array<(f: SettingsForm) => void> = [
+      (f) => (f.spriteEnabled = true),
+      (f) => (f.spritePath = "/x.png"),
+      (f) => (f.spriteXText = "5"),
+      (f) => (f.spriteYText = "5"),
+      (f) => (f.cardWidthText = "500"),
+    ];
+    for (const edit of edits) {
+      const form = SettingsForm.fromConfig(cfg(), "windows");
+      edit(form);
+      expect(form.isDirty()).toBe(true);
+    }
+  });
+
+  it("rejects non-integer coordinates, naming the field", () => {
+    for (const [field, key] of [
+      ["sprite_x", "spriteXText"],
+      ["sprite_y", "spriteYText"],
+    ] as const) {
+      for (const bad of ["", "1.5", "abc", "1e3x"]) {
+        const form = SettingsForm.fromConfig(cfg(), "windows");
+        form[key] = bad;
+        expect(form.toConfig()).toEqual({ ok: false, error: { field, input: bad.trim() } });
+      }
+    }
+  });
+
+  it("rejects a card width that is not a positive integer", () => {
+    for (const bad of ["", "0", "-480", "480.5", "wide"]) {
+      const form = SettingsForm.fromConfig(cfg(), "windows");
+      form.cardWidthText = bad;
+      expect(form.toConfig()).toEqual({
+        ok: false,
+        error: { field: "card_width", input: bad.trim() },
+      });
+    }
+  });
+
+  it("validates the number fields even while the sprite is off", () => {
+    const form = SettingsForm.fromConfig(cfg(), "windows");
+    form.spriteXText = "x";
+    expect(form.toConfig().ok).toBe(false);
+  });
+
+  it("markClean rebaselines the sprite fields", () => {
+    const form = SettingsForm.fromConfig(cfg(), "windows");
+    form.spriteEnabled = true;
+    form.spritePath = " /x.png ";
+    form.spriteXText = " 7 ";
+    form.markClean();
+    expect(form.isDirty()).toBe(false);
+    expect([form.spritePath, form.spriteXText]).toEqual(["/x.png", "7"]);
   });
 });

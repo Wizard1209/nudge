@@ -10,7 +10,7 @@ import {
   nativeImage,
 } from "electron";
 import path from "node:path";
-import { watch, type FSWatcher } from "node:fs";
+import { watch, readFileSync, type FSWatcher } from "node:fs";
 import { dirname, basename } from "node:path";
 import { ulid } from "ulid";
 import {
@@ -28,7 +28,10 @@ import {
   diffConfig,
   DEFAULT_CONFIG,
   type Config,
+  type SpriteConfig,
 } from "./config";
+import { normalizeSprite } from "../shared/config";
+import { displayFor } from "../shared/display";
 import { parseHotkey, hotkeyToAccelerator } from "../shared/hotkey";
 import {
   restartsTimer,
@@ -37,8 +40,32 @@ import {
   type CloseAction,
 } from "../shared/nudgeFlow";
 import { applyAutostart } from "../shared/autostart";
+import {
+  CARD_WIDTH,
+  CARD_HEIGHT,
+  SPRITE_ERROR,
+  checkSpritePng,
+  spriteLayout,
+  spritePoints,
+  windowOrigin,
+  cardWidthOn,
+  type Rect,
+  type Size,
+  type SpriteLayout,
+  type SpriteView,
+} from "../shared/sprite";
 import { ElectronAutostartProvider } from "./autostart";
+import { backdropAttached, backdropState, frontWindowBounds, hideBackdrop, syncBackdrop } from "./backdrop";
 import { buildTrayIcon, daisyFrame, formatTooltip, type DaisyFrame } from "./trayIcon";
+
+// An uncaught exception in the main process would otherwise come up as a
+// modal "A JavaScript error occurred" box on whatever desktop the app runs
+// on, and stay there until someone clicks it away. This is a workbench that
+// test harnesses launch unattended: die in the terminal instead.
+process.on("uncaughtException", (err) => {
+  console.error("Nudge: uncaught exception in the main process", err);
+  app.exit(1);
+});
 
 // Load the dev server in development, the built files when packaged. The
 // NUDGE_FORCE_PROD escape hatch lets native e2e tests drive an unpackaged
@@ -53,8 +80,19 @@ const PETAL_FADE_MS = 250;
 
 let win: BrowserWindow | null = null;
 let settingsWin: BrowserWindow | null = null;
+// The configured sprite: its PNG and placement, display-independent.
+let spriteSource: SpriteSource | null = null;
+// The sprite laid out for the display the popup was last placed on; null =
+// plain card.
+let sprite: SpriteView | null = null;
+// A saved sprite config not yet applied: it waits until the popup is hidden.
+let pendingSprite: SpriteConfig | null = null;
 let tray: Tray | null = null;
 let timerId: ReturnType<typeof setTimeout> | null = null;
+// A deadline that came due behind a manually-opened popup. Spec §4: the timer
+// parks for the duration of the show, and the nudge it owes fires when the
+// popup closes without restarting it.
+let deadlineOwed = false;
 let timerStartMs = 0;
 let timerIntervalMs = 0;
 let lastTriggerSource: TriggerSource = INITIAL_TRIGGER_SOURCE;
@@ -119,6 +157,10 @@ function applyConfig(next: Config): void {
   const changed = diffConfig(currentConfig, next);
   currentConfig = next;
   if (changed.hotkey) registerHotkey(next);
+  if (changed.sprite) {
+    pendingSprite = next.sprite;
+    applyPendingSprite();
+  }
 }
 
 // Watch the PARENT dir, not the file: an atomic save (tmp + rename) swaps the
@@ -149,17 +191,39 @@ function startConfigWatcher(): void {
 
 function startTimer(minutes: number) {
   if (timerId) clearTimeout(timerId);
+  deadlineOwed = false;
   timerIntervalMs = minutes * 60_000;
   timerStartMs = Date.now();
   // The 12th petal detaches at t = interval and finishes its fall at
   // t = interval + PETAL_FADE_MS; the popup waits for the daisy to be
   // fully empty before showing up.
-  timerId = setTimeout(() => showNudge("timer"), timerIntervalMs + PETAL_FADE_MS);
+  timerId = setTimeout(deadlineDue, timerIntervalMs + PETAL_FADE_MS);
   updateTray();
+}
+
+// The deadline. Behind a popup the user opened it is owed rather than shown:
+// a Leave from that popup delivers it (spec §4, "Deadline cannot arrive while
+// the popup is visible").
+function deadlineDue() {
+  if (win?.isVisible()) {
+    deadlineOwed = true;
+    return;
+  }
+  deadlineOwed = false;
+  showNudge("timer");
 }
 
 function showNudge(source: TriggerSource) {
   if (!win) return;
+  // A trigger while the popup is up, in the user's hands, changes nothing —
+  // the hotkey, the tray and its menu fire whether or not it is showing, and
+  // a re-placement here would read the display afresh with the popup itself
+  // in front. "In the user's hands" is the popup being key: this panel does
+  // not cover the work area, so a reveal-desktop sweep moves it aside while
+  // it is visible, and over a full-screen app it may never have taken the
+  // keyboard; a trigger then is the user asking for it back. The timer does
+  // not come here while the popup is up: `deadlineDue` parks it.
+  if (win.isVisible() && win.isFocused()) return;
   lastTriggerSource = source;
   positionCard();
   win.show();
@@ -198,22 +262,35 @@ function becameFocused(w: BrowserWindow): Promise<boolean> {
   });
 }
 
-// Spec §1: horizontally centered, top edge at 25% of screen height — card
-// grows downward from there (upper third, eye level; clearly above the
-// geometric centre).
-function positionCard() {
+// Spec §1: horizontally centred on the monitor, top edge at 25% of its height
+// plus 80 pt — the card grows downward from there. With a sprite the window
+// spans card ∪ sprite and the card sits inside it at its layout offset; a
+// sprite that would rise above the work area pins the window to its top and
+// the card moves down (`windowOrigin`).
+function positionCard(display: Electron.Display = currentDisplay()) {
   if (!win) return;
-  const cursor = screen.getCursorScreenPoint();
-  const { workArea } = screen.getDisplayNearestPoint(cursor);
-  const [w] = win.getSize();
-  const x = Math.round(workArea.x + (workArea.width - w) / 2);
-  const y = Math.round(workArea.y + workArea.height * 0.25);
+  layoutSpriteFor(display);
+  const { x, y } = windowOrigin(display, cardRect());
   win.setPosition(x, y);
+  syncBackdrop(win, cardRect());
+}
+
+/**
+ * The display the popup goes on (spec §1, "Which monitor"): the one with the
+ * keyboard focus — holding the frontmost application's front window — and
+ * with no such window the one under the cursor. Read afresh on every show,
+ * whatever the trigger. Off macOS the addon that reads the front window is
+ * absent and the cursor's display is all there is.
+ */
+function currentDisplay(): Electron.Display {
+  return displayFor(frontWindowBounds(), screen.getCursorScreenPoint(), screen.getAllDisplays());
 }
 
 function hideNudge() {
   if (!win) return;
   win.hide();
+  hideBackdrop();
+  applyPendingSprite();
 }
 
 function parseMinutes(value: unknown): number {
@@ -277,6 +354,12 @@ function createTray() {
 
 // --- Settings window (spec §9) ---
 
+// The content size of the settings window: the rendered form plus its 20px
+// margins, the reserved message line included (§9: sized to the form, not
+// resizable, never scrolls). Measured on the rendered form — form bottom ==
+// height − 20 — so retune it if the markup changes.
+const SETTINGS_SIZE = { width: 560, height: 582 };
+
 // Framed, standard-chrome window. Single instance: focus the existing one
 // rather than opening a second.
 function openSettings() {
@@ -285,13 +368,11 @@ function openSettings() {
     return;
   }
   settingsWin = new BrowserWindow({
-    // useContentSize: the 460×440 is the *client* area, so the OS title bar
+    // useContentSize: SETTINGS_SIZE is the *client* area, so the OS title bar
     // doesn't eat into it and clip the form (the bug was the title bar
     // shrinking a frame-inclusive height on Windows).
-    width: 460,
-    // Tall enough for the vocabulary line under the hotkey field (§9): it is
-    // standing information, so it must fit without scrolling.
-    height: 540,
+    width: SETTINGS_SIZE.width,
+    height: SETTINGS_SIZE.height,
     useContentSize: true,
     title: "Nudge — Settings",
     resizable: false,
@@ -372,24 +453,34 @@ function createWindow() {
   // there.
   const isWindows = process.platform === "win32";
   const isMac = process.platform === "darwin";
+  // A sprite needs a see-through window around the card, which Acrylic rules
+  // out (see above): with a sprite the window is transparent everywhere.
+  // TODO: the transparent area around the card still eats clicks — toggle
+  // setIgnoreMouseEvents(…, { forward: true }) on card hover.
+  // TODO: spec §1 click shield — while visible the window should cover the work area, transparent outside the card and sprite, so a click beside the card closes the popup and reaches nothing beneath.
+  const acrylic = isWindows && !sprite;
+  const size = windowSize();
   win = new BrowserWindow({
     // macOS: a non-activating panel — it takes the keyboard without
     // activating the app, so another app grabbing activation cannot leave the
     // card visible but deaf (spec §1).
     type: isMac ? "panel" : undefined,
-    width: 480,
-    height: 170,
+    width: size.width,
+    height: size.height,
     useContentSize: true,
     frame: false,
-    transparent: !isWindows,
+    transparent: !acrylic,
     alwaysOnTop: true,
     resizable: false,
     skipTaskbar: true,
     show: false,
     backgroundColor: "#00000000",
-    backgroundMaterial: isWindows ? "acrylic" : undefined,
+    backgroundMaterial: acrylic ? "acrylic" : undefined,
     roundedCorners: true,
-    hasShadow: false,
+    // macOS shadows the window's alpha silhouette, and the page draws no
+    // shadow of its own, so what AppKit traces is the card (spec §2). On
+    // Windows the Acrylic window keeps no shadow, as before.
+    hasShadow: isMac,
     paintWhenInitiallyHidden: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -409,7 +500,135 @@ function createWindow() {
   } else {
     win.loadFile(path.join(__dirname, "../renderer/index.html"));
   }
+  // Spec §2: on macOS the frost behind the card is the system's material,
+  // clipped to the card and placed under the page (see backdrop.ts).
+  syncBackdrop(win, cardRect());
 }
+
+// --- Sprite ---
+
+function cardRect(): Rect {
+  return sprite?.layout.card ?? { x: 0, y: 0, width: CARD_WIDTH, height: CARD_HEIGHT };
+}
+
+function windowSize(): Size {
+  return sprite?.layout.window ?? { width: CARD_WIDTH, height: CARD_HEIGHT };
+}
+
+interface SpriteSource {
+  url: string;
+  png: Size;
+  placement: SpriteConfig;
+}
+
+/** The sprite's layout on a display: its PNG at native pixels, in that display's points. */
+function spriteLayoutOn(source: SpriteSource, display: Electron.Display): SpriteLayout {
+  const { card_width, x, y } = source.placement;
+  return spriteLayout(
+    { width: cardWidthOn(card_width, display.workArea), height: CARD_HEIGHT },
+    { x, y, ...spritePoints(source.png, display.scaleFactor) },
+  );
+}
+
+function sameLayout(a: SpriteLayout, b: SpriteLayout): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * Re-lay out the sprite for a display. The sprite's point size depends on the
+ * display's scale factor, so a popup moving to another display may need a
+ * different window size and a new layout in the renderer.
+ */
+function layoutSpriteFor(display: Electron.Display): void {
+  if (!spriteSource || !sprite || !win) return;
+  const layout = spriteLayoutOn(spriteSource, display);
+  if (sameLayout(layout, sprite.layout)) return;
+  sprite = { url: sprite.url, layout };
+  win.setContentSize(layout.window.width, layout.window.height);
+  win.webContents.send("nudge:sprite", sprite);
+}
+
+type SpriteFile =
+  | { ok: true; bytes: Buffer; width: number; height: number }
+  | { ok: false; error: string };
+
+/** Read and validate a sprite PNG ("a PNG without a background"). */
+async function readSpriteFile(file: string): Promise<SpriteFile> {
+  if (file === "") return { ok: false, error: SPRITE_ERROR.noPath };
+  let bytes: Buffer;
+  try {
+    bytes = readFileSync(file);
+  } catch {
+    return { ok: false, error: `${SPRITE_ERROR.notFound}: ${file}` };
+  }
+  const check = await checkSpritePng(bytes, (png) => {
+    const image = nativeImage.createFromBuffer(Buffer.from(png));
+    return image.isEmpty() ? null : image.toBitmap();
+  });
+  return check.ok ? { ...check, bytes } : check;
+}
+
+/** The sprite a config asks for, or null when it is off or unusable. */
+async function loadSpriteSource(cfg: SpriteConfig): Promise<SpriteSource | null> {
+  if (!cfg.enabled) return null;
+  const file = await readSpriteFile(cfg.path);
+  if (!file.ok) {
+    console.error(`Nudge: sprite not shown: ${file.error}`);
+    return null;
+  }
+  return {
+    url: "data:image/png;base64," + file.bytes.toString("base64"),
+    png: { width: file.width, height: file.height },
+    placement: cfg,
+  };
+}
+
+/** Take a sprite source into use, laid out for the current display. */
+function setSpriteSource(source: SpriteSource | null): void {
+  spriteSource = source;
+  sprite = source && { url: source.url, layout: spriteLayoutOn(source, currentDisplay()) };
+}
+
+// Applies run one at a time, so a slow read can't overwrite a newer config.
+let spriteApply = Promise.resolve();
+
+/**
+ * Apply a saved sprite change once the popup is hidden, so it never reshapes
+ * under the user. Turning the sprite on or off recreates the window, because
+ * `transparent` (and with it Acrylic) is fixed at creation; any other change
+ * resizes the window and pushes the new layout to the renderer.
+ */
+function applyPendingSprite(): void {
+  spriteApply = spriteApply.then(async () => {
+    if (!pendingSprite || !win || win.isVisible()) return;
+    const cfg = pendingSprite;
+    pendingSprite = null;
+    const next = await loadSpriteSource(cfg);
+    if (win.isVisible()) {
+      pendingSprite ??= cfg; // shown meanwhile: retry on the next hide
+      return;
+    }
+    const recreate = !!sprite !== !!next;
+    setSpriteSource(next);
+    if (recreate) {
+      win.destroy();
+      createWindow();
+    } else {
+      const size = windowSize();
+      win.setContentSize(size.width, size.height);
+      win.webContents.send("nudge:sprite", sprite);
+      syncBackdrop(win, cardRect());
+    }
+  });
+}
+
+ipcMain.handle("nudge:sprite", () => sprite);
+
+// Whether the macOS glass is under the card, asked by the preload before the
+// page's first paint (spec §2: with no material the fill is the surface).
+ipcMain.on("nudge:backdrop", (event) => {
+  event.returnValue = backdropAttached();
+});
 
 // --- IPC ---
 
@@ -462,6 +681,9 @@ function dismissOrSwitch(action: CloseAction, data: unknown) {
   hideNudge();
   if (restartsTimer(action, lastTriggerSource)) {
     startTimer(parseMinutes((data as { nextMinutes?: unknown } | undefined)?.nextMinutes));
+  } else if (deadlineOwed) {
+    // Spec §4: a Leave from Asking·Manual can be followed at once by Deadline.
+    deadlineDue();
   }
 }
 
@@ -472,7 +694,7 @@ ipcMain.handle("nudge:switch", (_event, data) => dismissOrSwitch("switch", data)
 
 ipcMain.handle("settings:get-config", () => currentConfig);
 
-ipcMain.handle("settings:save", (_event, raw) => {
+ipcMain.handle("settings:save", async (_event, raw) => {
   // The renderer's SettingsForm already validated; we stay defensive against a
   // malformed payload by coercing each field.
   const r = (raw ?? {}) as Partial<Config>;
@@ -480,11 +702,39 @@ ipcMain.handle("settings:save", (_event, raw) => {
     hotkey: String(r.hotkey ?? currentConfig.hotkey),
     default_interval_minutes: parseMinutes(r.default_interval_minutes),
     autostart: Boolean(r.autostart),
+    sprite: normalizeSprite(r.sprite),
   };
+  // Only the file check lives here: an enabled sprite must be a usable PNG.
+  if (config.sprite.enabled) {
+    const file = await readSpriteFile(config.sprite.path);
+    if (!file.ok) return { ok: false as const, error: file.error };
+  }
   saveConfig(getConfigPath(), config);
   // Apply immediately so the live hotkey updates without waiting for the
   // watcher (which will also fire, but diff against currentConfig → no-op).
   applyConfig(config);
+  return { ok: true as const };
+});
+
+// Native e2e affordance (NUDGE_E2E): the next Browse… answers with this path
+// instead of raising the OS dialog, which no test can drive.
+let queuedBrowsePick: string | null = null;
+
+ipcMain.handle("settings:browse-sprite", async () => {
+  if (process.env.NUDGE_E2E && queuedBrowsePick !== null) {
+    const picked = queuedBrowsePick;
+    queuedBrowsePick = null;
+    return picked;
+  }
+  const options: Electron.OpenDialogOptions = {
+    title: "Choose a sprite",
+    filters: [{ name: "PNG image", extensions: ["png"] }],
+    properties: ["openFile"],
+  };
+  const result = settingsWin
+    ? await dialog.showOpenDialog(settingsWin, options)
+    : await dialog.showOpenDialog(options);
+  return result.canceled ? null : (result.filePaths[0] ?? null);
 });
 
 ipcMain.handle("settings:toggle-autostart", (_event, desired: boolean) => {
@@ -509,7 +759,7 @@ ipcMain.on("settings:close", () => settingsWin?.close());
 
 // --- App lifecycle ---
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // macOS: a menu-bar agent — no Dock icon, no Cmd-Tab entry (spec §1).
   if (process.platform === "darwin") {
     app.setActivationPolicy("accessory");
@@ -523,10 +773,19 @@ app.whenReady().then(() => {
   }
   currentConfig = config;
 
+  setSpriteSource(await loadSpriteSource(currentConfig.sprite));
   createWindow();
   createTray();
   registerHotkey(currentConfig);
   startConfigWatcher();
+  // A display's scale factor can change under an open popup (an external
+  // monitor plugged in, a resolution switch): lay the sprite out again on
+  // the display the popup is on — the focus or the cursor may have gone
+  // elsewhere since it was shown. A hidden popup is laid out when it next
+  // shows.
+  screen.on("display-metrics-changed", () => {
+    if (win?.isVisible()) positionCard(screen.getDisplayMatching(win.getBounds()));
+  });
   // First-launch rule (spec §4): show popup immediately, start timer only
   // after the first close (Enter / Esc / Switch). Tray tooltip stays on the
   // default interval until then.
@@ -546,6 +805,10 @@ app.on("will-quit", () => {
 if (process.env.NUDGE_E2E) {
   (globalThis as Record<string, unknown>).__nudgeTest = {
     openSettings: () => openSettings(),
+    queueBrowsePick: (p: string) => {
+      queuedBrowsePick = p;
+    },
+    show: () => showNudge("manual"),
     // Hide the popup (so the refresh does not early-out), take the tray down
     // the way quit does, then tick the refresh once: it must be a no-op.
     tickTrayAfterDestroy: () => {
@@ -570,6 +833,13 @@ if (process.env.NUDGE_E2E) {
       timerArmed: timerId !== null,
       popupVisible: !!win?.isVisible(),
     }),
+    // The macOS glass under the card: whether the addon loaded and where the
+    // view sits, in the page's coordinates.
+    backdrop: () => backdropState(),
+    // What the addon reads as the front window (null off macOS), and the
+    // display the popup would go on right now.
+    frontWindowBounds: () => frontWindowBounds(),
+    currentDisplay: () => currentDisplay(),
   };
 }
 

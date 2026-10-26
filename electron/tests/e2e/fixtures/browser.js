@@ -49,9 +49,9 @@ export async function launchBrowser() {
 /**
  * Open a page with error collection.
  */
-export async function createPage(browser, path = '/') {
+export async function createPage(browser, path = '/', viewport = { width: 800, height: 600 }) {
     const page = await browser.newPage();
-    await page.setViewport({ width: 800, height: 600 });
+    await page.setViewport(viewport);
 
     const consoleErrors = [];
     const pageErrors = [];

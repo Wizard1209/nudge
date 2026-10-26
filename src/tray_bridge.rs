@@ -53,6 +53,11 @@ static HWND_STORE: AtomicIsize = AtomicIsize::new(0);
 
 /// Edge flags polled by `NudgeApp::update()`.
 static TRAY_CLICKED: AtomicBool = AtomicBool::new(false);
+
+/// A sprite change from a config reload, waiting for the app to apply it
+/// while the popup is hidden (spec §10). The newest change replaces an
+/// older one still waiting.
+static PENDING_SPRITE: Mutex<Option<config::SpriteConfig>> = Mutex::new(None);
 static TIMER_FIRED: AtomicBool = AtomicBool::new(false);
 
 /// Set by the config_watcher callback (off the tray thread) when
@@ -130,6 +135,11 @@ pub fn force_foreground(hwnd: HWND) {
             let _ = AttachThreadInput(window_tid, fg_tid, false);
         }
     }
+}
+
+/// The sprite change parked by the last reload, if any; `NudgeApp` drains it.
+pub fn take_pending_sprite() -> Option<config::SpriteConfig> {
+    PENDING_SPRITE.lock().unwrap().take()
 }
 
 pub fn set_tray_clicked() {
@@ -564,6 +574,16 @@ fn apply_config_reload(
                     "[nudge] config reload: autostart {} → {} (settings process owns registry)",
                     previous_cfg.autostart, new_cfg.autostart
                 );
+            }
+            // Drained by `NudgeApp::logic` on the next frame — the reveal's,
+            // when the popup is hidden, which is where it has to be applied
+            // anyway. The window itself is still the 520×320 box here: the
+            // Windows port of the shield (spec §1) is pending.
+            // TODO: wake eframe here without `force_foreground` once the
+            // Windows shield lands.
+            ConfigChange::Sprite { to } => {
+                eprintln!("[nudge] config reload: sprite → {to:?} (applied while hidden)");
+                *PENDING_SPRITE.lock().unwrap() = Some(to.clone());
             }
         }
     }

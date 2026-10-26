@@ -320,48 +320,119 @@ describe('popup visual', () => {
         await browser?.close();
     });
 
-    it('card is 480px wide with subtle rounded corners', async () => {
+    it('card is 480px wide with corners rounded at 16 (§2)', async () => {
         const { width, radius } = await page.$eval('[data-testid="nudge"]', (el) => {
             const s = getComputedStyle(el);
             return { width: el.getBoundingClientRect().width, radius: s.borderTopLeftRadius };
         });
         expect(width).toBe(480);
-        // rounded-lg = 0.5rem = 8px (matches Win11 frameless window radius)
-        expect(radius).toBe('8px');
+        expect(radius).toBe('16px');
     });
 
-    it('card has translucent dark background (~80% zinc-900)', async () => {
+    it('card fill is (24,24,27) at a flat 95% where nothing frosts the window (§2)', async () => {
+        // The browser build has no compositor material behind the card, so
+        // the fill is the surface: 95% effective opacity on its own.
         const bg = await page.$eval('[data-testid="nudge"]', (el) => getComputedStyle(el).backgroundColor);
-        // Tailwind v4 emits oklab/oklch. Easiest invariant: alpha > 0.7 and < 0.95.
-        // Either format includes the alpha as a trailing '/ <num>'.
-        const match = bg.match(/\/\s*([\d.]+)\)?\s*$/);
-        expect(match, `bg = ${bg}`).not.toBeNull();
-        const alpha = parseFloat(match[1]);
-        expect(alpha).toBeGreaterThanOrEqual(0.7);
-        expect(alpha).toBeLessThanOrEqual(0.95);
+        expect(bg).toBe('rgba(24, 24, 27, 0.95)');
     });
 
-    it('card top edge sits ~25% from top of viewport (§1)', async () => {
-        // Spec §1: top edge of card at 25% of screen height. Card grows
-        // downward from that point — explicitly not vertically centred.
+    it('card contour is a 1px white hairline at 60/255 inside the edge (§2)', async () => {
+        const shadow = await page.$eval('[data-testid="nudge"]', (el) => getComputedStyle(el).boxShadow);
+        // The ring, then the drop shadow the browser build draws because no
+        // compositor will (offset 12, blur 40, black at 160/255).
+        expect(shadow).toBe(
+            'rgba(255, 255, 255, 0.235) 0px 0px 0px 1px inset, rgba(0, 0, 0, 0.627) 0px 12px 40px 0px',
+        );
+    });
+
+    it('rows are 42.5 tall, separated by 1px white lines at 50/255 (§2)', async () => {
+        const rows = await page.$$eval('[data-testid="nudge"] input', (els) =>
+            els.map((el) => {
+                const s = getComputedStyle(el);
+                const row = getComputedStyle(el.parentElement);
+                return {
+                    height: el.getBoundingClientRect().height,
+                    font: s.fontSize,
+                    lineHeight: s.lineHeight,
+                    padding: [s.paddingTop, s.paddingRight, s.paddingBottom, s.paddingLeft],
+                    separator: row.borderBottomWidth,
+                    separatorColor: row.borderBottomColor,
+                };
+            }),
+        );
+        expect(rows).toHaveLength(3);
+        for (const r of rows) {
+            expect(Math.abs(r.height - 42.5)).toBeLessThanOrEqual(0.5);
+            expect(r.font).toBe('16px');
+            expect(r.lineHeight).toBe('18.5px');
+            expect(r.padding).toEqual(['12px', '20px', '12px', '20px']);
+        }
+        // Two separators between three rows; none under the last.
+        expect(rows.map((r) => r.separator)).toEqual(['1px', '1px', '0px']);
+        expect(rows[0].separatorColor).toBe('rgba(255, 255, 255, 0.196)');
+        expect(rows[1].separatorColor).toBe(rows[0].separatorColor);
+        const cardHeight = await page.$eval('[data-testid="nudge"]', (el) => el.getBoundingClientRect().height);
+        expect(Math.abs(cardHeight - 129.5)).toBeLessThanOrEqual(0.5);
+    });
+
+    it('placeholders are gray 170, typed text is (235,235,240) (§3)', async () => {
+        await page.type('[data-testid="field-doing"]', 'x');
+        const { placeholder, text } = await page.$eval('[data-testid="field-bullshit"]', (el) => ({
+            placeholder: getComputedStyle(el, '::placeholder').color,
+            text: getComputedStyle(el).color,
+        }));
+        expect(placeholder).toBe('rgb(170, 170, 170)');
+        expect(text).toBe('rgb(235, 235, 240)');
+        await page.$eval('[data-testid="field-doing"]', (el) => {
+            el.value = '';
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+    });
+
+    it('card top edge sits at 25% of the viewport + 80px (§1)', async () => {
+        // Spec §1: top edge of card at 25% of screen height plus 80. Card
+        // grows downward from that point — explicitly not vertically centred.
         const { topY, viewportH } = await page.evaluate(() => {
             const el = document.querySelector('[data-testid="nudge"]');
             const r = el.getBoundingClientRect();
             return { topY: r.top, viewportH: window.innerHeight };
         });
-        const ratio = topY / viewportH;
-        // Tolerate ±1% for sub-pixel layout; this is a positional spec, not pixel-perfect.
-        expect(ratio).toBeGreaterThanOrEqual(0.24);
-        expect(ratio).toBeLessThanOrEqual(0.26);
+        // ±1px for sub-pixel layout; this is a positional spec, not pixel-perfect.
+        expect(Math.abs(topY - (viewportH * 0.25 + 80))).toBeLessThanOrEqual(1);
     });
 
-    it('card has backdrop-filter blur (frosted glass, §2)', async () => {
+    it('card draws no blur of its own: the frost is the compositor\'s (§2)', async () => {
         const filter = await page.$eval(
             '[data-testid="nudge"]',
             (el) => getComputedStyle(el).backdropFilter,
         );
-        // Spec §2: surface is translucent with blur so what's behind shows through, blurred.
-        expect(filter).toMatch(/blur\(/);
+        // A backdrop-filter can only blur the page, and behind the card the
+        // page is empty; the desktop behind the window is the OS's to blur.
+        expect(filter).toBe('none');
+    });
+
+    it('card text is set in Ubuntu Light 16px, the egui default face', async () => {
+        // The reference app renders with egui's bundled Ubuntu Light; the
+        // renderer bundles the same file so both surfaces shape text alike.
+        const { face, checked, family, size, weight } = await page.evaluate(async () => {
+            await document.fonts.ready;
+            const face = [...document.fonts].find(
+                (f) => f.family.replace(/"/g, '') === 'Ubuntu',
+            );
+            const s = getComputedStyle(document.querySelector('[data-testid="nudge"] input'));
+            return {
+                face: face ? { status: face.status, weight: face.weight } : null,
+                checked: document.fonts.check('300 16px Ubuntu'),
+                family: s.fontFamily,
+                size: s.fontSize,
+                weight: s.fontWeight,
+            };
+        });
+        expect(face).toEqual({ status: 'loaded', weight: '300' });
+        expect(checked).toBe(true);
+        expect(family).toMatch(/^"?Ubuntu"?/);
+        expect(size).toBe('16px');
+        expect(weight).toBe('300');
     });
 
     it('focused row has a visible background tint distinct from unfocused rows', async () => {

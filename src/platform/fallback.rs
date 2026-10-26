@@ -19,6 +19,7 @@ use eframe::egui;
 
 use crate::config;
 use crate::hotkey::Hotkey;
+use crate::sprite::ScreenGeometry;
 
 pub fn start(_hotkey: Option<Hotkey>, _config_path: std::path::PathBuf, _initial: config::Config) {}
 
@@ -42,11 +43,19 @@ pub fn set_popup_visible(_visible: bool) {}
 
 pub fn request_config_reload() {}
 
+pub fn take_pending_sprite() -> Option<config::SpriteConfig> {
+    None
+}
+
 pub fn focus_popup(_ctx: &egui::Context) {}
 
 pub fn tick(_ctx: &egui::Context) {}
 
 pub fn sync_card_backdrop(_ctx: &egui::Context, _frame: &eframe::Frame, _card: egui::Rect) {}
+
+pub fn screen_geometry(_ctx: &egui::Context, _frame: &eframe::Frame) -> Option<ScreenGeometry> {
+    None
+}
 
 pub fn install_native_fonts(_ctx: &egui::Context) {}
 

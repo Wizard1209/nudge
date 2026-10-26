@@ -717,14 +717,47 @@ impl Ui {
         field.value.clone()
     }
 
-    /// The status line above the Save button, when there is one.
+    /// The status line above the Save button, when there is one: the static
+    /// text right before the button, since the rows above it end in a text
+    /// field.
     fn banner(&self) -> Option<String> {
-        let i = self.index_of_role("AXCheckBox")?;
+        let i = self
+            .0
+            .iter()
+            .position(|e| e.role == "AXButton" && e.name == "Save")?;
+        self.0
+            .get(i.checked_sub(1)?)
+            .filter(|e| e.role == "AXStaticText")
+            .map(|e| e.name.clone())
+    }
+
+    /// The `Saved` note beside the buttons (§9), when there is one: the
+    /// static text right after the window's Cancel button, which is the last
+    /// button in the window.
+    fn saved_note(&self) -> Option<String> {
+        let i = self
+            .0
+            .iter()
+            .rposition(|e| e.role == "AXButton" && e.name == "Cancel")?;
         self.0
             .get(i + 1)
             .filter(|e| e.role == "AXStaticText")
             .map(|e| e.name.clone())
     }
+}
+
+/// Put something unsaved into the window: §9 greys `Save` while the form
+/// matches the file, so a case that wants to click it edits first.
+fn edit_the_interval(to: &str) {
+    focus_interval_field();
+    set_pasteboard(to);
+    press_chord(VK_ANSI_A, CGEventFlags::CGEventFlagCommand); // select all
+    press_chord(VK_ANSI_V, CGEventFlags::CGEventFlagCommand);
+    assert_eq!(
+        Ui::settings().interval_field(),
+        to,
+        "the paste did not reach the interval field, so there is nothing to save"
+    );
 }
 
 /// Click a named button in the settings window.
@@ -754,9 +787,13 @@ fn click_button(name: &str) {
 /// action on a text field, so `click` on one raises an error rather than
 /// focusing it. The flag is read back, so a helper that quietly did nothing
 /// would fail here rather than in the assertion it was setting up.
+///
+/// The second text field when the recorder is idle: the hotkey's is the
+/// first, and the sprite rows' come after. Armed, the hotkey field is not
+/// shown, so this is only called idle.
 fn focus_interval_field() {
     let answer = ask_settings_window(
-        r#"set f to last text field of g
+        r#"set f to text field 2 of g
                      set frontmost of p to true
                      set focused of f to true
                      delay 0.3
@@ -1609,17 +1646,27 @@ fn cmd_space_registers_and_is_still_reported_as_the_systems() {
 /// ...and the user is the one told. The status above is only evidence for the
 /// bullet if it reaches the window, which is the half nothing else covers:
 /// `Save` turns it into a banner, and the banner is read back off the window.
+///
+/// Each window is edited before `Save` is clicked: §9 greys the button while
+/// the form matches the file.
 #[test]
 #[ignore = "needs a real desktop; run via scripts/native-tests-macos.sh"]
 fn saving_cmd_space_says_the_system_holds_it() {
     let app = Sandboxed::settings("Cmd+Space");
     assert_eq!(Ui::settings().hotkey_field().as_deref(), Some("⌘Space"));
 
+    edit_the_interval("15");
     click_button("Save");
-    let banner = Ui::settings().banner().expect("Save must say something");
+    let ui = Ui::settings();
+    let banner = ui.banner().expect("Save must say something");
     assert!(
         banner.contains("system shortcut"),
         "⌘Space was accepted silently: {banner:?}"
+    );
+    assert_eq!(
+        ui.saved_note().as_deref(),
+        Some("Saved"),
+        "a warning is still a save that reached the file"
     );
     assert_eq!(
         app.saved_hotkey(),
@@ -1633,9 +1680,15 @@ fn saving_cmd_space_says_the_system_holds_it() {
     // The control: an unclaimed combination saves with no such warning, so the
     // assertion above is about ⌘Space rather than about every Save.
     let free = Sandboxed::settings("Alt+Cmd+J");
+    edit_the_interval("15");
     click_button("Save");
-    let banner = Ui::settings().banner().expect("Save must say something");
-    assert_eq!(banner, "Saved", "⌥⌘J is not the system's: {banner:?}");
+    let ui = Ui::settings();
+    assert_eq!(
+        ui.banner(),
+        None,
+        "⌥⌘J is not the system's, so there is nothing to warn about"
+    );
+    assert_eq!(ui.saved_note().as_deref(), Some("Saved"));
     assert_eq!(free.saved_hotkey(), "⌥⌘J");
 }
 

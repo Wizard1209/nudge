@@ -31,22 +31,30 @@
 //!   transactionally; the main process never touches autostart on its
 //!   own. Record-keeping only.
 
-use crate::config::Config;
+use crate::config::{Config, SpriteConfig};
 
 /// A single field-level change between two configs. Returned by `diff`
 /// for every field that differs; the caller decides which ones imply
 /// live UI action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigChange {
-    Hotkey { from: String, to: String },
+    Hotkey {
+        from: String,
+        to: String,
+    },
     Interval,
     Autostart,
+    /// Any field of the sprite block (spec §10); one change for the whole
+    /// block, since it is applied as one.
+    Sprite {
+        to: SpriteConfig,
+    },
 }
 
 /// Compute the set of field-level changes from `old` to `new`. Empty
 /// vec when the configs are equal. Stable order: hotkey, interval,
-/// autostart — matches the field order in the struct so callers can
-/// rely on it for logging without sorting.
+/// autostart, sprite — matches the field order in the struct so callers
+/// can rely on it for logging without sorting.
 pub fn diff(old: &Config, new: &Config) -> Vec<ConfigChange> {
     let mut out = Vec::new();
     if old.hotkey != new.hotkey {
@@ -63,6 +71,11 @@ pub fn diff(old: &Config, new: &Config) -> Vec<ConfigChange> {
     }
     if old.autostart != new.autostart {
         out.push(ConfigChange::Autostart);
+    }
+    if old.sprite != new.sprite {
+        out.push(ConfigChange::Sprite {
+            to: new.sprite.clone(),
+        });
     }
     out
 }
@@ -164,13 +177,14 @@ mod native {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
+    use crate::config::{Config, SpriteConfig};
 
     fn cfg_with(hotkey: &str, interval: f64, autostart: bool) -> Config {
         Config {
             hotkey: hotkey.to_string(),
             default_interval_minutes: interval,
             autostart,
+            ..Config::default()
         }
     }
 
@@ -222,6 +236,70 @@ mod tests {
         assert!(matches!(changes[0], ConfigChange::Hotkey { .. }));
         assert_eq!(changes[1], ConfigChange::Interval);
         assert_eq!(changes[2], ConfigChange::Autostart);
+    }
+
+    #[test]
+    fn diff_flags_each_sprite_field() {
+        let base = Config {
+            sprite: SpriteConfig {
+                enabled: true,
+                path: "/a/b.png".to_string(),
+                x: -41,
+                y: -277,
+                card_width: 679,
+            },
+            ..Config::default()
+        };
+        let s = &base.sprite;
+        let changed = [
+            (
+                "enabled",
+                SpriteConfig {
+                    enabled: false,
+                    ..s.clone()
+                },
+            ),
+            (
+                "path",
+                SpriteConfig {
+                    path: "/c.png".to_string(),
+                    ..s.clone()
+                },
+            ),
+            ("x", SpriteConfig { x: 0, ..s.clone() }),
+            ("y", SpriteConfig { y: 1, ..s.clone() }),
+            (
+                "card_width",
+                SpriteConfig {
+                    card_width: 480,
+                    ..s.clone()
+                },
+            ),
+        ];
+        for (field, sprite) in changed {
+            let next = Config {
+                sprite,
+                ..base.clone()
+            };
+            assert_eq!(
+                diff(&base, &next),
+                vec![ConfigChange::Sprite {
+                    to: next.sprite.clone()
+                }],
+                "{field} changed alone"
+            );
+        }
+        assert!(diff(&base, &base.clone()).is_empty(), "identical copy");
+        let hotkey_only = Config {
+            hotkey: "Alt+J".to_string(),
+            ..base.clone()
+        };
+        assert!(
+            !diff(&base, &hotkey_only)
+                .iter()
+                .any(|c| matches!(c, ConfigChange::Sprite { .. })),
+            "a hotkey change alone is not a sprite change"
+        );
     }
 
     #[test]

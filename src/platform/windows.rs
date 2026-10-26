@@ -14,9 +14,11 @@ use eframe::egui;
 
 use crate::config;
 use crate::hotkey::Hotkey;
+use crate::sprite::ScreenGeometry;
 
 pub use crate::tray_bridge::{
-    request_config_reload, set_popup_visible, set_timer_state, take_timer_fired, take_tray_clicked,
+    request_config_reload, set_popup_visible, set_timer_state, take_pending_sprite,
+    take_timer_fired, take_tray_clicked,
 };
 
 /// The raise side of `take_tray_clicked`. No caller goes through the seam for
@@ -60,6 +62,23 @@ pub fn tick(_ctx: &egui::Context) {}
 /// it is not implemented — the card there is a plain translucent fill, as it
 /// has always been.
 pub fn sync_card_backdrop(_ctx: &egui::Context, _frame: &eframe::Frame, _card: egui::Rect) {}
+
+/// No screen to report on Windows yet, so the popup keeps its 520×320 box at
+/// the position `main.rs` computed at creation; the card sits in the box as
+/// it always has. The spec's click shield (§1) is pending here, and so is
+/// the sprite (§10): without a layout there is no sprite rect, so the
+/// texture `main.rs` uploads is never drawn and `card_width` is ignored.
+// TODO: GetForegroundWindow → MonitorFromWindow + GetMonitorInfoW rcMonitor/rcWork,
+// in points: the monitor of the front window, else the cursor's (spec §1, which monitor).
+// The rule itself is `crate::screen_pick::pick_screen` (tested, every target):
+// feed it the foreground window's rect (GetWindowRect), the cursor
+// (GetCursorPos) and every monitor (EnumDisplayMonitors), all in virtual-screen
+// points, and read the chosen monitor's rcMonitor/rcWork back — at show time,
+// before the popup takes the foreground, the way `platform::macos::reveal` does.
+// TODO: sprite drawing pending — no layout without screen geometry.
+pub fn screen_geometry(_ctx: &egui::Context, _frame: &eframe::Frame) -> Option<ScreenGeometry> {
+    None
+}
 
 /// No-op on Windows: the shortcut vocabulary here is words (`Ctrl+Shift+A`),
 /// and every glyph in that is in egui's default fonts.

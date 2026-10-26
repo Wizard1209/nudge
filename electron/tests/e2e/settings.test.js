@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { launchBrowser, createPage } from './fixtures/browser.js';
+import { SPRITE_FIXTURE_PATH } from './fixtures/sprite.js';
+import { opaqueRgbaPng, rgbPng } from '../fixtures/png.js';
+import { SPRITE_ERROR } from '../../src/shared/sprite.ts';
 
 const STORAGE_KEY = 'nudge-config';
 
@@ -31,6 +34,16 @@ const recorderState = (page) =>
     page.$eval('[data-testid="settings-hotkey-record"]', (el) => el.dataset.recorder);
 const bannerText = (page) =>
     page.$eval('[data-testid="settings-banner"]', (el) => el.textContent).catch(() => null);
+const savedNote = (page) =>
+    page.$eval('[data-testid="settings-saved"]', (el) => el.textContent.trim()).catch(() => null);
+const saveDisabled = (page) =>
+    page.$eval('[data-testid="settings-save"]', (el) => el.disabled);
+
+/** Replace a field's text by typing into it, so the page sees real edits. */
+async function retype(page, id, text) {
+    await page.click(`[data-testid="${id}"]`, { clickCount: 3 });
+    await page.type(`[data-testid="${id}"]`, text);
+}
 
 async function arm(page) {
     await page.click('[data-testid="settings-hotkey-record"]');
@@ -75,6 +88,14 @@ describe('settings sub-app', () => {
         expect(await page.$('[data-testid="settings-cancel"]')).not.toBeNull();
     });
 
+    // §9: the autostart row names the platform's own mechanism, and the
+    // browser under test runs on this host.
+    it('names the autostart row after the platform', async () => {
+        const text = await page.$eval('[data-testid="settings-autostart"]', (el) =>
+            el.closest('label').textContent.trim());
+        expect(text).toBe(spell('Open at login', 'Launch with Windows'));
+    });
+
     it('prints the accepted vocabulary under the field (§9)', async () => {
         const text = await page.$eval(
             '[data-testid="settings-hotkey-vocabulary"]',
@@ -85,13 +106,133 @@ describe('settings sub-app', () => {
         expect(text).toContain("- = [ ] \\ ; ' , . / `");
     });
 
-    it('seeds the default config on Save with no edits', async () => {
+    it('writes the whole config on the first Save, defaults included', async () => {
+        await retype(page, 'settings-interval', '15');
         await page.click('[data-testid="settings-save"]');
         const stored = await readStored(page);
         expect(stored).toEqual({
             hotkey: spell('⌃⇧Space', 'Ctrl+Shift+Space'),
-            default_interval_minutes: 10,
+            default_interval_minutes: 15,
             autostart: false,
+            sprite: { enabled: false, path: '', x: 0, y: 0, card_width: 480 },
+        });
+    });
+
+    describe('saving (§9)', () => {
+        // §9 Saving: "`Save` is live only while the form differs from the
+        // file, so a form that reads as unedited is one whose content is on
+        // disk."
+        it('keeps Save greyed while the form matches the file', async () => {
+            expect(await saveDisabled(page)).toBe(true);
+            await retype(page, 'settings-interval', '15');
+            expect(await saveDisabled(page)).toBe(false);
+            // Typing the stored value back is no edit: nothing differs.
+            await retype(page, 'settings-interval', '10');
+            expect(await saveDisabled(page)).toBe(true);
+            await retype(page, 'settings-interval', '15');
+            await page.click('[data-testid="settings-save"]');
+            await page.waitForFunction(() => localStorage.getItem('nudge-config'));
+            expect(await saveDisabled(page)).toBe(true);
+        });
+
+        // §9 Saving: "A save that reached the file says so — `Saved`, beside
+        // the buttons — and the first edit after it takes the note away."
+        it('says Saved after a save, until the first edit', async () => {
+            expect(await savedNote(page)).toBeNull();
+            await retype(page, 'settings-interval', '15');
+            await page.click('[data-testid="settings-save"]');
+            await page.waitForSelector('[data-testid="settings-saved"]');
+            expect(await savedNote(page)).toBe('Saved');
+            await page.type('[data-testid="settings-interval"]', '0');
+            expect(await savedNote(page)).toBeNull();
+        });
+
+        // §9 Saving: "The note is the button's: an autostart click, committed
+        // on its own, takes it away like any other edit and raises none."
+        it('an autostart click after a save takes the note away and raises none', async () => {
+            await retype(page, 'settings-interval', '15');
+            await page.click('[data-testid="settings-save"]');
+            await page.waitForSelector('[data-testid="settings-saved"]');
+            await page.click('[data-testid="settings-autostart"]');
+            expect(await savedNote(page)).toBeNull();
+            expect((await readStored(page)).autostart).toBe(true);
+            expect(await saveDisabled(page)).toBe(true);
+        });
+
+        it('does not say Saved for a save that was refused', async () => {
+            await retype(page, 'settings-hotkey', 'Ctrl+Numpad5');
+            await page.click('[data-testid="settings-save"]');
+            expect(await bannerText(page)).toContain('Numpad5');
+            expect(await savedNote(page)).toBeNull();
+        });
+
+        // §9 Saving: "Return anywhere in the form is `Save`: the same checks,
+        // the same write, the same messages as the button."
+        it('saves on Return in any field', async () => {
+            await retype(page, 'settings-interval', '15');
+            await page.keyboard.press('Enter');
+            await page.waitForFunction(() => localStorage.getItem('nudge-config'));
+            expect((await readStored(page)).default_interval_minutes).toBe(15);
+            expect(await savedNote(page)).toBe('Saved');
+
+            await retype(page, 'settings-sprite-x', '7');
+            await page.keyboard.press('Enter');
+            await page.waitForFunction(() => JSON.parse(localStorage.getItem('nudge-config')).sprite.x === 7);
+            expect((await readStored(page)).sprite.x).toBe(7);
+        });
+
+        it('runs the same checks on Return, and shows the same message', async () => {
+            await retype(page, 'settings-hotkey', 'Ctrl+Numpad5');
+            await page.keyboard.press('Enter');
+            expect(await bannerText(page)).toContain('Numpad5');
+            expect(await readStored(page)).toBeNull();
+        });
+
+        it('does nothing on Return while there is nothing to save', async () => {
+            await page.focus('[data-testid="settings-interval"]');
+            await page.keyboard.press('Enter');
+            expect(await readStored(page)).toBeNull();
+            expect(await savedNote(page)).toBeNull();
+        });
+
+        // §9 Saving: "A focused button or checkbox keeps its own Return —
+        // `Cancel` stays `Cancel`."
+        it('leaves Return to a focused button or checkbox', async () => {
+            await retype(page, 'settings-interval', '15');
+            await page.focus('[data-testid="settings-autostart"]');
+            await page.keyboard.press('Enter');
+            expect(await readStored(page)).toBeNull();
+            expect(await savedNote(page)).toBeNull();
+            expect(await saveDisabled(page)).toBe(false);
+
+            await page.focus('[data-testid="settings-cancel"]');
+            await page.keyboard.press('Enter');
+            expect(await readStored(page)).toBeNull();
+            expect(await page.$eval('[data-testid="settings-interval"]', (el) => el.value)).toBe('10');
+        });
+
+        // §9 Saving: "A Return that ends an input-method composition is the
+        // composition's, not a save."
+        it('leaves a composition-ending Return to the field', async () => {
+            await retype(page, 'settings-interval', '15');
+            // Puppeteer cannot drive an IME; the event it would deliver is
+            // dispatched by hand, at the field, with the composing flag up.
+            await page.$eval('[data-testid="settings-interval"]', (el) =>
+                el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true, cancelable: true })));
+            expect(await readStored(page)).toBeNull();
+            expect(await savedNote(page)).toBeNull();
+            expect(await saveDisabled(page)).toBe(false);
+        });
+
+        // §9 Saving: "While the recorder is armed the key is the recorder's —
+        // a press, not a save."
+        it('leaves Return to an armed recorder', async () => {
+            await retype(page, 'settings-interval', '15');
+            await arm(page);
+            await page.keyboard.press('Enter');
+            expect(await recorderState(page)).toBe('armed');
+            expect(await bannerText(page)).toContain('Enter needs a modifier');
+            expect(await readStored(page)).toBeNull();
         });
     });
 
@@ -118,6 +259,17 @@ describe('settings sub-app', () => {
         await page.type('[data-testid="settings-hotkey"]', 'Ctrl+Numpad5');
         await page.click('[data-testid="settings-save"]');
         expect(await bannerText(page)).toContain('Numpad5');
+        expect(await readStored(page)).toBeNull();
+    });
+
+    it('quotes a bounded head of a refused token, so the message line has a longest message (§9)', async () => {
+        const token = 'abcdefghij'.repeat(15);
+        await page.click('[data-testid="settings-hotkey"]', { clickCount: 3 });
+        await page.type('[data-testid="settings-hotkey"]', `Ctrl+${token}`);
+        await page.click('[data-testid="settings-save"]');
+        const banner = await bannerText(page);
+        expect(banner).toContain(`"${token.slice(0, 40)}…"`);
+        expect(banner).not.toContain(token);
         expect(await readStored(page)).toBeNull();
     });
 
@@ -264,5 +416,130 @@ describe('settings sub-app', () => {
         await page.click('[data-testid="settings-autostart"]');
         const stored = await readStored(page);
         expect(stored.autostart).toBe(true);
+    });
+
+    describe('sprite section', () => {
+        const IDS = [
+            'settings-sprite-enabled',
+            'settings-sprite-path',
+            'settings-sprite-x',
+            'settings-sprite-y',
+            'settings-card-width',
+        ];
+        const dataUrl = (buf) => `data:image/png;base64,${buf.toString('base64')}`;
+
+        // Svelte's bind:value listens for `input`; set long values in one go.
+        async function setField(id, value) {
+            await page.$eval(`[data-testid="${id}"]`, (el, v) => {
+                el.value = v;
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+            }, value);
+        }
+
+        async function spriteError() {
+            const el = await page.$('[data-testid="settings-sprite-error"]');
+            return el ? el.evaluate((e) => e.textContent.trim()) : null;
+        }
+
+        it('shows enabled, path, X, Y, card width — in that order, after autostart', async () => {
+            const order = await page.evaluate((ids) => {
+                const els = ['settings-autostart', ...ids].map((id) => document.querySelector(`[data-testid="${id}"]`));
+                if (els.some((e) => !e)) return null;
+                return els.slice(1).every((el, i) =>
+                    els[i].compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING);
+            }, IDS);
+            expect(order).toBe(true);
+        });
+
+        it('starts off, with an empty path, at (0, 0) and a 480px card', async () => {
+            const values = await page.evaluate((ids) => ids.map((id) => {
+                const el = document.querySelector(`[data-testid="${id}"]`);
+                return el.type === 'checkbox' ? el.checked : el.value;
+            }), IDS);
+            expect(values).toEqual([false, '', '0', '0', '480']);
+        });
+
+        // §10: "`x`, `y`, `card_width`, labelled in points" — the unit once,
+        // on the row, like `min` after the interval; the fields keep bare names.
+        it('labels the position row in points, and says so when refusing a field', async () => {
+            const labels = await page.evaluate((ids) => ids.map((id) =>
+                document.querySelector(`[data-testid="${id}"]`).closest('label').querySelector('span').textContent.trim()),
+            ['settings-sprite-x', 'settings-sprite-y', 'settings-card-width']);
+            expect(labels).toEqual(['X', 'Y', 'Card width']);
+            expect(await page.$eval('[data-testid="settings-sprite-position"]', (el) => el.textContent.trim()))
+                .toBe('Position (pt)');
+
+            for (const [id, pattern] of [
+                ['settings-sprite-x', /X must be a whole number of points/],
+                ['settings-sprite-y', /Y must be a whole number of points/],
+                ['settings-card-width', /Card width must be a positive whole number of points/],
+            ]) {
+                await page.reload({ waitUntil: 'networkidle0' });
+                await setField(id, '1.5');
+                await page.click('[data-testid="settings-save"]');
+                await page.waitForSelector('[data-testid="settings-sprite-error"]');
+                expect(await spriteError()).toMatch(pattern);
+            }
+        });
+
+        it('has no Browse button in the browser sub-app', async () => {
+            expect(await page.$('[data-testid="settings-sprite-browse"]')).toBeNull();
+        });
+
+        it('saves a valid sprite', async () => {
+            await page.click('[data-testid="settings-sprite-enabled"]');
+            await setField('settings-sprite-path', SPRITE_FIXTURE_PATH);
+            await setField('settings-sprite-x', '-41');
+            await setField('settings-sprite-y', '-277');
+            await setField('settings-card-width', '679');
+            await page.click('[data-testid="settings-save"]');
+            await page.waitForFunction(() => localStorage.getItem('nudge-config'));
+            expect((await readStored(page)).sprite).toEqual({
+                enabled: true, path: SPRITE_FIXTURE_PATH, x: -41, y: -277, card_width: 679,
+            });
+            expect(await spriteError()).toBeNull();
+        });
+
+        for (const [name, path, error] of [
+            ['an empty path', '', SPRITE_ERROR.noPath],
+            ['a non-PNG', '/index.html', SPRITE_ERROR.notPng],
+            ['a PNG without alpha', dataUrl(rgbPng()), SPRITE_ERROR.noAlpha],
+            ['a fully opaque PNG', dataUrl(opaqueRgbaPng()), SPRITE_ERROR.opaque],
+        ]) {
+            it(`blocks Save for an enabled sprite with ${name}, showing why`, async () => {
+                await page.click('[data-testid="settings-sprite-enabled"]');
+                await setField('settings-sprite-path', path);
+                await page.click('[data-testid="settings-save"]');
+                await page.waitForSelector('[data-testid="settings-sprite-error"]');
+                expect(await spriteError()).toBe(error);
+                expect(await readStored(page)).toBeNull();
+            });
+        }
+
+        it('saves a disabled sprite whatever its path', async () => {
+            await setField('settings-sprite-path', '/nope.png');
+            await page.click('[data-testid="settings-save"]');
+            await page.waitForFunction(() => localStorage.getItem('nudge-config'));
+            expect((await readStored(page)).sprite).toMatchObject({ enabled: false, path: '/nope.png' });
+            expect(await spriteError()).toBeNull();
+        });
+
+        it('blocks Save on a non-integer X, inline', async () => {
+            await setField('settings-sprite-x', '1.5');
+            await page.click('[data-testid="settings-save"]');
+            await page.waitForSelector('[data-testid="settings-sprite-error"]');
+            expect(await spriteError()).toMatch(/X/);
+            expect(await readStored(page)).toBeNull();
+        });
+
+        it('clears the error once a fixed form saves', async () => {
+            await page.click('[data-testid="settings-sprite-enabled"]');
+            await page.click('[data-testid="settings-save"]');
+            await page.waitForSelector('[data-testid="settings-sprite-error"]');
+            await setField('settings-sprite-path', SPRITE_FIXTURE_PATH);
+            await page.click('[data-testid="settings-save"]');
+            await page.waitForFunction(() => localStorage.getItem('nudge-config'));
+            expect(await spriteError()).toBeNull();
+        });
     });
 });

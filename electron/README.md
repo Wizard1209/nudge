@@ -8,12 +8,17 @@ visually. It is a workbench, not a second product.
 ## Workflow
 
 1. **Prototype here.** Try a new feature or a design change in this Electron app
-   first — it is quick to build, quick to run, and easy to eyeball.
+   first — it is quick to build, quick to run, and easy to eyeball. Product
+   decisions are the owner's: the prototype proposes, it does not decide.
 2. **Capture it in the spec.** Once the behavior is settled, write it into the
-   shared spec under [`../docs/`](../docs) (`design-spec.md`, `journal-spec.md`).
-   The spec is the contract both implementations follow.
-3. **Port to Rust.** The Rust app (the repo root) is then updated to match, from
-   the spec plus this prototype as the working reference.
+   shared spec under [`../docs/`](../docs) (`design-spec.md`, `journal-spec.md`)
+   at the spec's own precision — feel and function, not pixels. The spec is
+   the contract both implementations follow.
+3. **Derive the tests from the spec.** Every unit and e2e case and every
+   LLM-judge prompt comes from a spec sentence, cites it, and asserts what the
+   sentence says — not what the code happens to do.
+4. **Port to Rust** red-green against those tests, from the spec with this
+   prototype as the working reference.
 
 One commit is one spec state: the two implementations and the spec move together.
 `package.json`'s `version` tracks the Rust `Cargo.toml` version.
