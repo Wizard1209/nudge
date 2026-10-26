@@ -66,7 +66,7 @@ function makePetals(p){
   const r=mulberry32(p.seed*7919+1), sp=p.spread, e=p.ent, N=p.n;
   const gap=360/N; const pet=[];
   // angles: jitter each gap by cv*ent, then renormalise to 360
-  let gaps=[];for(let i=0;i<N;i++)gaps.push(gap*Math.max(0.2,1+gauss(r)*sp.angle_gap_cv*e*p.k_ang));
+  let gaps=[];for(let i=0;i<N;i++)gaps.push(gap*Math.max(0.5,1+gauss(r)*sp.angle_gap_cv*e*p.k_ang)); // a gap never closes below half a slot
   const sum=gaps.reduce((a,b)=>a+b,0); gaps=gaps.map(g=>g*360/sum);
   let a=0;
   for(let i=0;i<N;i++){
@@ -79,6 +79,8 @@ function makePetals(p){
     pet.push({ang:a,len,wid,tilt,prof,order:r()});
     a+=gaps[i];
   }
+  // the longest petal must stay on the canvas: tip 31 of a half-canvas 32, so lengths above 32/31 shrink the whole head
+  const lmax=Math.max(...pet.map(q=>q.len)); if(lmax*31>32) pet.forEach(q=>q.len*=32/(lmax*31));
   return pet;
 }
 // The baked form of one parameter set: what the app renderers read (docs/daisy/daisy.json).
