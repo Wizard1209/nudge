@@ -42,6 +42,14 @@ raw-window-handle = "0.6"
 # backends, and this is not built there. On macOS its objc2 0.6 line is the
 # one arboard already pulls in, so this adds no second objc2 tree.
 rfd = { version = "0.15", default-features = false, features = ["common-controls-v6"] }
+# The tray daisy is `assets/daisy.svg`, rasterised at the host's pixel size
+# (spec §5). No default features: those are text shaping, system fonts,
+# svgz and embedded raster images, none of which a 16-path icon uses — paths,
+# gradients, groups and transforms are the core and need no feature.
+resvg = { version = "0.49", default-features = false }
+# Fallen petals are spliced out of the SVG text by id before parsing, which
+# needs element byte ranges. Already in the tree under usvg, same version.
+roxmltree = "0.21"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # The notification-area icon. Windows-only: the menu it builds is `muda`'s,
