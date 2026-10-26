@@ -220,6 +220,19 @@ export function parseHotkey(input: string): ParseResult {
   return { ok: true, hotkey };
 }
 
+/** How much of the user's own text a message quotes back: this many
+ * characters, then an ellipsis. */
+export const ECHO_LIMIT = 40;
+
+/** `text` as a message quotes it. What was typed can be anything — a pasted
+ * paragraph — and a message that echoes all of it has no bound on its own
+ * length; one that shows the first ECHO_LIMIT characters still names what
+ * was refused. Counted in characters, not UTF-16 units. */
+export function echoed(text: string): string {
+  const chars = [...text];
+  return chars.length > ECHO_LIMIT ? `${chars.slice(0, ECHO_LIMIT).join("")}…` : text;
+}
+
 /** A parse error in one sentence — the Display impl of the Rust `ParseError`,
  * word for word, because it is the same message in the same banner. */
 export function describeParseError(error: ParseError): string {
@@ -231,7 +244,7 @@ export function describeParseError(error: ParseError): string {
     case "multipleKeys":
       return "hotkey has more than one non-modifier key";
     case "unknownToken":
-      return `unknown hotkey token: "${error.token}"`;
+      return `unknown hotkey token: "${echoed(error.token)}"`;
     case "missingModifier":
       return (
         `hotkey "${error.key}" has no modifier — that would take the key away ` +

@@ -55,7 +55,7 @@ impl fmt::Display for ParseError {
             ParseError::MultipleKeys => {
                 write!(f, "hotkey has more than one non-modifier key")
             }
-            ParseError::UnknownToken(t) => write!(f, "unknown hotkey token: \"{}\"", t),
+            ParseError::UnknownToken(t) => write!(f, "unknown hotkey token: \"{}\"", echoed(t)),
             ParseError::MissingModifier(k) => write!(
                 f,
                 "hotkey \"{}\" has no modifier — that would take the key away from every other application (only F1-F24 may stand alone)",
@@ -66,6 +66,24 @@ impl fmt::Display for ParseError {
 }
 
 impl std::error::Error for ParseError {}
+
+/// How much of the user's own text a message quotes back: this many
+/// characters, then an ellipsis.
+pub const ECHO_LIMIT: usize = 40;
+
+/// `text` as a message quotes it. What was typed can be anything — a pasted
+/// paragraph — and a message that echoes all of it has no bound on its own
+/// length; one that shows the first [`ECHO_LIMIT`] characters still names
+/// what was refused.
+pub fn echoed(text: &str) -> String {
+    let mut chars = text.chars();
+    let head: String = chars.by_ref().take(ECHO_LIMIT).collect();
+    if chars.next().is_some() {
+        format!("{head}…")
+    } else {
+        head
+    }
+}
 
 /// The macOS symbol for each modifier, in the order Apple prints them in a
 /// menu: Control, Option, Shift, Command. Our bit order is already that
@@ -533,6 +551,27 @@ mod tests {
     #[test]
     fn unknown_token_errors() {
         assert!(matches!(parse("Foo+Ctrl+A"), Err(ParseError::UnknownToken(t)) if t == "Foo"));
+    }
+
+    #[test]
+    fn a_message_quotes_a_bounded_head_of_what_was_typed() {
+        // The error keeps the whole token — it is what was typed; the message
+        // shows ECHO_LIMIT characters of it and says there was more.
+        let token: String = std::iter::repeat_n("abcdefghij", 15).collect();
+        let err = parse(&format!("Ctrl+{token}")).unwrap_err();
+        assert!(matches!(&err, ParseError::UnknownToken(t) if *t == token));
+        assert_eq!(
+            err.to_string(),
+            format!("unknown hotkey token: \"{}…\"", &token[..ECHO_LIMIT])
+        );
+        // Short text is quoted whole, with nothing after it.
+        assert_eq!(echoed("Numpad5"), "Numpad5");
+        assert_eq!(echoed(&"x".repeat(ECHO_LIMIT)), "x".repeat(ECHO_LIMIT));
+        // Counted in characters, so a multi-byte token is cut between them.
+        assert_eq!(
+            echoed(&"ж".repeat(ECHO_LIMIT + 1)).chars().count(),
+            ECHO_LIMIT + 1
+        );
     }
 
     #[test]

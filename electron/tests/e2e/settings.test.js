@@ -88,6 +88,14 @@ describe('settings sub-app', () => {
         expect(await page.$('[data-testid="settings-cancel"]')).not.toBeNull();
     });
 
+    // §9: the autostart row names the platform's own mechanism, and the
+    // browser under test runs on this host.
+    it('names the autostart row after the platform', async () => {
+        const text = await page.$eval('[data-testid="settings-autostart"]', (el) =>
+            el.closest('label').textContent.trim());
+        expect(text).toBe(spell('Open at login', 'Launch with Windows'));
+    });
+
     it('prints the accepted vocabulary under the field (§9)', async () => {
         const text = await page.$eval(
             '[data-testid="settings-hotkey-vocabulary"]',
@@ -251,6 +259,17 @@ describe('settings sub-app', () => {
         await page.type('[data-testid="settings-hotkey"]', 'Ctrl+Numpad5');
         await page.click('[data-testid="settings-save"]');
         expect(await bannerText(page)).toContain('Numpad5');
+        expect(await readStored(page)).toBeNull();
+    });
+
+    it('quotes a bounded head of a refused token, so the message line has a longest message (§9)', async () => {
+        const token = 'abcdefghij'.repeat(15);
+        await page.click('[data-testid="settings-hotkey"]', { clickCount: 3 });
+        await page.type('[data-testid="settings-hotkey"]', `Ctrl+${token}`);
+        await page.click('[data-testid="settings-save"]');
+        const banner = await bannerText(page);
+        expect(banner).toContain(`"${token.slice(0, 40)}…"`);
+        expect(banner).not.toContain(token);
         expect(await readStored(page)).toBeNull();
     });
 
@@ -440,12 +459,15 @@ describe('settings sub-app', () => {
             expect(values).toEqual([false, '', '0', '0', '480']);
         });
 
-        // §10: "`x`, `y` … in points", "`card_width` … in points".
-        it('labels X, Y and card width in points, and says so when refusing one', async () => {
+        // §10: "`x`, `y`, `card_width`, labelled in points" — the unit once,
+        // on the row, like `min` after the interval; the fields keep bare names.
+        it('labels the position row in points, and says so when refusing a field', async () => {
             const labels = await page.evaluate((ids) => ids.map((id) =>
                 document.querySelector(`[data-testid="${id}"]`).closest('label').querySelector('span').textContent.trim()),
             ['settings-sprite-x', 'settings-sprite-y', 'settings-card-width']);
-            expect(labels).toEqual(['X (pt)', 'Y (pt)', 'Card width (pt)']);
+            expect(labels).toEqual(['X', 'Y', 'Card width']);
+            expect(await page.$eval('[data-testid="settings-sprite-position"]', (el) => el.textContent.trim()))
+                .toBe('Position (pt)');
 
             for (const [id, pattern] of [
                 ['settings-sprite-x', /X must be a whole number of points/],

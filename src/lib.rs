@@ -3,7 +3,7 @@ mod wasm_entry {
     use crate::app::NudgeApp;
     use crate::autostart::FakeProvider;
     use crate::config;
-    use crate::settings_app::{PersistFn, SettingsApp, SpriteCheckFn};
+    use crate::settings_app::{ConflictFn, PersistFn, SettingsApp, SpriteCheckFn};
     use wasm_bindgen::prelude::*;
 
     /// True when the page wants the settings UI instead of the main popup.
@@ -50,6 +50,8 @@ mod wasm_entry {
                     Box::new(|c: &config::Config| config::save_to_localstorage(c));
                 // TODO: the browser has no file access; an enabled sprite saves unchecked here.
                 let sprite_check: SpriteCheckFn = Box::new(|_path: &std::path::Path| Ok(()));
+                // The browser cannot ask who else holds a combination.
+                let conflict: ConflictFn = Box::new(|_hk| None);
 
                 eframe::WebRunner::new()
                     .start(
@@ -62,6 +64,7 @@ mod wasm_entry {
                                 provider,
                                 persist,
                                 sprite_check,
+                                conflict,
                             )))
                         }),
                     )
