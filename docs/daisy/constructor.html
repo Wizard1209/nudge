@@ -1,70 +1,190 @@
-<!doctype html><meta charset="utf-8"><title>Ромашка в трее: макет с энтропией</title>
+<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Ромашка в трее</title>
+<meta name="claude:viewport-fit-sides" content="cover">
 <style>
-body{font:14px/1.4 -apple-system,system-ui,sans-serif;margin:0;background:#1c1c1e;color:#eee}
-.wrap{padding:20px 24px;max-width:1500px}
-h2{margin:26px 0 10px;font-weight:600;font-size:17px}
-.ctl{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:8px 24px;background:#2a2a2d;padding:14px 18px;border-radius:10px}
-.ctl label{display:flex;align-items:center;gap:10px;font-size:13px} .ctl input[type=range]{flex:1} .ctl output{width:46px;text-align:right;color:#aaa;font-variant-numeric:tabular-nums}
+/* Layout: one column, max 1120 px of content. Controls in one panel, three groups on a shared row grid
+   (label | slider | number | unit); then the trays at device-pixel scale, the enlarged renders, the export. */
+:root{
+  --bg:#f7f6f8; --panel:#ffffff; --field:#fbfafc; --fg:#1d1b21; --muted:#67636e; --line:#dedae2;
+  --accent:#b5487a; --check-a:#bebbc6; --check-b:#cdcad4; --code-bg:#fbfafc;
+  /* the mock OS bars keep their own colours in either theme */
+  --mac-l-bg:#e9e8ec; --mac-l-fg:#000000; --mac-d-bg:#2c2c2e; --mac-d-fg:#ffffff;
+  --win-bg:#202020; --win-fg:#ffffff; --win-line:#444444; --shot-bg:#000000;
+  --font:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --lab:11.25em; --num:4.5em; --unit:6.5em;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#1a191c; --panel:#232226; --field:#1a191c; --fg:#ecebef; --muted:#9e9aa6; --line:#3a383e;
+  --accent:#e78cb2; --check-a:#34323a; --check-b:#2a282e; --code-bg:#151417; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#1a191c; --panel:#232226; --field:#1a191c; --fg:#ecebef; --muted:#9e9aa6; --line:#3a383e;
+  --accent:#e78cb2; --check-a:#34323a; --check-b:#2a282e; --code-bg:#151417; color-scheme:dark}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 var(--font)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.page{max-width:1184px;margin:0 auto;padding-block:32px 56px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:flex;flex-direction:column;gap:40px}
+@media (min-width:720px){.page{padding-left:max(32px,env(safe-area-inset-left,0px));padding-right:max(32px,env(safe-area-inset-right,0px))}}
+h1,h2,h3{margin:0;text-wrap:balance}
+h1{font-size:24px;line-height:1.2;font-weight:600;letter-spacing:-.01em}
+h2,.export summary{font-size:17px;line-height:1.3;font-weight:600}
+h3{font-size:13px;line-height:1.3;font-weight:600}
+header{display:flex;flex-direction:column;gap:10px}
+.lead{margin:0;max-width:68ch;line-height:1.55}
+.cap,.sub,.hint,.unit{color:var(--muted);font-size:12.5px;line-height:1.4}
+.cap{margin:0;max-width:72ch}
+.sub{margin:0;font-size:13px}
+.sec{display:flex;flex-direction:column;gap:12px;min-width:0}
+.sechead{display:flex;flex-direction:column;gap:2px}
+
+/* controls */
+.controls{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px 24px 22px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:28px 44px}
+.col{display:flex;flex-direction:column;gap:28px;min-width:0}
+.group{display:flex;flex-direction:column;gap:4px;min-width:0}
+.group h3{margin-bottom:6px}
+.row{display:grid;grid-template-columns:var(--lab) minmax(0,1fr) var(--num) var(--unit);grid-template-areas:"lab rng num unit";align-items:center;column-gap:10px;min-height:32px}
+.lab{grid-area:lab;min-width:0}
+.unit{grid-area:unit;white-space:nowrap}
+.row input[type=range]{grid-area:rng;width:100%;min-width:0;margin:0;accent-color:var(--accent)}
+.row input[type=number]{grid-area:num;width:100%;padding:3px 6px;font:inherit;font-variant-numeric:tabular-nums;text-align:right;color:var(--fg);background:var(--field);border:1px solid var(--line);border-radius:6px}
+.row input[type=checkbox]{grid-area:rng;justify-self:start;margin:0;width:16px;height:16px;accent-color:var(--accent)}
+.row input[type=color]{grid-area:rng;justify-self:start;width:44px;height:26px;margin:0;padding:1px 2px;background:var(--field);border:1px solid var(--line);border-radius:6px;cursor:pointer}
+.row input.hex{grid-area:num-start/num-start/num-end/unit-end;justify-self:start;width:6.5em;padding:3px 6px;font:12.5px var(--mono);color:var(--fg);background:var(--field);border:1px solid var(--line);border-radius:6px}
+.row input.hex:invalid{border-color:var(--accent)}
+.row.sel{grid-template-areas:"lab sel sel sel";align-items:start}
+.row.sel .lab{padding-top:5px}
+.selcell{grid-area:sel;display:flex;flex-direction:column;gap:3px;min-width:0;padding-block:2px}
+select{width:100%;min-width:0;padding:4px 8px;font:inherit;color:var(--fg);background:var(--field);border:1px solid var(--line);border-radius:6px}
+#spread{margin-top:8px;white-space:pre-line;font-variant-numeric:tabular-nums}
+@media (max-width:900px){.controls{grid-template-columns:minmax(0,1fr)}}
+@media (max-width:520px){
+  .controls{padding:16px 14px 18px}
+  .row{grid-template-columns:minmax(0,1fr) var(--num);grid-template-areas:"lab unit" "rng num";row-gap:2px;padding-block:3px}
+  .unit{justify-self:end}
+  .row.check{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"lab rng"}
+  .row.sel{grid-template-columns:minmax(0,1fr);grid-template-areas:"lab" "sel"}
+  .row.sel .lab{padding-top:0}
+  .row.color{--num:6.5em}
+  .row input.hex{justify-self:end}
+}
+
+/* trays */
 canvas{image-rendering:pixelated}
-.mac{height:24px;display:flex;align-items:center;justify-content:flex-end;gap:18px;padding:0 14px;font-size:13px;font-weight:500;border-radius:0 0 0 0}
-.mac.light{background:#e9e8ec;color:#000} .mac.dark{background:#2c2c2e;color:#fff}
+.bars{display:grid;gap:10px;max-width:720px}
+.shot{border:1px solid var(--line);border-radius:6px;overflow:hidden;background:var(--shot-bg);min-width:0}
+.mac{height:24px;display:flex;align-items:center;justify-content:safe flex-end;gap:18px;padding:0 14px;font-size:13px;font-weight:500}
+.mac.light{background:var(--mac-l-bg);color:var(--mac-l-fg)} .mac.dark{background:var(--mac-d-bg);color:var(--mac-d-fg)}
 .mac .g{display:flex;align-items:center;gap:18px}
-.win{display:flex;align-items:center;justify-content:flex-end;gap:0;font-family:"Segoe UI",system-ui,sans-serif;background:#202020;color:#fff;border-top:1px solid #444}
+svg.gl{display:block}
+.win{display:flex;align-items:center;justify-content:safe flex-end;font-family:"Segoe UI",system-ui,sans-serif;background:var(--win-bg);color:var(--win-fg);border-top:1px solid var(--win-line)}
 .win .tray{display:flex;align-items:center}
 .win .clock{text-align:center;line-height:1.15}
-.shot{margin:8px 0 18px;border:1px solid #3a3a3c;border-radius:6px;overflow:hidden;display:inline-block;vertical-align:top;margin-right:18px;background:#000}
-.cap{font-size:12px;color:#999;margin:-12px 0 16px}
-.row{display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start}
-.big{background:#3a3a3c;background-image:linear-gradient(45deg,#2c2c2e 25%,transparent 25%,transparent 75%,#2c2c2e 75%),linear-gradient(45deg,#2c2c2e 25%,transparent 25%,transparent 75%,#2c2c2e 75%);background-size:24px 24px;background-position:0 0,12px 12px;border-radius:8px}
-small{color:#888}
-svg.gl{display:block}
+
+/* enlarged renders: four 256 px frames, the small sizes at whole-number zoom inside them */
+.renders{display:grid;grid-template-columns:repeat(auto-fill,256px);gap:20px 24px}
+.renders figure{margin:0;display:flex;flex-direction:column;gap:8px}
+.frame{width:256px;height:256px;max-width:100%;display:grid;place-items:center;border-radius:8px;overflow:hidden;background:var(--check-a);background-image:linear-gradient(45deg,var(--check-b) 25%,transparent 25%,transparent 75%,var(--check-b) 75%),linear-gradient(45deg,var(--check-b) 25%,transparent 25%,transparent 75%,var(--check-b) 75%);background-size:24px 24px;background-position:0 0,12px 12px}
+.frame canvas,.frame img{display:block}
+.renders figcaption{color:var(--muted);font-size:12.5px;font-variant-numeric:tabular-nums}
+
+/* export */
+.export{display:flex;flex-direction:column;gap:12px}
+.export summary{cursor:pointer;width:max-content;max-width:100%}
+.export[open] summary{margin-bottom:12px}
+.export-body{display:flex;flex-direction:column;gap:10px}
+.actions{display:flex;align-items:center;gap:12px}
+button{font:inherit;font-size:13px;padding:5px 14px;color:var(--fg);background:var(--field);border:1px solid var(--line);border-radius:6px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+#export{width:100%;height:14em;padding:10px 12px;font:12px/1.45 var(--mono);color:var(--fg);background:var(--code-bg);border:1px solid var(--line);border-radius:8px;resize:vertical}
+code{font-family:var(--mono);font-size:.92em}
 </style>
-<div class="wrap">
-<h2>Параметры</h2>
-<div class="ctl">
-<label>энтропия, ×реальной <input type="range" id="ent" min="0" max="2" step="0.05" value="0.1"><output id="ent_o">0.10</output></label>
-<label>seed <input type="range" id="seed" min="1" max="60" step="1" value="50"><output id="seed_o">50</output></label>
-<label>ширина лепестка, половина, из 64 <input type="range" id="w" min="2.4" max="5.2" step="0.1" value="3.5"><output id="w_o">4.6</output></label>
-<label>радиус диска, из 64 <input type="range" id="disc" min="5" max="10" step="0.25" value="8.5"><output id="disc_o">6.5</output></label>
-<label>лепестков <input type="range" id="n" min="8" max="24" step="1" value="16"><output id="n_o">12</output></label>
-<label>розовые кончики <input type="checkbox" id="pink" checked></label>
-<label>разброс углов <input type="range" id="k_ang" min="0" max="2" step="0.05" value="0.5"><output id="k_ang_o">1.00</output></label>
-<label>разброс длин <input type="range" id="k_len" min="0" max="2" step="0.05" value="0.8"><output id="k_len_o">1.00</output></label>
-<label>разброс ширин <input type="range" id="k_wid" min="0" max="2" step="0.05" value="0.2"><output id="k_wid_o">1.00</output></label>
-<label>наклон лепестков <input type="range" id="k_tilt" min="0" max="2" step="0.05" value="1.2"><output id="k_tilt_o">1.00</output></label>
-<label>шум профиля <input type="range" id="k_prof" min="0" max="2" step="0.05" value="1.25"><output id="k_prof_o">1.00</output></label>
-<label>профиль (выбор ставит и свои числа): <select id="prof"></select></label>
+<main class="page">
+<header>
+<h1>Ромашка в трее</h1>
+<p class="lead">Иконка Nudge рисуется по профилю ширины лепестка, снятому с фотографий настоящих цветков (пять головок Bellis perennis и три ромашковидные: Leucanthemum и, вероятно, Anthemis) по видимым краям с учётом перекрытий, и с регулируемым разбросом вокруг него. Профиль параметров ставит все ползунки, разброс, измеренный на одном цветке, и форму этого цветка; профиль лепестка меняет только форму. Энтропия 1 означает разброс, измеренный на фото, но там головка в два-три кольца и снята под углом, а модель кладёт лепестки в одно кольцо, поэтому при 1 она разбрасывает сильнее, чем видно на фото. При открытии стоит профиль «иконка Nudge», из которого экспортирована иконка приложения, <code>assets/daisy.svg</code>; трей-полосы ниже нарисованы в пикселях вашего экрана в натуральную величину.</p>
+</header>
+
+<section class="controls" aria-label="Параметры">
+<div class="col">
+<div class="group">
+<h3>Головка</h3>
+<label class="row"><span class="lab">лепестков</span><input type="range" id="n" min="8" max="50" step="1" value="16"></label>
+<label class="row"><span class="lab">радиус диска</span><input type="range" id="disc" min="5" max="11" step="0.25" value="8.5"><span class="unit">из 64</span></label>
+<label class="row"><span class="lab">полуширина лепестка</span><input type="range" id="w" min="2.4" max="5.2" step="0.1" value="3.5"><span class="unit">из 64</span></label>
+<label class="row check"><span class="lab">розовые кончики</span><input type="checkbox" id="pink" checked></label>
+<label class="row"><span class="lab">начало градиента</span><input type="range" id="tip_start" min="0" max="1" step="0.01" value="0.5"><span class="unit">доля длины</span></label>
+<label class="row"><span class="lab">кривая градиента</span><input type="range" id="tip_power" min="0.5" max="4" step="0.05" value="2"><span class="unit">степень</span></label>
+<div class="row color"><label class="lab" for="tip_color">цвет кончика</label><input type="color" id="tip_color" value="#f082a5"><input type="text" class="hex" id="tip_color_hex" value="#f082a5" maxlength="7" pattern="#?[0-9a-fA-F]{6}" spellcheck="false" autocomplete="off" aria-label="цвет кончика, hex"></div>
 </div>
-<p id="spread" style="color:#aaa;font-size:12px"></p>
+<div class="group">
+<h3>Профили</h3>
+<label class="row sel"><span class="lab">параметры</span><span class="selcell"><select id="preset"></select><span class="hint">все ползунки, измеренный разброс и форма</span></span></label>
+<label class="row sel"><span class="lab">лепесток</span><span class="selcell"><select id="prof"></select><span class="hint">только форма</span></span></label>
+</div>
+</div>
+<div class="col">
+<div class="group">
+<h3>Разброс</h3>
+<label class="row"><span class="lab">энтропия</span><input type="range" id="ent" min="0" max="2" step="0.05" value="0.1"><span class="unit">×измеренного</span></label>
+<label class="row"><span class="lab">seed</span><input type="range" id="seed" min="1" max="60" step="1" value="50"></label>
+<label class="row"><span class="lab">углы</span><input type="range" id="k_ang" min="0" max="2" step="0.05" value="0.5"><span class="unit">×энтропии</span></label>
+<label class="row"><span class="lab">длины</span><input type="range" id="k_len" min="0" max="2" step="0.05" value="0.8"><span class="unit">×энтропии</span></label>
+<label class="row"><span class="lab">ширины</span><input type="range" id="k_wid" min="0" max="2" step="0.05" value="0.2"><span class="unit">×энтропии</span></label>
+<label class="row"><span class="lab">наклон</span><input type="range" id="k_tilt" min="0" max="2" step="0.05" value="1.2"><span class="unit">×энтропии</span></label>
+<label class="row"><span class="lab">шум профиля</span><input type="range" id="k_prof" min="0" max="2" step="0.05" value="1.25"><span class="unit">×энтропии</span></label>
+<p id="spread" class="cap"></p>
+</div>
+</div>
+</section>
 
-<h2>macOS, меню-бар, 18 pt в натуральную величину (рисуется в пикселях вашего экрана, DPR = <span id="dpr"></span>)</h2>
-<div class="shot" style="width:720px"><div class="mac light"><div class="g"><span id="macL"></span><span>GLYPHS</span><span>Mon 26 Oct&nbsp; 15:42</span></div></div></div>
-<div class="shot" style="width:720px"><div class="mac dark"><div class="g"><span id="macD"></span><span>GLYPHS</span><span>Mon 26 Oct&nbsp; 15:42</span></div></div></div>
-<div class="cap">слева направо: ромашка, чужие иконки, часы. Наведите мышь на ромашку — ничего, это картинка.</div>
+<section class="sec">
+<div class="sechead"><h2>macOS</h2><p class="sub">меню-бар, 18 pt в натуральную величину, DPR <span id="dpr"></span></p></div>
+<div class="bars">
+<div class="shot"><div class="mac light"><div class="g"><span id="macL"></span><span>GLYPHS</span><span>Mon 26 Oct&nbsp; 15:42</span></div></div></div>
+<div class="shot"><div class="mac dark"><div class="g"><span id="macD"></span><span>GLYPHS</span><span>Mon 26 Oct&nbsp; 15:42</span></div></div></div>
+</div>
+<p class="cap">Слева направо: ромашка, чужие иконки, часы.</p>
+</section>
 
-<h2>Windows 11, область уведомлений, в натуральную величину: 100 % (16 px), 150 % (24 px), 200 % (32 px)</h2>
-<div id="wins"></div>
-<div class="cap">панель задач 48 px при 100 %, масштабируется вместе с DPI; иконки рисуются в пикселях экрана, без сглаживания при увеличении</div>
+<section class="sec">
+<div class="sechead"><h2>Windows 11</h2><p class="sub">область уведомлений в натуральную величину: 100 % (16 px), 150 % (24 px), 200 % (32 px)</p></div>
+<div id="wins" class="bars"></div>
+<p class="cap">Панель задач 48 px при 100 %, масштабируется вместе с DPI. Иконки рисуются в пикселях экрана, без сглаживания при увеличении.</p>
+</section>
 
-<h2>Экспорт для приложения</h2>
-<p class="cap" style="margin:0 0 8px">Та же геометрия, запечённая в таблицу: по лепестку угол, длина, ширина и профиль из 21 точки. Это содержимое <code>docs/daisy/daisy.json</code>, которое читают оба рендерера.</p>
-<textarea id="export" style="width:100%;max-width:900px;height:160px;font:12px/1.3 ui-monospace,Menlo,monospace;background:#111;color:#ddd;border:1px solid #444;border-radius:6px"></textarea>
+<section class="sec">
 <h2>Крупно</h2>
-<div class="row"><canvas id="big" class="big" width="256" height="256"></canvas><canvas id="big36" class="big" width="288" height="288"></canvas><canvas id="big18" class="big" width="288" height="288"></canvas><canvas id="bigfall" class="big" width="256" height="256"></canvas></div>
-<div class="cap">256 px; 36 px ×8; 18 px ×16; 256 px с падающим лепестком</div>
+<div class="renders">
+<figure><div class="frame"><canvas id="big" class="big" width="256" height="256"></canvas></div><figcaption>256 px</figcaption></figure>
+<figure><div class="frame"><img id="svgprev" width="256" height="256" alt="ромашка из экспортированного SVG"></div><figcaption>SVG, как его растеризует браузер</figcaption></figure>
+<figure><div class="frame"><canvas id="big36" class="big" width="288" height="288"></canvas></div><figcaption>36 px, ×7</figcaption></figure>
+<figure><div class="frame"><canvas id="big18" class="big" width="288" height="288"></canvas></div><figcaption>18 px, ×14</figcaption></figure>
+<figure><div class="frame"><canvas id="bigfall" class="big" width="256" height="256"></canvas></div><figcaption>256 px, падающий лепесток</figcaption></figure>
 </div>
+</section>
+
+<details class="export">
+<summary>Экспорт для приложения</summary>
+<div class="export-body">
+<p class="cap">Та же геометрия векторами: лепестки <code>petal-0</code>…<code>petal-15</code> по часовой от 12 часов, в порядке опадания, каждый — контур по профилю из 21 точки, повёрнутый на свой угол; кончики — один общий градиент; поверх диск. Это файл <code>assets/daisy.svg</code>: приложения убирают опавшие лепестки по id и растеризуют остальное через resvg.</p>
+<div class="actions"><button type="button" id="copy">Скопировать</button><button type="button" id="download">Скачать daisy.svg</button><span id="copied" class="cap" role="status"></span></div>
+<textarea id="export" readonly spellcheck="false" aria-label="daisy.svg"></textarea>
+</div>
+</details>
+</main>
 <script>
-const DATA = {"profiles": [{"name": "\u0446\u0432\u0435\u0442\u043e\u043a A, Bellis perennis \u2013 Flower (Augustgeyler)", "table": [0.489, 0.553, 0.618, 0.658, 0.747, 0.83, 0.881, 0.92, 0.958, 0.99, 1.0, 0.961, 0.971, 0.991, 0.982, 0.951, 0.938, 0.885, 0.788, 0.597, 0.0], "spread": {"angle_gap_cv": 0.605923053624452, "length_cv": 0.18235991978520533, "maxwidth_cv": 0.19329660800999313, "tilt_deg_sd": 7.840423284083817, "profile_sd_by_t": [0.10463014904352959, 0.12052468277740558, 0.13301068301318217, 0.14357596733071126, 0.15287549951610999, 0.16497419937853286, 0.17697814476728302, 0.18856224823717907, 0.19976475687515782, 0.21705902907668354, 0.21785419871330186, 0.21812151943508457, 0.21768785104100785, 0.2167713970818137, 0.2177103782786412, 0.21931889402644136, 0.22195524779980555, 0.2241542818671107, 0.22622523741415476, 0.2280257412609902, 0.22894100751611196, 0.23022265730643213, 0.23197449116202065, 0.23211219471670763, 0.23174493457882173, 0.2302858481759185, 0.22918397135448762, 0.22027149938985086, 0.21172912985594206, 0.2039024420437604, 0.19568431739845027, 0.185714912820643, 0.18047952118285254, 0.1731267741953045, 0.1654593845869964, 0.14936968133447692, 0.14169222596815867, 0.13440180248530528, 0.12703513797228191, 0.11932943319761054, 0.1124075146750245, 0.10069728166065256, 0.0912460269953849, 0.08189032028202256, 0.08066552935008058, 0.08023352432807558, 0.08063481737850031, 0.08165931276151617, 0.08356499564754744, 0.08480268046528779, 0.08572285540312538, 0.08611599244092846, 0.08712850875786488, 0.0889873695846013, 0.09396224484338997, 0.09877071686177137, 0.10362219653333042, 0.10810056144155956, 0.11390336954733013, 0.12028415020871515, 0.1274298437883961, 0.1301827237337597, 0.13144645235604455, 0.1298615075169345, 0.12877421904261768, 0.1270563336563892, 0.12503275460054894, 0.12190282400445593, 0.11818636001756579, 0.11381085000208624, 0.11375253391643875, 0.11508879189445372, 0.11553241645512724, 0.11300263607340764, 0.11141321036624945, 0.10942402333960999, 0.10778599008271517, 0.10643155011510014, 0.10535634594175135, 0.10444773410351575, 0.10362745794846952, 0.10273610838650488, 0.10377009019513955, 0.10316801317506591, 0.10245109771195507, 0.1011610809197601, 0.09952371498642817, 0.098223025679295, 0.09749720354603689, 0.0963316500658343, 0.0949601401519694, 0.09426108306041592, 0.09515489094342021, 0.09508854144350537, 0.09452208425558403, 0.09434714752691167, 0.09520096111610517, 0.09497327262007625, 0.09513404185289609, 0.0957430599883904, 0.09524929918293518]}}, {"name": "\u043e\u0431\u0449\u0438\u0439 \u043f\u043e 5 \u0446\u0432\u0435\u0442\u043a\u0430\u043c (\u043c\u0435\u0434\u0438\u0430\u043d\u0430 \u043c\u0435\u0434\u0438\u0430\u043d)", "table": [0.485, 0.537, 0.59, 0.62, 0.695, 0.772, 0.841, 0.905, 0.952, 0.986, 1.0, 0.997, 0.999, 0.991, 0.972, 0.936, 0.878, 0.791, 0.666, 0.474, 0.0], "spread": {"angle_gap_cv": 0.5297652027101977, "length_cv": 0.0932, "maxwidth_cv": 0.15192290091826768, "tilt_deg_sd": 4.001168826096229, "profile_sd_by_t": [0.14357596733071126, 0.14357596733071126, 0.14357596733071126, 0.14357596733071126, 0.15287549951610999, 0.16497419937853286, 0.17758140452416055, 0.2043513116895508, 0.2338080448566836, 0.23890951837331517, 0.2395225768361263, 0.2386931150576217, 0.24562458042893598, 0.24225619609428672, 0.2380942318590562, 0.23304803118675999, 0.2285096860100377, 0.2245551619692396, 0.22622523741415476, 0.2280257412609902, 0.22894100751611196, 0.23022265730643213, 0.23197449116202065, 0.23211219471670763, 0.23174493457882173, 0.2296536120549069, 0.22545895612400926, 0.22027149938985086, 0.21172912985594206, 0.2039024420437604, 0.19568431739845027, 0.185714912820643, 0.18047952118285254, 0.1731267741953045, 0.16695995511367978, 0.16458093772888793, 0.1631325945865219, 0.16302700895740008, 0.16330534805994879, 0.1630251625456889, 0.1634998906940774, 0.16288917279801063, 0.16049216988850679, 0.1558723378540797, 0.15190130128286394, 0.14784734638229477, 0.14322679332210217, 0.13744760856592766, 0.13533974240102264, 0.13044055343832642, 0.12480963909535621, 0.11891273941407429, 0.11342263829703657, 0.10631611519996348, 0.10005007394811212, 0.09877071686177137, 0.10362219653333042, 0.10810056144155956, 0.11390336954733013, 0.12028415020871515, 0.1274298437883961, 0.1301827237337597, 0.13144645235604455, 0.1298615075169345, 0.12877421904261768, 0.1270563336563892, 0.12503275460054894, 0.12190282400445593, 0.11818636001756579, 0.11381085000208624, 0.11375253391643875, 0.11508879189445372, 0.11553241645512724, 0.11300263607340764, 0.11141321036624945, 0.10942402333960999, 0.10778599008271517, 0.10643155011510014, 0.10535634594175135, 0.10444773410351575, 0.10362745794846952, 0.10273610838650488, 0.10377009019513955, 0.10316801317506591, 0.10245109771195507, 0.1011610809197601, 0.10080083461793768, 0.10266233324078307, 0.10586305404248969, 0.10842467459005914, 0.11259451389886643, 0.11581145471001081, 0.11221186585439888, 0.09947016893155049, 0.09452208425558403, 0.09434714752691167, 0.09520096111610517, 0.09497327262007625, 0.09413550508107592, 0.08764410914796518, 0.0809858037667358]}}, {"name": "\u0446\u0432\u0435\u0442\u043e\u043a B, Bellis perennis white (Karwath)", "table": [0.371, 0.448, 0.525, 0.583, 0.678, 0.759, 0.831, 0.896, 0.949, 0.987, 1.0, 0.996, 0.99, 0.98, 0.962, 0.928, 0.87, 0.783, 0.654, 0.445, 0.0], "spread": {"angle_gap_cv": 0.5653686032397269, "length_cv": 0.0745641365708113, "maxwidth_cv": 0.05550981908311853, "tilt_deg_sd": 3.0414758046427424, "profile_sd_by_t": [0.08521511679953, 0.088923481351672, 0.09284234132140244, 0.09581137403240711, 0.09240764563716368, 0.09625485178990953, 0.10195506759560127, 0.10312531144759708, 0.10506524395177184, 0.10610916759351613, 0.10697009649136975, 0.10654890270940182, 0.10584604261526108, 0.11499585300513988, 0.12304657451832915, 0.12445423583403979, 0.1256264254325345, 0.126730096625884, 0.127682699831913, 0.12804725386344862, 0.1281518414632607, 0.1280342263131739, 0.12334286446814215, 0.11843343760680097, 0.11358845876453663, 0.10914928425938128, 0.10496107646025771, 0.10093921377883842, 0.09796384999887348, 0.095020146496739, 0.09214381368658511, 0.08952840247280472, 0.08757005532952829, 0.08626763970757133, 0.08533486742599969, 0.08468902840304043, 0.08443616384518336, 0.08350892041219359, 0.08293020705916976, 0.0824913117898828, 0.08233689424556592, 0.08194197540354747, 0.08126889652079865, 0.0804527162318473, 0.07958780016298445, 0.07840399426910596, 0.07730629503706944, 0.0760658677796287, 0.07482574642973251, 0.07331877806508219, 0.07202136769343319, 0.07082422944653871, 0.06958236333997087, 0.06832991406020522, 0.06735564323382397, 0.06625828199874984, 0.0653294608104298, 0.06421330153403089, 0.06282348190450353, 0.06150537715105872, 0.06037141556260955, 0.05906893465227282, 0.057406263803944854, 0.05563447342660709, 0.05431835326258428, 0.053039665351084, 0.05255361094350122, 0.05267390819778597, 0.05327899235497379, 0.05355185247195752, 0.0540318477252585, 0.0549424343974343, 0.056069175099816265, 0.056907597677592965, 0.05785695341193983, 0.05852598734688763, 0.05914143468362738, 0.05954504614783686, 0.06060455502343655, 0.06184176624578208, 0.06314532705488857, 0.06493107290412309, 0.06795372434074383, 0.07032467742704533, 0.07241396314573256, 0.07426376808174014, 0.07625602147936941, 0.07796758015686428, 0.07964956304937656, 0.08070705901462799, 0.0806430877720032, 0.07896426845694303, 0.07752166118490783, 0.07558361461027101, 0.0732987597493203, 0.06883844057714868, 0.06306629073117559, 0.06051510610462171, 0.057809093208311055, 0.054848452225251275, 0.05153597223547609]}}, {"name": "\u0446\u0432\u0435\u0442\u043e\u043a C, Bellis Perennis 252573267", "table": [0.528, 0.555, 0.582, 0.593, 0.635, 0.701, 0.778, 0.835, 0.879, 0.912, 0.947, 0.973, 0.99, 0.997, 1.0, 0.979, 0.926, 0.85, 0.731, 0.528, 0.0], "spread": {"angle_gap_cv": 0.5297652027101977, "length_cv": 0.17404686479632628, "maxwidth_cv": 0.15192290091826768, "tilt_deg_sd": 5.9864810988084445, "profile_sd_by_t": [0.04310482959241219, 0.06858404293457518, 0.09537966085401685, 0.11225621880054977, 0.12572614212636032, 0.15247723389467532, 0.17758140452416055, 0.2043513116895508, 0.2338080448566836, 0.23890951837331517, 0.24807850557049063, 0.2500968498631114, 0.25470464226324013, 0.2573119286759289, 0.2634004736807561, 0.27068594383753425, 0.2748432650670699, 0.27523252558522315, 0.27505785853061654, 0.27253274806966155, 0.2700393321622869, 0.26706466226283015, 0.2650237572901927, 0.2577262694713249, 0.24825854356850774, 0.2391492664270714, 0.2301414887259866, 0.2205492368927091, 0.21003942785436788, 0.19964525918838205, 0.18985649822971162, 0.18085279761504494, 0.17298446727012504, 0.16879789138185192, 0.16695995511367978, 0.16458093772888793, 0.1631325945865219, 0.16302700895740008, 0.16330534805994879, 0.1630251625456889, 0.1634998906940774, 0.16288917279801063, 0.16049216988850679, 0.1558723378540797, 0.15190130128286394, 0.14784734638229477, 0.14322679332210217, 0.13744760856592766, 0.13533974240102264, 0.13044055343832642, 0.12480963909535621, 0.11891273941407429, 0.11342263829703657, 0.10631611519996348, 0.10005007394811212, 0.0955122005275551, 0.09341991037818044, 0.08799403581107534, 0.08436808863987329, 0.08178237067344117, 0.079877767979534, 0.07863078284694265, 0.07999431869350615, 0.08077069561085592, 0.08007979735187859, 0.0776333031552334, 0.0753418249084582, 0.07335580474981357, 0.07239241738226515, 0.07181461548971174, 0.0714680825097406, 0.07098499842930378, 0.07099129591159055, 0.07197869963038005, 0.07471595115515775, 0.07757770835490303, 0.08037598148253519, 0.08306534784229547, 0.08618753832455042, 0.08896088227728155, 0.09254178543117429, 0.09486302669073393, 0.09614124998829428, 0.09650402487498239, 0.09780843579818865, 0.0992612805517143, 0.10080083461793768, 0.10266233324078307, 0.10586305404248969, 0.10842467459005914, 0.11259451389886643, 0.11581145471001081, 0.11749073973635242, 0.11650758510380907, 0.11450224446275797, 0.1093247351639703, 0.10187174682638518, 0.09857375814448946, 0.09413550508107592, 0.08764410914796518, 0.0809858037667358]}}, {"name": "\u0446\u0432\u0435\u0442\u043e\u043a D, Rome 2024 (\u043c\u0435\u043b\u043a\u0438\u0439 \u0446\u0432\u0435\u0442\u043e\u043a)", "table": [0.564, 0.618, 0.672, 0.713, 0.78, 0.855, 0.929, 0.94, 0.943, 0.975, 1.0, 0.989, 0.987, 0.971, 0.949, 0.919, 0.835, 0.739, 0.619, 0.434, 0.0], "spread": {"angle_gap_cv": 0.3691, "length_cv": 0.0932, "maxwidth_cv": 0.1348, "tilt_deg_sd": 4.001168826096229, "profile_sd_by_t": [0.16109192740228992, 0.16109192740228992, 0.16109192740228992, 0.16109192740228992, 0.20339874892300666, 0.21849712788884623, 0.22842589107346767, 0.234219924311454, 0.2381731764737202, 0.2389440469459874, 0.2395225768361263, 0.2386931150576217, 0.24562458042893598, 0.24225619609428672, 0.2380942318590562, 0.23304803118675999, 0.2285096860100377, 0.2245551619692396, 0.22296720597194739, 0.2209687436286846, 0.22005615650302954, 0.2196438547476381, 0.2199112900880139, 0.2209170602935372, 0.22216361092250764, 0.22309563163961288, 0.22368212163925763, 0.22263728402941593, 0.22168540128994138, 0.22063019650338328, 0.2199471134173381, 0.21877294578105003, 0.21698277314399617, 0.21490367116785325, 0.21308482092365819, 0.20954410789599276, 0.20579037422591784, 0.20116431944105131, 0.19597037345817891, 0.19089018441178893, 0.1866465087307836, 0.18305966730870032, 0.18006699591334152, 0.17688143784341007, 0.17551948107238582, 0.17452577170518424, 0.17410582012739578, 0.1738340161163029, 0.17312891002418068, 0.17226450787261927, 0.1712980520867217, 0.16945661935055417, 0.16739107415458085, 0.16526117377255015, 0.1642722494518307, 0.16392514269817207, 0.16469061767908258, 0.16584104717298204, 0.16722394168728927, 0.16750318300318132, 0.16723204299110833, 0.1667693413417685, 0.166161825726174, 0.16576833724230292, 0.16664424519602028, 0.1633093539249984, 0.15723278697051335, 0.1516008409069128, 0.1481708402405998, 0.14525267254589946, 0.14259381135790594, 0.13991264203757695, 0.13697528662640707, 0.13338206842395509, 0.13473892111816899, 0.13732054362443566, 0.1388240847394583, 0.1385814118456478, 0.1383214805525207, 0.1383402649808274, 0.13863919827851795, 0.13937700205031997, 0.14162697476683966, 0.14142138826270412, 0.14366669304855692, 0.14486722412500816, 0.1455194624868034, 0.14485510599679077, 0.1427796052545608, 0.1388699518165698, 0.13327016447143084, 0.12302694002437131, 0.11221186585439888, 0.09947016893155049, 0.08814475249466962, 0.07545864247933622, 0.0638218287003201, 0.05746142689103037, 0.05106458021801008, 0.04382344794134178, 0.038170916637176054]}}, {"name": "\u0446\u0432\u0435\u0442\u043e\u043a E, single Macro (Grand-Duc)", "table": [0.421, 0.488, 0.554, 0.602, 0.687, 0.763, 0.818, 0.854, 0.883, 0.897, 0.935, 0.984, 1.0, 0.964, 0.911, 0.867, 0.83, 0.775, 0.672, 0.459, 0.0], "spread": {"angle_gap_cv": 0.4578349308078081, "length_cv": 0.05649805930544882, "maxwidth_cv": 0.2710298063706445, "tilt_deg_sd": 3.474102822639122, "tilt_deg_mean": 4.581157446074859, "profile_sd_by_t": [0.33504093448768135, 0.3459724392952079, 0.35333637834540316, 0.3564441422156442, 0.3583132873791186, 0.37466447728015156, 0.3840670775374008, 0.3849987367838144, 0.37439466349710915, 0.35771855242377915, 0.3460827500086226, 0.33430306792877656, 0.3243184662784214, 0.31450846059280363, 0.30696832861757284, 0.2977445906157573, 0.28770080416145644, 0.278549543257933, 0.27227856243651044, 0.26504426362245886, 0.26032433523011467, 0.2538527407955868, 0.24662312562950847, 0.23914990764816066, 0.23364961012460628, 0.2296536120549069, 0.22545895612400926, 0.2200791136093493, 0.2173136686865249, 0.21244357667778063, 0.21003752432767556, 0.20883236625280033, 0.20792444398646837, 0.20752584067441524, 0.20774364266784417, 0.20808196989617955, 0.21101284150786961, 0.2131173021707146, 0.2147204234033332, 0.21715914210586318, 0.2213944324476682, 0.22399642943877549, 0.2267572434030923, 0.2278950547575571, 0.22915869693768962, 0.2285390010568025, 0.2309469983449834, 0.2310399616930535, 0.2279854430519432, 0.22286634398880864, 0.21958889421807737, 0.21936464516903306, 0.22451181124300193, 0.2235755036251225, 0.21816071105356669, 0.2119395469868665, 0.2110309705003438, 0.2109487453605986, 0.21064953707618894, 0.20829434657487597, 0.20828366503021284, 0.19950891686041128, 0.1952874963982585, 0.1941961735054658, 0.19651413825736805, 0.19264046706221546, 0.19053499793192621, 0.18659964914054003, 0.18497174690088977, 0.17585776981464057, 0.170699171353928, 0.16488007877775132, 0.1593969503349416, 0.14866311974875668, 0.14258618188374916, 0.13589379206934465, 0.13227272602786508, 0.12821161397267083, 0.12692835022356153, 0.12576593589243446, 0.126608972785806, 0.1282987273280388, 0.1316177209055925, 0.13380180771018782, 0.13684932119200666, 0.13995730076275673, 0.14516715956061071, 0.14960974631911966, 0.1556428894205687, 0.16194448683744714, 0.1679908393479591, 0.17202825296135593, 0.17637975546089207, 0.1750500100712146, 0.17291859894611047, 0.16667054897428663, 0.16162104239698344, 0.15851720075903145, 0.15423102210919729, 0.14839011639637942, 0.14186882664895728]}}]};
-// ---------- renderer: a mirror of the app's (64-unit canvas, 4×4 supersampling), plus entropy
+const DATA = {"profiles": [{"name": "\u0446\u0432\u0435\u0442\u043e\u043a A, Bellis perennis \u2013 Flower (Augustgeyler)", "table": [0.489, 0.553, 0.618, 0.658, 0.747, 0.83, 0.881, 0.92, 0.958, 0.99, 1.0, 0.961, 0.971, 0.991, 0.982, 0.951, 0.938, 0.885, 0.788, 0.597, 0.0], "spread": {"angle_gap_cv": 0.605923053624452, "length_cv": 0.18235991978520533, "maxwidth_cv": 0.19329660800999313, "tilt_deg_sd": 7.840423284083817, "profile_sd_by_t": [0.10463014904352959, 0.12052468277740558, 0.13301068301318217, 0.14357596733071126, 0.15287549951610999, 0.16497419937853286, 0.17697814476728302, 0.18856224823717907, 0.19976475687515782, 0.21705902907668354, 0.21785419871330186, 0.21812151943508457, 0.21768785104100785, 0.2167713970818137, 0.2177103782786412, 0.21931889402644136, 0.22195524779980555, 0.2241542818671107, 0.22622523741415476, 0.2280257412609902, 0.22894100751611196, 0.23022265730643213, 0.23197449116202065, 0.23211219471670763, 0.23174493457882173, 0.2302858481759185, 0.22918397135448762, 0.22027149938985086, 0.21172912985594206, 0.2039024420437604, 0.19568431739845027, 0.185714912820643, 0.18047952118285254, 0.1731267741953045, 0.1654593845869964, 0.14936968133447692, 0.14169222596815867, 0.13440180248530528, 0.12703513797228191, 0.11932943319761054, 0.1124075146750245, 0.10069728166065256, 0.0912460269953849, 0.08189032028202256, 0.08066552935008058, 0.08023352432807558, 0.08063481737850031, 0.08165931276151617, 0.08356499564754744, 0.08480268046528779, 0.08572285540312538, 0.08611599244092846, 0.08712850875786488, 0.0889873695846013, 0.09396224484338997, 0.09877071686177137, 0.10362219653333042, 0.10810056144155956, 0.11390336954733013, 0.12028415020871515, 0.1274298437883961, 0.1301827237337597, 0.13144645235604455, 0.1298615075169345, 0.12877421904261768, 0.1270563336563892, 0.12503275460054894, 0.12190282400445593, 0.11818636001756579, 0.11381085000208624, 0.11375253391643875, 0.11508879189445372, 0.11553241645512724, 0.11300263607340764, 0.11141321036624945, 0.10942402333960999, 0.10778599008271517, 0.10643155011510014, 0.10535634594175135, 0.10444773410351575, 0.10362745794846952, 0.10273610838650488, 0.10377009019513955, 0.10316801317506591, 0.10245109771195507, 0.1011610809197601, 0.09952371498642817, 0.098223025679295, 0.09749720354603689, 0.0963316500658343, 0.0949601401519694, 0.09426108306041592, 0.09515489094342021, 0.09508854144350537, 0.09452208425558403, 0.09434714752691167, 0.09520096111610517, 0.09497327262007625, 0.09513404185289609, 0.0957430599883904, 0.09524929918293518]}}, {"name": "\u043e\u0431\u0449\u0438\u0439 \u043f\u043e 5 \u0446\u0432\u0435\u0442\u043a\u0430\u043c (\u043c\u0435\u0434\u0438\u0430\u043d\u0430 \u043c\u0435\u0434\u0438\u0430\u043d; \u0444\u043e\u0440\u043c\u0430 \u043f\u043e 5, \u0440\u0430\u0437\u0431\u0440\u043e\u0441 \u043f\u043e 4, \u0431\u0435\u0437 E)", "table": [0.485, 0.537, 0.59, 0.62, 0.695, 0.772, 0.841, 0.905, 0.952, 0.986, 1.0, 0.997, 0.999, 0.991, 0.972, 0.936, 0.878, 0.791, 0.666, 0.474, 0.0], "spread": {"angle_gap_cv": 0.5475669029749624, "length_cv": 0.13362343239816316, "maxwidth_cv": 0.14336145045913384, "tilt_deg_sd": 4.9938249624523365, "profile_sd_by_t": [0.08521511679953, 0.088923481351672, 0.09537966085401685, 0.1279160930656305, 0.13930082082123516, 0.1587257166366041, 0.17727977464572178, 0.19645677996336494, 0.21678640086592071, 0.22798427372499935, 0.22868838777471406, 0.22840731724635313, 0.23165621573497192, 0.2295137965880502, 0.2279023050688487, 0.22618346260660066, 0.22523246690492163, 0.22435472191817515, 0.22459622169305107, 0.2244972424448374, 0.22449858200957074, 0.22493325602703512, 0.22594289062501727, 0.2265146275051224, 0.22695427275066468, 0.22669073990776567, 0.22643304649687263, 0.22041036814127998, 0.21088427885515498, 0.20177385061607123, 0.19277040781408095, 0.18328385521784396, 0.17673199422648878, 0.1709623327885782, 0.16620966985033808, 0.15697530953168243, 0.1524124102773403, 0.1487144057213527, 0.14517024301611536, 0.14117729787164973, 0.13795370268455093, 0.1317932272293316, 0.12586909844194583, 0.11888132906805113, 0.11628341531647227, 0.11404043535518518, 0.11193080535030124, 0.10955346066372192, 0.10945236902428504, 0.10762161695180711, 0.1052662472492408, 0.10251436592750138, 0.10027557352745073, 0.09765174239228239, 0.09700615939575105, 0.09714145869466323, 0.09852105345575543, 0.09804729862631745, 0.09913572909360172, 0.10103326044107816, 0.10365380588396506, 0.10440675329035118, 0.10572038552477535, 0.10531610156389522, 0.10442700819724814, 0.10234481840581129, 0.10018728975450357, 0.09762931437713475, 0.09528938869991546, 0.09281273274589899, 0.09261030821308967, 0.09303689516187874, 0.09326185618335889, 0.09249066785189385, 0.09306458076070359, 0.0935008658472565, 0.09408098578262518, 0.0947484489786978, 0.09577194213315088, 0.09670430819039866, 0.0980846216898219, 0.0987995675386194, 0.09995567009171691, 0.09983601902502415, 0.10012976675507186, 0.1002111807357372, 0.10016227480218293, 0.10044267946003904, 0.10168012879426329, 0.10237816232794672, 0.10377732702541792, 0.10503626888521336, 0.10368337839890954, 0.09727935518752792, 0.09133341837512682, 0.08490289500312395, 0.07951139490821263, 0.07774418936234898, 0.07597229914469349, 0.07124628068660822, 0.06626088800110594]}, "notes": "\u0444\u043e\u0440\u043c\u0430: \u043c\u0435\u0434\u0438\u0430\u043d\u0430 \u043f\u0440\u043e\u0444\u0438\u043b\u0435\u0439 A\u2013E; \u0440\u0430\u0437\u0431\u0440\u043e\u0441: \u043c\u0435\u0434\u0438\u0430\u043d\u0430 \u043f\u043e A\u2013D \u2014 \u0443 E \u0440\u0430\u0437\u0431\u0440\u043e\u0441 \u0438\u0437\u043c\u0435\u0440\u0435\u043d \u043d\u0435\u043d\u0430\u0434\u0451\u0436\u043d\u043e"}, {"name": "\u0446\u0432\u0435\u0442\u043e\u043a B, Bellis perennis white (Karwath)", "table": [0.371, 0.448, 0.525, 0.583, 0.678, 0.759, 0.831, 0.896, 0.949, 0.987, 1.0, 0.996, 0.99, 0.98, 0.962, 0.928, 0.87, 0.783, 0.654, 0.445, 0.0], "spread": {"angle_gap_cv": 0.5653686032397269, "length_cv": 0.0745641365708113, "maxwidth_cv": 0.05550981908311853, "tilt_deg_sd": 3.0414758046427424, "profile_sd_by_t": [0.08521511679953, 0.088923481351672, 0.09284234132140244, 0.09581137403240711, 0.09240764563716368, 0.09625485178990953, 0.10195506759560127, 0.10312531144759708, 0.10506524395177184, 0.10610916759351613, 0.10697009649136975, 0.10654890270940182, 0.10584604261526108, 0.11499585300513988, 0.12304657451832915, 0.12445423583403979, 0.1256264254325345, 0.126730096625884, 0.127682699831913, 0.12804725386344862, 0.1281518414632607, 0.1280342263131739, 0.12334286446814215, 0.11843343760680097, 0.11358845876453663, 0.10914928425938128, 0.10496107646025771, 0.10093921377883842, 0.09796384999887348, 0.095020146496739, 0.09214381368658511, 0.08952840247280472, 0.08757005532952829, 0.08626763970757133, 0.08533486742599969, 0.08468902840304043, 0.08443616384518336, 0.08350892041219359, 0.08293020705916976, 0.0824913117898828, 0.08233689424556592, 0.08194197540354747, 0.08126889652079865, 0.0804527162318473, 0.07958780016298445, 0.07840399426910596, 0.07730629503706944, 0.0760658677796287, 0.07482574642973251, 0.07331877806508219, 0.07202136769343319, 0.07082422944653871, 0.06958236333997087, 0.06832991406020522, 0.06735564323382397, 0.06625828199874984, 0.0653294608104298, 0.06421330153403089, 0.06282348190450353, 0.06150537715105872, 0.06037141556260955, 0.05906893465227282, 0.057406263803944854, 0.05563447342660709, 0.05431835326258428, 0.053039665351084, 0.05255361094350122, 0.05267390819778597, 0.05327899235497379, 0.05355185247195752, 0.0540318477252585, 0.0549424343974343, 0.056069175099816265, 0.056907597677592965, 0.05785695341193983, 0.05852598734688763, 0.05914143468362738, 0.05954504614783686, 0.06060455502343655, 0.06184176624578208, 0.06314532705488857, 0.06493107290412309, 0.06795372434074383, 0.07032467742704533, 0.07241396314573256, 0.07426376808174014, 0.07625602147936941, 0.07796758015686428, 0.07964956304937656, 0.08070705901462799, 0.0806430877720032, 0.07896426845694303, 0.07752166118490783, 0.07558361461027101, 0.0732987597493203, 0.06883844057714868, 0.06306629073117559, 0.06051510610462171, 0.057809093208311055, 0.054848452225251275, 0.05153597223547609]}}, {"name": "\u0446\u0432\u0435\u0442\u043e\u043a C, Bellis Perennis 252573267", "table": [0.528, 0.555, 0.582, 0.593, 0.635, 0.701, 0.778, 0.835, 0.879, 0.912, 0.947, 0.973, 0.99, 0.997, 1.0, 0.979, 0.926, 0.85, 0.731, 0.528, 0.0], "spread": {"angle_gap_cv": 0.5297652027101977, "length_cv": 0.17404686479632628, "maxwidth_cv": 0.15192290091826768, "tilt_deg_sd": 5.9864810988084445, "profile_sd_by_t": [0.04310482959241219, 0.06858404293457518, 0.09537966085401685, 0.11225621880054977, 0.12572614212636032, 0.15247723389467532, 0.17758140452416055, 0.2043513116895508, 0.2338080448566836, 0.23890951837331517, 0.24807850557049063, 0.2500968498631114, 0.25470464226324013, 0.2573119286759289, 0.2634004736807561, 0.27068594383753425, 0.2748432650670699, 0.27523252558522315, 0.27505785853061654, 0.27253274806966155, 0.2700393321622869, 0.26706466226283015, 0.2650237572901927, 0.2577262694713249, 0.24825854356850774, 0.2391492664270714, 0.2301414887259866, 0.2205492368927091, 0.21003942785436788, 0.19964525918838205, 0.18985649822971162, 0.18085279761504494, 0.17298446727012504, 0.16879789138185192, 0.16695995511367978, 0.16458093772888793, 0.1631325945865219, 0.16302700895740008, 0.16330534805994879, 0.1630251625456889, 0.1634998906940774, 0.16288917279801063, 0.16049216988850679, 0.1558723378540797, 0.15190130128286394, 0.14784734638229477, 0.14322679332210217, 0.13744760856592766, 0.13533974240102264, 0.13044055343832642, 0.12480963909535621, 0.11891273941407429, 0.11342263829703657, 0.10631611519996348, 0.10005007394811212, 0.0955122005275551, 0.09341991037818044, 0.08799403581107534, 0.08436808863987329, 0.08178237067344117, 0.079877767979534, 0.07863078284694265, 0.07999431869350615, 0.08077069561085592, 0.08007979735187859, 0.0776333031552334, 0.0753418249084582, 0.07335580474981357, 0.07239241738226515, 0.07181461548971174, 0.0714680825097406, 0.07098499842930378, 0.07099129591159055, 0.07197869963038005, 0.07471595115515775, 0.07757770835490303, 0.08037598148253519, 0.08306534784229547, 0.08618753832455042, 0.08896088227728155, 0.09254178543117429, 0.09486302669073393, 0.09614124998829428, 0.09650402487498239, 0.09780843579818865, 0.0992612805517143, 0.10080083461793768, 0.10266233324078307, 0.10586305404248969, 0.10842467459005914, 0.11259451389886643, 0.11581145471001081, 0.11749073973635242, 0.11650758510380907, 0.11450224446275797, 0.1093247351639703, 0.10187174682638518, 0.09857375814448946, 0.09413550508107592, 0.08764410914796518, 0.0809858037667358]}}, {"name": "\u0446\u0432\u0435\u0442\u043e\u043a D, Rome 2024 (\u043c\u0435\u043b\u043a\u0438\u0439 \u0446\u0432\u0435\u0442\u043e\u043a)", "table": [0.564, 0.618, 0.672, 0.713, 0.78, 0.855, 0.929, 0.94, 0.943, 0.975, 1.0, 0.989, 0.987, 0.971, 0.949, 0.919, 0.835, 0.739, 0.619, 0.434, 0.0], "spread": {"angle_gap_cv": 0.3691, "length_cv": 0.0932, "maxwidth_cv": 0.1348, "tilt_deg_sd": 4.001168826096229, "profile_sd_by_t": [0.16109192740228992, 0.16109192740228992, 0.16109192740228992, 0.16109192740228992, 0.20339874892300666, 0.21849712788884623, 0.22842589107346767, 0.234219924311454, 0.2381731764737202, 0.2389440469459874, 0.2395225768361263, 0.2386931150576217, 0.24562458042893598, 0.24225619609428672, 0.2380942318590562, 0.23304803118675999, 0.2285096860100377, 0.2245551619692396, 0.22296720597194739, 0.2209687436286846, 0.22005615650302954, 0.2196438547476381, 0.2199112900880139, 0.2209170602935372, 0.22216361092250764, 0.22309563163961288, 0.22368212163925763, 0.22263728402941593, 0.22168540128994138, 0.22063019650338328, 0.2199471134173381, 0.21877294578105003, 0.21698277314399617, 0.21490367116785325, 0.21308482092365819, 0.20954410789599276, 0.20579037422591784, 0.20116431944105131, 0.19597037345817891, 0.19089018441178893, 0.1866465087307836, 0.18305966730870032, 0.18006699591334152, 0.17688143784341007, 0.17551948107238582, 0.17452577170518424, 0.17410582012739578, 0.1738340161163029, 0.17312891002418068, 0.17226450787261927, 0.1712980520867217, 0.16945661935055417, 0.16739107415458085, 0.16526117377255015, 0.1642722494518307, 0.16392514269817207, 0.16469061767908258, 0.16584104717298204, 0.16722394168728927, 0.16750318300318132, 0.16723204299110833, 0.1667693413417685, 0.166161825726174, 0.16576833724230292, 0.16664424519602028, 0.1633093539249984, 0.15723278697051335, 0.1516008409069128, 0.1481708402405998, 0.14525267254589946, 0.14259381135790594, 0.13991264203757695, 0.13697528662640707, 0.13338206842395509, 0.13473892111816899, 0.13732054362443566, 0.1388240847394583, 0.1385814118456478, 0.1383214805525207, 0.1383402649808274, 0.13863919827851795, 0.13937700205031997, 0.14162697476683966, 0.14142138826270412, 0.14366669304855692, 0.14486722412500816, 0.1455194624868034, 0.14485510599679077, 0.1427796052545608, 0.1388699518165698, 0.13327016447143084, 0.12302694002437131, 0.11221186585439888, 0.09947016893155049, 0.08814475249466962, 0.07545864247933622, 0.0638218287003201, 0.05746142689103037, 0.05106458021801008, 0.04382344794134178, 0.038170916637176054]}}, {"name": "\u0446\u0432\u0435\u0442\u043e\u043a E, single Macro (Grand-Duc), \u0442\u043e\u043b\u044c\u043a\u043e \u0444\u043e\u0440\u043c\u0430", "table": [0.421, 0.488, 0.554, 0.602, 0.687, 0.763, 0.818, 0.854, 0.883, 0.897, 0.935, 0.984, 1.0, 0.964, 0.911, 0.867, 0.83, 0.775, 0.672, 0.459, 0.0], "spread": {"angle_gap_cv": 0.4578349308078081, "length_cv": 0.05649805930544882, "maxwidth_cv": 0.2710298063706445, "tilt_deg_sd": 3.474102822639122, "tilt_deg_mean": 4.581157446074859, "profile_sd_by_t": [0.33504093448768135, 0.3459724392952079, 0.35333637834540316, 0.3564441422156442, 0.3583132873791186, 0.37466447728015156, 0.3840670775374008, 0.3849987367838144, 0.37439466349710915, 0.35771855242377915, 0.3460827500086226, 0.33430306792877656, 0.3243184662784214, 0.31450846059280363, 0.30696832861757284, 0.2977445906157573, 0.28770080416145644, 0.278549543257933, 0.27227856243651044, 0.26504426362245886, 0.26032433523011467, 0.2538527407955868, 0.24662312562950847, 0.23914990764816066, 0.23364961012460628, 0.2296536120549069, 0.22545895612400926, 0.2200791136093493, 0.2173136686865249, 0.21244357667778063, 0.21003752432767556, 0.20883236625280033, 0.20792444398646837, 0.20752584067441524, 0.20774364266784417, 0.20808196989617955, 0.21101284150786961, 0.2131173021707146, 0.2147204234033332, 0.21715914210586318, 0.2213944324476682, 0.22399642943877549, 0.2267572434030923, 0.2278950547575571, 0.22915869693768962, 0.2285390010568025, 0.2309469983449834, 0.2310399616930535, 0.2279854430519432, 0.22286634398880864, 0.21958889421807737, 0.21936464516903306, 0.22451181124300193, 0.2235755036251225, 0.21816071105356669, 0.2119395469868665, 0.2110309705003438, 0.2109487453605986, 0.21064953707618894, 0.20829434657487597, 0.20828366503021284, 0.19950891686041128, 0.1952874963982585, 0.1941961735054658, 0.19651413825736805, 0.19264046706221546, 0.19053499793192621, 0.18659964914054003, 0.18497174690088977, 0.17585776981464057, 0.170699171353928, 0.16488007877775132, 0.1593969503349416, 0.14866311974875668, 0.14258618188374916, 0.13589379206934465, 0.13227272602786508, 0.12821161397267083, 0.12692835022356153, 0.12576593589243446, 0.126608972785806, 0.1282987273280388, 0.1316177209055925, 0.13380180771018782, 0.13684932119200666, 0.13995730076275673, 0.14516715956061071, 0.14960974631911966, 0.1556428894205687, 0.16194448683744714, 0.1679908393479591, 0.17202825296135593, 0.17637975546089207, 0.1750500100712146, 0.17291859894611047, 0.16667054897428663, 0.16162104239698344, 0.15851720075903145, 0.15423102210919729, 0.14839011639637942, 0.14186882664895728]}, "notes": "\u0444\u043e\u0440\u043c\u0430 \u043d\u0430\u0434\u0451\u0436\u043d\u0430: \u043c\u0435\u0434\u0438\u0430\u043d\u0430 43 \u043b\u0435\u043f\u0435\u0441\u0442\u043a\u043e\u0432 \u0441\u043e\u0432\u043f\u0430\u0434\u0430\u0435\u0442 \u0441 \u043c\u0435\u0434\u0438\u0430\u043d\u043e\u0439 9 \u043b\u0435\u043f\u0435\u0441\u0442\u043a\u043e\u0432 \u0441 \u043e\u0431\u043e\u0438\u043c\u0438 \u0432\u0438\u0434\u0438\u043c\u044b\u043c\u0438 \u043a\u0440\u0430\u044f\u043c\u0438. \u0420\u0430\u0437\u0431\u0440\u043e\u0441 \u043d\u0435\u043d\u0430\u0434\u0451\u0436\u0435\u043d \u0438 \u0432 \u043f\u0440\u0435\u0441\u0435\u0442\u044b \u043d\u0435 \u0438\u0434\u0451\u0442: \u0448\u0438\u0440\u0438\u043d\u044b cv 0.27 \u043f\u043e 8 \u043f\u043e\u043b\u0438\u0433\u043e\u043d\u0430\u043c \u0441\u0442\u0430\u0440\u043e\u0433\u043e \u043c\u0435\u0442\u043e\u0434\u0430, \u043f\u0440\u043e\u0444\u0438\u043b\u044c sd \u0434\u043e 0.38 \u0438\u0437-\u0437\u0430 \u0434\u043e\u0440\u0438\u0441\u043e\u0432\u0430\u043d\u043d\u044b\u0445 \u0441\u043a\u0440\u044b\u0442\u044b\u0445 \u043a\u0440\u0430\u0451\u0432, \u0443\u0433\u043b\u044b \u043f\u043e 49 \u043a\u043e\u043d\u0447\u0438\u043a\u0430\u043c, \u0447\u0430\u0441\u0442\u044c \u043a\u043e\u0442\u043e\u0440\u044b\u0445 \u2014 \u0434\u0430\u043b\u044c\u043d\u0438\u0435 \u0442\u043e\u0447\u043a\u0438 \u043a\u043e\u043d\u0442\u0443\u0440\u043e\u0432 \u0441\u043a\u0440\u044b\u0442\u044b\u0445 \u043b\u0435\u043f\u0435\u0441\u0442\u043a\u043e\u0432"}, {"name": "\u0446\u0432\u0435\u0442\u043e\u043a F1, Leucanthemum vulgare (\u043d\u0438\u0432\u044f\u043d\u0438\u043a), 13 \u043b\u0435\u043f\u0435\u0441\u0442\u043a\u043e\u0432", "table": [0.533, 0.602, 0.671, 0.739, 0.81, 0.872, 0.927, 0.961, 0.987, 1.0, 0.996, 0.981, 0.961, 0.931, 0.888, 0.832, 0.763, 0.678, 0.568, 0.391, 0.0], "spread": {"angle_gap_cv": 0.2171, "length_cv": 0.0882, "maxwidth_cv": 0.0844, "tilt_deg_sd": 9.82, "profile_sd_by_t": [0.0936, 0.0936, 0.0936, 0.0936, 0.10907777777777777, 0.1207777777777778, 0.13221111111111114, 0.13953333333333334, 0.14557777777777775, 0.15131111111111112, 0.15612222222222222, 0.16056666666666666, 0.16466666666666666, 0.15296666666666664, 0.14479999999999998, 0.13675555555555557, 0.1327222222222222, 0.12953333333333333, 0.1262333333333333, 0.12355555555555557, 0.12096666666666667, 0.11534444444444444, 0.10883333333333334, 0.1024, 0.09598888888888889, 0.08933333333333333, 0.08282222222222221, 0.07642222222222222, 0.07006666666666667, 0.06344444444444444, 0.0598, 0.057444444444444444, 0.05547777777777778, 0.05277777777777778, 0.049666666666666665, 0.046688888888888884, 0.043922222222222224, 0.040777777777777774, 0.03766666666666667, 0.03465555555555556, 0.031455555555555556, 0.027811111111111106, 0.025033333333333335, 0.022811111111111112, 0.021055555555555557, 0.01941111111111111, 0.018455555555555555, 0.018133333333333335, 0.01824444444444444, 0.018566666666666665, 0.019244444444444446, 0.020088888888888892, 0.021366666666666666, 0.02236666666666667, 0.02338888888888889, 0.024244444444444447, 0.02488888888888889, 0.025511111111111113, 0.026144444444444446, 0.026266666666666667, 0.02592222222222222, 0.025066666666666668, 0.024077777777777778, 0.023100000000000002, 0.02231111111111111, 0.021544444444444446, 0.020622222222222222, 0.019511111111111114, 0.018733333333333334, 0.018244444444444445, 0.018044444444444446, 0.017955555555555554, 0.017844444444444447, 0.01767777777777778, 0.01762222222222222, 0.017622222222222223, 0.017733333333333337, 0.017955555555555558, 0.018255555555555556, 0.01847777777777778, 0.018644444444444446, 0.018811111111111112, 0.019, 0.019033333333333333, 0.01901111111111111, 0.018999999999999996, 0.019, 0.018944444444444444, 0.019033333333333333, 0.019066666666666662, 0.019055555555555555, 0.01971111111111111, 0.02133333333333333, 0.023044444444444444, 0.025388888888888888, 0.02681111111111111, 0.028344444444444443, 0.029375, 0.030828571428571427, 0.0328, 0.03428]}}, {"name": "\u0446\u0432\u0435\u0442\u043e\u043a F2, Leucanthemum vulgare, \u043f\u0440\u0430\u0432\u0430\u044f \u0433\u043e\u043b\u043e\u0432\u043a\u0430, 14 \u043b\u0435\u043f\u0435\u0441\u0442\u043a\u043e\u0432", "table": [0.74, 0.775, 0.81, 0.838, 0.879, 0.907, 0.937, 0.961, 0.982, 0.997, 1.0, 0.982, 0.954, 0.924, 0.884, 0.837, 0.777, 0.696, 0.584, 0.412, 0.0], "spread": {"angle_gap_cv": 0.39087058981813627, "length_cv": 0.13033244748387457, "maxwidth_cv": 0.11917513163554007, "tilt_deg_sd": 11.142670438430924, "profile_sd_by_t": [0.06485088721961985, 0.06485088721961985, 0.06485088721961985, 0.06485088721961985, 0.06485088721961985, 0.06485088721961985, 0.06485088721961985, 0.06485088721961985, 0.06485088721961985, 0.0659655935426111, 0.0685120945855641, 0.07005650591141804, 0.07098024577377611, 0.07277754981123484, 0.07599373438773568, 0.0799338027944395, 0.08462722840812271, 0.08947530680680463, 0.0934385172052709, 0.09185975239384735, 0.08932096163511116, 0.08754742814412149, 0.08509615263854534, 0.08087015152072485, 0.07558842129782214, 0.06905261750400062, 0.06188701101594184, 0.05419541579019436, 0.05035148044831597, 0.04839674177382037, 0.04628022574788509, 0.043692373923248394, 0.04124513042563511, 0.0389517084828663, 0.037008805958590116, 0.03518620054801307, 0.03337013300800263, 0.031519174923248294, 0.029544251478700583, 0.02732659650428474, 0.02515054313944284, 0.022794221040152413, 0.020335029245153426, 0.017933049859797646, 0.01596678025846153, 0.014282785801117054, 0.013601675102118497, 0.013100574634635431, 0.012978096101722823, 0.013125872828802659, 0.013759453069366552, 0.014548207463162151, 0.015399185161328722, 0.01641576373965319, 0.017775404899480023, 0.018459735365339684, 0.019276307456464203, 0.020195283882687178, 0.021317246114044636, 0.02234790987079272, 0.023535831841371976, 0.02481524594929154, 0.02595115448620591, 0.026928870032736925, 0.02809470904616003, 0.02920295314664909, 0.030205074989203304, 0.031049544340554694, 0.032013725080260076, 0.03287309705633131, 0.03365425694409078, 0.034308038161733875, 0.034812254700753456, 0.035033048663251395, 0.0352447466965586, 0.03540941150589517, 0.035737782552331926, 0.036026533949306244, 0.03650779097947923, 0.037126453084224485, 0.03790421573347867, 0.03866478983203047, 0.0395290150481135, 0.04032191196883537, 0.04104784383881385, 0.04179334163665032, 0.04277498613470681, 0.04528793084851643, 0.04962662631097473, 0.05389593008247514, 0.05827265061135975, 0.06015507435670077, 0.06099616801148514, 0.060535226699687056, 0.059742652308746744, 0.06154539029187495, 0.06750543678152437, 0.06594540015907371, 0.06385570416883593, 0.060892149270285155, 0.061163581564032954]}}, {"name": "\u0446\u0432\u0435\u0442\u043e\u043a G1, \u0440\u043e\u043c\u0430\u0448\u043a\u043e\u0432\u044b\u0439 \u0442\u0438\u043f (Anthemis?), 13 \u043b\u0435\u043f\u0435\u0441\u0442\u043a\u043e\u0432", "table": [0.675, 0.718, 0.762, 0.802, 0.848, 0.875, 0.893, 0.924, 0.965, 0.982, 0.989, 1.0, 0.996, 0.974, 0.941, 0.894, 0.829, 0.748, 0.639, 0.452, 0.0], "spread": {"angle_gap_cv": 0.274, "length_cv": 0.054, "maxwidth_cv": 0.063, "tilt_deg_sd": 11.037, "profile_sd_by_t": [0.0626, 0.0626, 0.0626, 0.0626, 0.06256666666666667, 0.062133333333333325, 0.06131111111111112, 0.060622222222222216, 0.060066666666666664, 0.05942222222222222, 0.0587, 0.05814444444444444, 0.05774444444444445, 0.056755555555555545, 0.055544444444444445, 0.05383333333333333, 0.05203333333333334, 0.049855555555555556, 0.04753333333333334, 0.045411111111111103, 0.0433, 0.04101111111111111, 0.04228888888888889, 0.04452222222222222, 0.04797777777777778, 0.051133333333333336, 0.05929999999999999, 0.06532222222222223, 0.07017777777777777, 0.07448888888888888, 0.0785, 0.07885555555555555, 0.07853333333333332, 0.07737777777777777, 0.0759888888888889, 0.06933333333333333, 0.06456666666666666, 0.060255555555555555, 0.05575555555555556, 0.05191111111111111, 0.0487, 0.04533333333333333, 0.04203333333333333, 0.03902222222222223, 0.03663333333333333, 0.03444444444444445, 0.03261111111111111, 0.031155555555555554, 0.029311111111111107, 0.02748888888888889, 0.026422222222222222, 0.02592222222222222, 0.026500000000000003, 0.02711111111111111, 0.028200000000000003, 0.029599999999999998, 0.031266666666666665, 0.03296666666666667, 0.03472222222222223, 0.0363, 0.037877777777777774, 0.03874444444444444, 0.03964444444444445, 0.0405, 0.041433333333333336, 0.042355555555555556, 0.043388888888888894, 0.0446, 0.045922222222222225, 0.04731111111111111, 0.04874444444444445, 0.05023333333333333, 0.05182222222222223, 0.053222222222222226, 0.05455555555555555, 0.055799999999999995, 0.05686666666666667, 0.05775555555555556, 0.05846666666666667, 0.05895555555555555, 0.0592111111111111, 0.059277777777777776, 0.059477777777777775, 0.059622222222222215, 0.05973333333333333, 0.05987777777777778, 0.060066666666666664, 0.060066666666666664, 0.05993333333333333, 0.059655555555555545, 0.0592111111111111, 0.05845555555555556, 0.057577777777777776, 0.055955555555555564, 0.053755555555555556, 0.05017777777777778, 0.04816666666666666, 0.046925, 0.04549999999999999, 0.04376666666666667, 0.04172]}, "notes": "\u0434\u043b\u0438\u043d\u044b cv 0.085 \u2192 0.054: \u0438\u0437\u043c\u0435\u0440\u0435\u043d\u043e \u043e\u0442\u043d\u043e\u0441\u0438\u0442\u0435\u043b\u044c\u043d\u043e \u043e\u043a\u0440\u0443\u0436\u043d\u043e\u0441\u0442\u0438 \u043a\u043e\u043d\u0447\u0438\u043a\u043e\u0432; 0.085 \u0440\u0430\u0437\u0434\u0443\u0442\u043e \u043a\u043e\u0441\u044b\u043c \u0440\u0430\u043a\u0443\u0440\u0441\u043e\u043c (\u0434\u0438\u0441\u043a \u2014 \u044d\u043b\u043b\u0438\u043f\u0441 0.86, \u043f\u0440\u0430\u0432\u044b\u0435 \u043b\u0435\u043f\u0435\u0441\u0442\u043a\u0438 ~20 % \u043a\u043e\u0440\u043e\u0447\u0435)"}], "presets": [{"name": "\u0438\u043a\u043e\u043d\u043a\u0430 Nudge", "profile": 0, "spread": 0, "values": {"ent": 0.1, "seed": 50, "w": 3.5, "disc": 8.5, "n": 16, "pink": true, "k_ang": 0.5, "k_len": 0.8, "k_wid": 0.2, "k_tilt": 1.2, "k_prof": 1.25, "tip_start": 0.5, "tip_power": 2, "tip_color": "#f082a5"}}, {"name": "\u0446\u0432\u0435\u0442\u043e\u043a A, \u044d\u043d\u0442\u0440\u043e\u043f\u0438\u044f \u22480.25 \u043f\u043e \u0444\u043e\u0442\u043e, 40 \u043b\u0435\u043f\u0435\u0441\u0442\u043a\u043e\u0432", "profile": 0, "spread": 0, "values": {"ent": 0.25, "seed": 7, "w": 3.5, "disc": 8.5, "pink": true, "k_ang": 1, "k_len": 1, "k_wid": 1, "k_tilt": 1, "k_prof": 1, "n": 40, "tip_start": 0.5, "tip_power": 2, "tip_color": "#f082a5"}}, {"name": "\u043e\u0431\u0449\u0438\u0439 \u043f\u043e 5 \u0446\u0432\u0435\u0442\u043a\u0430\u043c, 16 \u043b\u0435\u043f\u0435\u0441\u0442\u043a\u043e\u0432 (\u0447\u0438\u0441\u043b\u043e \u0443\u0441\u043b\u043e\u0432\u043d\u043e\u0435)", "profile": 1, "spread": 1, "values": {"ent": 1, "seed": 7, "w": 3.5, "disc": 8.5, "pink": true, "k_ang": 1, "k_len": 1, "k_wid": 1, "k_tilt": 1, "k_prof": 1, "n": 16, "tip_start": 0.5, "tip_power": 2, "tip_color": "#f082a5"}}, {"name": "\u0446\u0432\u0435\u0442\u043e\u043a B, \u044d\u043d\u0442\u0440\u043e\u043f\u0438\u044f \u22480.35 \u043f\u043e \u0444\u043e\u0442\u043e, 39 \u043b\u0435\u043f\u0435\u0441\u0442\u043a\u043e\u0432", "profile": 2, "spread": 2, "values": {"ent": 0.35, "seed": 7, "w": 3.5, "disc": 8.5, "pink": true, "k_ang": 1, "k_len": 1, "k_wid": 1, "k_tilt": 1, "k_prof": 1, "n": 39, "tip_start": 0.5, "tip_power": 2, "tip_color": "#f082a5"}}, {"name": "\u0446\u0432\u0435\u0442\u043e\u043a C, \u044d\u043d\u0442\u0440\u043e\u043f\u0438\u044f \u22480.35 \u043f\u043e \u0444\u043e\u0442\u043e, 37 \u043b\u0435\u043f\u0435\u0441\u0442\u043a\u043e\u0432", "profile": 3, "spread": 3, "values": {"ent": 0.35, "seed": 7, "w": 3.5, "disc": 8.5, "pink": true, "k_ang": 1, "k_len": 1, "k_wid": 1, "k_tilt": 1, "k_prof": 1, "n": 37, "tip_start": 0.5, "tip_power": 2, "tip_color": "#f082a5"}}, {"name": "\u0446\u0432\u0435\u0442\u043e\u043a D, \u044d\u043d\u0442\u0440\u043e\u043f\u0438\u044f \u22480.35 \u043f\u043e \u0444\u043e\u0442\u043e, 27 \u043b\u0435\u043f\u0435\u0441\u0442\u043a\u043e\u0432", "profile": 4, "spread": 4, "values": {"ent": 0.35, "seed": 7, "w": 3.5, "disc": 8.5, "pink": true, "k_ang": 1, "k_len": 1, "k_wid": 1, "k_tilt": 1, "k_prof": 1, "n": 27, "tip_start": 0.5, "tip_power": 2, "tip_color": "#f082a5"}}, {"name": "\u0446\u0432\u0435\u0442\u043e\u043a F1, \u044d\u043d\u0442\u0440\u043e\u043f\u0438\u044f \u22480.35 \u043f\u043e \u0444\u043e\u0442\u043e, 13 \u043b\u0435\u043f\u0435\u0441\u0442\u043a\u043e\u0432", "profile": 6, "spread": 6, "values": {"ent": 0.35, "seed": 7, "w": 3.5, "disc": 10.0, "pink": false, "k_ang": 1, "k_len": 1, "k_wid": 1, "k_tilt": 1, "k_prof": 1, "n": 13, "tip_start": 0.5, "tip_power": 2, "tip_color": "#f082a5"}}, {"name": "\u0446\u0432\u0435\u0442\u043e\u043a F2, \u044d\u043d\u0442\u0440\u043e\u043f\u0438\u044f \u22480.35 \u043f\u043e \u0444\u043e\u0442\u043e, 14 \u043b\u0435\u043f\u0435\u0441\u0442\u043a\u043e\u0432", "profile": 7, "spread": 7, "values": {"ent": 0.35, "seed": 7, "w": 3.5, "disc": 10.5, "pink": false, "k_ang": 1, "k_len": 1, "k_wid": 1, "k_tilt": 1, "k_prof": 1, "n": 14, "tip_start": 0.5, "tip_power": 2, "tip_color": "#f082a5"}}, {"name": "\u0446\u0432\u0435\u0442\u043e\u043a G1, \u044d\u043d\u0442\u0440\u043e\u043f\u0438\u044f \u22480.35 \u043f\u043e \u0444\u043e\u0442\u043e, 13 \u043b\u0435\u043f\u0435\u0441\u0442\u043a\u043e\u0432", "profile": 8, "spread": 8, "values": {"ent": 0.35, "seed": 7, "w": 3.5, "disc": 10.5, "pink": false, "k_ang": 1, "k_len": 1, "k_wid": 1, "k_tilt": 1, "k_prof": 1, "n": 13, "tip_start": 0.5, "tip_power": 2, "tip_color": "#f082a5"}}]};
+// ---------- the model: petals from a parameter set, and the icon file they make
 // MODEL-BEGIN
 function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
 function gauss(r){let u=0,v=0;while(u===0)u=r();while(v===0)v=r();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
+function hexRgb(h){const v=parseInt(h.replace('#',''),16);return [v>>16&255,v>>8&255,v&255]}
 function profileAt(tab,t){if(t>=1)return 0;if(t<=0)return tab[0];const x=t*(tab.length-1),i=Math.floor(x);return tab[i]+(tab[i+1]-tab[i])*(x-i)}
 function makePetals(p){
   const r=mulberry32(p.seed*7919+1), sp=p.spread, e=p.ent, N=p.n;
   const gap=360/N; const pet=[];
   // angles: jitter each gap by cv*ent, then renormalise to 360
-  let gaps=[];for(let i=0;i<N;i++)gaps.push(gap*Math.max(0.2,1+gauss(r)*sp.angle_gap_cv*e*p.k_ang));
+  let gaps=[];for(let i=0;i<N;i++)gaps.push(gap*Math.max(0.5,1+gauss(r)*sp.angle_gap_cv*e*p.k_ang)); // a gap never closes below half a slot
   const sum=gaps.reduce((a,b)=>a+b,0); gaps=gaps.map(g=>g*360/sum);
   let a=0;
   for(let i=0;i<N;i++){
@@ -74,65 +194,113 @@ function makePetals(p){
     // profile noise: a smooth low-frequency wobble scaled by the measured sd(t)
     const n1=gauss(r),n2=gauss(r),ph=r()*6.28;
     const prof=t=>{const base=profileAt(p.table,t);const sd=profileAt(sp.profile_sd_by_t,t);return Math.max(0.05,base+sd*e*p.k_prof*(n1*Math.sin(t*3.1+ph)*0.7+n2*0.5))};
-    pet.push({ang:a,len,wid,tilt,prof,order:r()});
+    pet.push({ang:a,len,wid,tilt,prof,order:r(),n1,n2});
     a+=gaps[i];
   }
+  // the longest petal must stay on the canvas: tip 31 of a half-canvas 32, so lengths above 32/31 shrink the whole head
+  const lmax=Math.max(...pet.map(q=>q.len)); if(lmax*31>32) pet.forEach(q=>q.len*=32/(lmax*31));
   return pet;
 }
-// The baked form of one parameter set: what the app renderers read (docs/daisy/daisy.json).
-function bake(p,pet){
-  const TIP=31, BASE=3;
-  return {
-    canvas:64, centre:32, disc_radius:p.disc, petal_half_width:p.w, petal_base:BASE, petal_tip:TIP, pink_tips:!!p.pink,
-    petals: pet.map(q=>({angle:+(q.ang+q.tilt).toFixed(3), length:+q.len.toFixed(4), width:+q.wid.toFixed(4),
-      profile: Array.from({length:21},(_,i)=>+Math.max(0,q.prof(i/20)).toFixed(4)).map((v,i)=>i===20?0:v)})),
-    source:{profile:p.profileName, seed:p.seed, entropy:p.ent, k_ang:p.k_ang, k_len:p.k_len, k_wid:p.k_wid, k_tilt:p.k_tilt, k_prof:p.k_prof, petals:p.n}
-  };
+// The icon as the apps take it, assets/daisy.svg. Each petal is the outline render() fills:
+// the half-width profile at 21 points from the disc edge to the tip, held at its first value
+// from the base in to the disc edge, drawn upright and rotated into place. The disc goes on top.
+function svgOf(p,pet){
+  const TIP=31, BASE=3, C=32, num=(v,d=3)=>String(+v.toFixed(d));
+  const hex=c=>'#'+c.map(v=>Math.round(v).toString(16).padStart(2,'0')).join('');
+  const PB=[248,248,252], PT=hexRgb(p.tip_color), grad=p.pink&&p.tip_start<1;
+  // One gradient for every petal, over the path's own box: offset 0 at the base (BASE), 1 at the tip.
+  // render() blends over t from the disc edge to the tip, so offsets carry t through the nominal petal
+  // (tip at TIP); a petal's own length moves its stops by its few per cent off the nominal.
+  const off=t=>(p.disc-BASE+t*(TIP-p.disc))/(TIP-BASE);
+  const stops=[[0,0],[off(p.tip_start),0]];
+  for(let j=1;j<=6;j++)stops.push([off(p.tip_start+(1-p.tip_start)*j/6),(j/6)**p.tip_power]);
+  const petals=pet.map((q,k)=>{
+    const tr=TIP*q.len, W=p.w*q.wid, hw=i=>W*Math.max(0,q.prof(i/20)), y=i=>C-(p.disc+(tr-p.disc)*i/20);
+    const pts=[[C-hw(0),C-BASE]];
+    for(let i=0;i<20;i++)pts.push([C-hw(i),y(i)]);
+    pts.push([C,C-tr]);
+    for(let i=19;i>=0;i--)pts.push([C+hw(i),y(i)]);
+    pts.push([C+hw(0),C-BASE]);
+    const d=pts.map(([x,yy],i)=>(i?'L':'M')+num(x)+' '+num(yy)).join('')+'Z';
+    return `    <g id="petal-${k}" transform="rotate(${num(q.ang+q.tilt)} 32 32)"><path d="${d}" fill="${grad?'url(#tip)':hex(PB)}"/></g>`});
+  const source={profile:p.profileName, preset:p.presetName, preset_edited:p.presetEdited||undefined, seed:p.seed, entropy:p.ent,
+    k_ang:p.k_ang, k_len:p.k_len, k_wid:p.k_wid, k_tilt:p.k_tilt, k_prof:p.k_prof, petals:p.n, disc_radius:p.disc, petal_half_width:p.w,
+    pink_tips:!!p.pink, tip_start:p.tip_start, tip_power:p.tip_power, tip_color:p.tip_color};
+  return ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">',
+    '  <!-- Nudge tray icon, exported by docs/daisy/constructor.html. The apps remove fallen petals by id (petal-0 first) and rasterise the rest with resvg. -->',
+    '  <metadata><![CDATA[',JSON.stringify(source,null,2),'  ]]></metadata>',
+    ...(grad?['  <defs>','    <linearGradient id="tip" x1="0" y1="1" x2="0" y2="0">',
+      ...stops.map(([o,k])=>`      <stop offset="${num(o,4)}" stop-color="${hex(PB.map((v,c)=>v+(PT[c]-v)*k))}"/>`),
+      '    </linearGradient>','  </defs>']:[]),
+    '  <g id="petals">',...petals,'  </g>',
+    `  <circle id="disc" cx="32" cy="32" r="${num(p.disc)}" fill="#ffc837"/>`,'</svg>',''].join('\n');
 }
 // MODEL-END
+// The raster: every pixel is 4×4 subsamples, each tested against the petals in order.
+// Work is skipped only where its outcome is already fixed — a tile no petal's rectangle
+// can reach, a subsample wholly inside the disc, a petal past the first opaque hit — so
+// the pixels are exactly those of testing every petal at every subsample.
+const SS=4, OFF=Array.from({length:SS},(_,i)=>(i+.5)/SS), TS=8;
 function render(size,p,pet,fall){
   const k=size/64, C=size/2, disc=p.disc*k, tip=31*k, base=3*k, W=p.w*k;
-  const img=new ImageData(size,size), d=img.data, SS=4;
-  const PB=[248,248,252], PT=p.pink?[240,130,165]:[248,248,252], CY=[255,200,55];
-  const frames=pet.map((q,i)=>{const th=(q.ang-90)*Math.PI/180, tt=(q.ang-90+q.tilt)*Math.PI/180;
+  const img=new ImageData(size,size), d=img.data;
+  const PB0=248,PB1=248,PB2=252, PT=p.pink?hexRgb(p.tip_color):[PB0,PB1,PB2], TG0=p.tip_start, TGD=1-p.tip_start, TGP=p.tip_power, PD0=PT[0]-PB0,PD1=PT[1]-PB1,PD2=PT[2]-PB2, CY0=255,CY1=200,CY2=55;
+  // per petal: origin, axis, alpha, tip, profile, and a bound on its half-width over the whole length
+  const tabMax=Math.max(...p.table), sdMax=Math.max(...p.spread.profile_sd_by_t.map(Math.abs)), ek=Math.abs(p.ent*p.k_prof);
+  const N=pet.length, OX=new Float64Array(N),OY=new Float64Array(N),DX=new Float64Array(N),DY=new Float64Array(N),AL=new Float64Array(N),TR=new Float64Array(N),DEN=new Float64Array(N),WW=new Float64Array(N),HM=new Float64Array(N),PF=new Array(N), live=[];
+  pet.forEach((q,i)=>{ if(fall&&i<fall.index)return;
+    const th=(q.ang-90)*Math.PI/180, tt=(q.ang-90+q.tilt)*Math.PI/180;
     let ox=0,oy=0,alpha=1; if(fall&&i===fall.index){ox=Math.cos(th)*8*k*fall.phase;oy=Math.sin(th)*8*k*fall.phase+6*k*fall.phase*fall.phase;alpha=1-fall.phase}
-    return {q,ox,oy,alpha,dx:Math.cos(tt),dy:Math.sin(tt),rx:Math.cos(th),ry:Math.sin(th),hidden:fall&&i<fall.index}});
-  for(let y=0;y<size;y++)for(let x=0;x<size;x++){
+    OX[i]=ox;OY[i]=oy;AL[i]=alpha;DX[i]=Math.cos(tt);DY[i]=Math.sin(tt);TR[i]=tip*q.len;DEN[i]=TR[i]-disc;WW[i]=W*q.wid;PF[i]=q.prof;
+    HM[i]=WW[i]*Math.max(0.05,tabMax+sdMax*ek*(Math.abs(q.n1)*0.7+Math.abs(q.n2)*0.5))*1.000001+1e-6;
+    if(alpha>0)live.push(i)});
+  // per 8×8 tile: the petals whose rectangle (u from base to tip, |v| up to the bound) the tile touches, in petal order
+  const nt=Math.ceil(size/TS), tiles=new Array(nt*nt), rOut=disc+0.5+1e-6, rIn=disc-0.5-1e-6, rOut2=rOut*rOut, rIn2=rIn>0?rIn*rIn:-1;
+  for(let ty=0;ty<nt;ty++)for(let tx=0;tx<nt;tx++){
+    const x0=tx*TS-C, y0=ty*TS-C, x1=Math.min(size,(tx+1)*TS)-C, y1=Math.min(size,(ty+1)*TS)-C, list=[];
+    for(const i of live){let umin=Infinity,umax=-Infinity,vmin=Infinity,vmax=-Infinity;
+      for(const cx of [x0,x1])for(const cy of [y0,y1]){const vx=cx-OX[i],vy=cy-OY[i],u=vx*DX[i]+vy*DY[i],v=-vx*DY[i]+vy*DX[i];
+        if(u<umin)umin=u;if(u>umax)umax=u;if(v<vmin)vmin=v;if(v>vmax)vmax=v}
+      if(umax<base-1e-6||umin>TR[i]+1e-6||vmin>HM[i]||vmax<-HM[i])continue;
+      list.push(i)}
+    const nx=Math.max(x0,Math.min(0,x1)), ny=Math.max(y0,Math.min(0,y1));
+    tiles[ty*nt+tx]=(list.length===0&&nx*nx+ny*ny>rOut2)?null:Int32Array.from(list);
+  }
+  for(let ty=0;ty<nt;ty++)for(let tx=0;tx<nt;tx++){const L=tiles[ty*nt+tx]; if(!L)continue; const nl=L.length;
+   for(let y=ty*TS,ye=Math.min(size,y+TS);y<ye;y++)for(let x=tx*TS,xe=Math.min(size,x+TS);x<xe;x++){
     let R=0,G=0,B=0,A=0;
     for(let j=0;j<SS;j++)for(let i=0;i<SS;i++){
-      const sx=x+(i+.5)/SS-C, sy=y+(j+.5)/SS-C;
-      let bestA=0,bc=PB;
-      for(const f of frames){ if(f.hidden)continue;
-        const vx=sx-f.ox, vy=sy-f.oy;
-        // root of the petal sits on the ray at the disc; the petal's own axis may be tilted
-        const rootR=disc*0.0; const px=vx-f.rx*rootR, py=vy-f.ry*rootR;
-        const u=px*f.dx+py*f.dy, v=-px*f.dy+py*f.dx;
-        const tipR=tip*f.q.len; if(u<base||u>=tipR)continue;
-        const t=(u-disc)/(tipR-disc); const hw=W*f.q.wid*f.q.prof(t<0?0:t);
-        if(Math.abs(v)<=hw){const a=f.alpha; if(a>bestA){bestA=a;const pk=Math.max(0,(t-.5)/.5)**2;bc=[PB[0]+(PT[0]-PB[0])*pk,PB[1]+(PT[1]-PB[1])*pk,PB[2]+(PT[2]-PB[2])*pk]}}
+      const sx=x+OFF[i]-C, sy=y+OFF[j]-C, r2=sx*sx+sy*sy;
+      const ca=r2>rOut2?0:r2<rIn2?1:Math.min(1,Math.max(0,disc-Math.hypot(sx,sy)+0.5));
+      let bestA=0,b0=PB0,b1=PB1,b2=PB2;
+      if(ca<1)for(let m=0;m<nl;m++){const f=L[m];
+        const vx=sx-OX[f], vy=sy-OY[f], u=vx*DX[f]+vy*DY[f];
+        if(u<base||u>=TR[f])continue;
+        const av=Math.abs(-vx*DY[f]+vy*DX[f]); if(av>HM[f])continue;
+        const t=(u-disc)/DEN[f];
+        if(av<=WW[f]*PF[f](t<0?0:t)){const a=AL[f]; if(a>bestA){bestA=a;const pk=Math.max(0,(t-TG0)/TGD)**TGP;b0=PB0+PD0*pk;b1=PB1+PD1*pk;b2=PB2+PD2*pk; if(bestA>=1)break}}
       }
-      const rr=Math.hypot(sx,sy); const ca=Math.min(1,Math.max(0,disc-rr+0.5));
       const a=ca+bestA*(1-ca); if(a<=0)continue;
-      const c=[0,1,2].map(ii=>(CY[ii]*ca+bc[ii]*bestA*(1-ca))/a);
-      R+=c[0]*a;G+=c[1]*a;B+=c[2]*a;A+=a;
+      R+=(CY0*ca+b0*bestA*(1-ca))/a*a;G+=(CY1*ca+b1*bestA*(1-ca))/a*a;B+=(CY2*ca+b2*bestA*(1-ca))/a*a;A+=a;
     }
     const o=(y*size+x)*4; if(A>0){d[o]=R/A;d[o+1]=G/A;d[o+2]=B/A;d[o+3]=255*A/(SS*SS)}
+   }
   }
   return img;
 }
-function paint(canvas,size,p,pet,fall){canvas.width=size;canvas.height=size;canvas.getContext('2d').putImageData(render(size,p,pet,fall),0,0)}
-function canvasAt(sizePx,cssPx,p,pet){const c=document.createElement('canvas');paint(c,sizePx,p,pet);c.style.width=cssPx+'px';c.style.height=cssPx+'px';c.style.display='block';return c}
+function put(canvas,img){if(canvas.width!==img.width){canvas.width=img.width;canvas.height=img.height}canvas.getContext('2d').putImageData(img,0,0)}
+function canvasAt(sizePx,cssPx){const c=document.createElement('canvas');c.width=c.height=sizePx;c.style.width=cssPx+'px';c.style.height=cssPx+'px';c.style.display='block';return c}
 // ---------- fake trays
 const GLYPHS=`<svg class="gl" width="22" height="16" viewBox="0 0 22 16"><path d="M1 6a14 14 0 0 1 20 0l-2 2a11 11 0 0 0-16 0zM5 9.5a8.5 8.5 0 0 1 12 0l-2 2a5.5 5.5 0 0 0-8 0z" fill="currentColor"/><circle cx="11" cy="14" r="1.8" fill="currentColor"/></svg>
 <svg class="gl" width="27" height="13" viewBox="0 0 27 13"><rect x=".75" y=".75" width="22" height="11.5" rx="3" fill="none" stroke="currentColor" stroke-opacity=".5" stroke-width="1.5"/><rect x="2.5" y="2.5" width="14" height="8" rx="1.5" fill="currentColor"/><path d="M25 4.5v4a2 2 0 0 0 0-4z" fill="currentColor" fill-opacity=".5"/></svg>
 <svg class="gl" width="16" height="16" viewBox="0 0 16 16"><circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M11 11l4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`;
 document.querySelectorAll('.mac span').forEach(s=>{if(s.textContent==='GLYPHS'){s.outerHTML=`<span class="g">${GLYPHS}</span>`}});
 const WIN_GLYPH=`<svg width="16" height="16" viewBox="0 0 16 16"><path d="M8 11l-4-4h8z" fill="#ddd"/></svg>`;
-function winBar(scale,p,pet,idx){
+function winBar(scale){
   const s=scale, dpr=window.devicePixelRatio||1; // device px per CSS px
   const iconDev=Math.round(16*s), barDev=Math.round(48*s); // device pixels
   const css=v=>v/dpr; // CSS px that map to exactly v device px
-  const el=document.createElement('div'); el.className='shot'; el.style.width='720px';
+  const el=document.createElement('div'); el.className='shot';
   el.innerHTML=`<div class="win" style="height:${css(barDev)}px;font-size:${css(Math.round(12*s))}px">
    <div class="tray" style="gap:${css(Math.round(14*s))}px;padding-right:${css(Math.round(12*s))}px">
     <span style="opacity:.8;transform:scale(${s/dpr});transform-origin:center">${WIN_GLYPH}</span>
@@ -142,26 +310,72 @@ function winBar(scale,p,pet,idx){
     <svg width="${css(Math.round(16*s))}" height="${css(Math.round(16*s))}" viewBox="0 0 16 16"><rect x="1" y="4" width="12" height="8" rx="1.5" fill="none" stroke="#eee" stroke-width="1.3"/><rect x="2.5" y="5.5" width="8" height="5" fill="#eee"/><rect x="13.5" y="6.5" width="1.5" height="3" fill="#eee"/></svg>
     <span class="clock" style="margin-left:${css(Math.round(6*s))}px">15:42<br>26.10.2026</span>
    </div></div>`;
-  el.querySelector('.wslot').appendChild(canvasAt(iconDev,css(iconDev),p,pet));
+  el.querySelector('.wslot').appendChild(canvasAt(iconDev,css(iconDev)));
   return el;
 }
+// The bars' canvases are built once per device pixel ratio and only repainted after that.
+let bars=null;
+function barCanvases(){const dpr=window.devicePixelRatio||1; if(bars&&bars.dpr===dpr)return bars.canvases;
+  const canvases=[];
+  for(const id of ['macL','macD']){const h=document.getElementById(id),c=canvasAt(Math.round(18*dpr),18);h.innerHTML='';h.appendChild(c);canvases.push(c)}
+  const wins=document.getElementById('wins'); wins.innerHTML=''; [1,1.5,2].forEach(s=>{const el=winBar(s);wins.appendChild(el);canvases.push(el.querySelector('canvas'))});
+  bars={dpr,canvases}; return canvases}
 // ---------- wiring
-const ids=['ent','seed','w','disc','n','k_ang','k_len','k_wid','k_tilt','k_prof'];
+const ids=['ent','seed','w','disc','n','k_ang','k_len','k_wid','k_tilt','k_prof','tip_start','tip_power'];
 const sel=document.getElementById('prof'); DATA.profiles.forEach((pr,i)=>{const o=document.createElement('option');o.value=i;o.textContent=pr.name;sel.appendChild(o)});
+const psel=document.getElementById('preset'); DATA.presets.forEach((pr,i)=>{const o=document.createElement('option');o.value=i;o.textContent=pr.name;psel.appendChild(o)});
+const CUSTOM=document.createElement('option'); CUSTOM.value='custom'; CUSTOM.hidden=true; psel.appendChild(CUSTOM);
+// Each slider gets a number box with its range and step. The slider holds the value: a typed
+// number applies as soon as it parses within range, and on commit the box shows what the
+// slider took (clamped to the range, snapped to the step).
+ids.forEach(id=>{const s=document.getElementById(id), b=document.createElement('input');
+  b.type='number'; b.id=id+'_num'; b.min=s.min; b.max=s.max; b.step=s.step; b.value=s.value; s.after(b);
+  s.addEventListener('input',()=>{b.value=s.value;touched()});
+  b.addEventListener('input',()=>{const v=b.valueAsNumber, old=s.value; if(Number.isFinite(v)&&v>=+s.min&&v<=+s.max){s.value=v; if(s.value!==old)touched()}});
+  b.addEventListener('change',()=>{const v=b.valueAsNumber, old=s.value; if(Number.isFinite(v))s.value=Math.min(+s.max,Math.max(+s.min,v)); b.value=s.value; if(s.value!==old)touched()});
+});
+// The preset in force: its spread set is what the entropy multiplies until another preset is picked.
+let preset=DATA.presets[0], edited=false;
+function applyPreset(i){preset=DATA.presets[i]; edited=false; CUSTOM.hidden=true; psel.value=String(i); sel.value=String(preset.profile);
+  for(const [k,v] of Object.entries(preset.values)){const el=document.getElementById(k); if(el.type==='checkbox') el.checked=v; else {el.value=v; document.getElementById(k+(el.type==='color'?'_hex':'_num')).value=el.value}}}
+function touched(){if(!edited){edited=true; CUSTOM.textContent='— свои — (от «'+preset.name+'»)'; CUSTOM.hidden=false; psel.value='custom'} schedule()}
 document.getElementById('dpr').textContent=(window.devicePixelRatio||1);
-function params(){const p={profileName:DATA.profiles[+document.getElementById('prof').value].name};ids.forEach(id=>{p[id]=+document.getElementById(id).value;const o=document.getElementById(id+'_o');if(o)o.textContent=(id==='seed'||id==='n')?p[id]:p[id].toFixed(2)});p.pink=document.getElementById('pink').checked;const pr=DATA.profiles[+sel.value];p.table=pr.table;p.spread=pr.spread;return p}
-function draw(){
-  const p=params(), pet=makePetals(p), dpr=window.devicePixelRatio||1;
-  const sp=p.spread; document.getElementById('spread').textContent=`реальный разброс (${DATA.profiles[+sel.value].name}): углы cv ${sp.angle_gap_cv.toFixed(2)}, длины cv ${sp.length_cv.toFixed(3)}, ширины cv ${sp.maxwidth_cv.toFixed(2)}, наклон sd ${sp.tilt_deg_sd.toFixed(1)}°, профиль sd в середине ${sp.profile_sd_by_t.slice(30,80).reduce((a,b)=>a+b,0)/50|0}${(sp.profile_sd_by_t.slice(30,80).reduce((a,b)=>a+b,0)/50).toFixed(2).slice(1)}; при энтропии 1 каждый параметр = измеренному`;
-  for(const id of ['macL','macD']){const h=document.getElementById(id);h.innerHTML='';h.appendChild(canvasAt(Math.round(18*dpr),18,p,pet))}
-  const wins=document.getElementById('wins'); wins.innerHTML=''; [1,1.5,2].forEach((s,i)=>wins.appendChild(winBar(s,p,pet,i)));
-  paint(document.getElementById('big'),256,p,pet);
-  const c36=document.getElementById('big36'); paint(c36,36,p,pet); c36.style.width='288px'; c36.style.height='288px';
-  const c18=document.getElementById('big18'); paint(c18,18,p,pet); c18.style.width='288px'; c18.style.height='288px';
-  paint(document.getElementById('bigfall'),256,p,pet,{index:0,phase:0.5});
-  document.getElementById('export').value=JSON.stringify(bake(p,pet));
+function params(){const p={profileName:DATA.profiles[+sel.value].name};ids.forEach(id=>{p[id]=+document.getElementById(id).value});p.pink=document.getElementById('pink').checked;p.tip_color=tipColor.value;p.table=DATA.profiles[+sel.value].table;const sp=DATA.profiles[preset.spread];p.spread=sp.spread;p.spreadName=sp.name;p.presetName=preset.name;p.presetEdited=edited;return p}
+// Petals depend on neither the colours nor the disc and petal width: those reuse the last set.
+let petKey=null, petCached=null;
+function petals(p){const key=JSON.stringify([p.seed,p.ent,p.n,p.k_ang,p.k_len,p.k_wid,p.k_tilt,p.k_prof,sel.value,preset.spread]); if(key!==petKey){petKey=key;petCached=makePetals(p)} return petCached}
+// Applying a change is two steps: the trays and small previews in the next frame, the 256 px
+// renders, the export and its SVG preview once input has paused for 80 ms.
+let cur=null, frameReq=0, heavyTimer=0;
+function applyLight(){
+  const p=params(), pet=petals(p); cur={p,pet};
+  const sp=p.spread, short=p.spreadName.replace(/\s*\(.*$/,'').split(',')[0], mid=sp.profile_sd_by_t.slice(30,80).reduce((a,b)=>a+b,0)/50;
+  document.getElementById('spread').textContent=`Измерено (${short}):\nуглы cv ${sp.angle_gap_cv.toFixed(2)}, длины cv ${sp.length_cv.toFixed(3)}, ширины cv ${sp.maxwidth_cv.toFixed(2)}, наклон sd ${sp.tilt_deg_sd.toFixed(1)}°, профиль sd ${mid.toFixed(2)}`;
+  const memo=new Map(), at=s=>{if(!memo.has(s))memo.set(s,render(s,p,pet));return memo.get(s)};
+  for(const c of barCanvases())put(c,at(c.width));
+  put(document.getElementById('big36'),at(36)); put(document.getElementById('big18'),at(18));
 }
-function applyDefaults(pr){ if(!pr.defaults) return; for(const [k,v] of Object.entries(pr.defaults)){ const el=document.getElementById(k); if(el) el.value=v; } }
-ids.forEach(id=>document.getElementById(id).addEventListener('input',draw)); document.getElementById('pink').addEventListener('change',draw); sel.addEventListener('change',()=>{applyDefaults(DATA.profiles[+sel.value]);draw()});
-applyDefaults(DATA.profiles[0]); draw();
+function applyHeavy(){const {p,pet}=cur;
+  put(document.getElementById('big'),render(256,p,pet));
+  put(document.getElementById('bigfall'),render(256,p,pet,{index:0,phase:0.5}));
+  const svg=svgOf(p,pet); document.getElementById('export').value=svg;
+  document.getElementById('svgprev').src='data:image/svg+xml;charset=utf-8,'+encodeURIComponent(svg);
+}
+function schedule(){if(!frameReq)frameReq=requestAnimationFrame(()=>{frameReq=0;applyLight();clearTimeout(heavyTimer);heavyTimer=setTimeout(applyHeavy,80)})}
+function draw(){cancelAnimationFrame(frameReq);frameReq=0;clearTimeout(heavyTimer);applyLight();applyHeavy()} // the whole apply, synchronously
+const tipColor=document.getElementById('tip_color'), tipHex=document.getElementById('tip_color_hex');
+tipColor.addEventListener('input',()=>{tipHex.value=tipColor.value;touched()});
+tipHex.addEventListener('input',()=>{const m=/^#?([0-9a-f]{6})$/i.exec(tipHex.value.trim()); if(m){const v='#'+m[1].toLowerCase(); if(v!==tipColor.value){tipColor.value=v;touched()}}});
+tipHex.addEventListener('change',()=>{tipHex.value=tipColor.value});
+document.getElementById('pink').addEventListener('change',touched); sel.addEventListener('change',touched);
+psel.addEventListener('change',()=>{if(psel.value!=='custom'){applyPreset(+psel.value);schedule()}});
+for(const id of ['big36','big18']){const c=document.getElementById(id);c.style.width=c.style.height='252px'}
+applyPreset(0); draw();
+// Copy the export; where the clipboard is refused, select the text for a manual copy.
+document.getElementById('copy').addEventListener('click',()=>{const t=document.getElementById('export'), note=document.getElementById('copied');
+  const fallback=()=>{t.focus();t.select();note.textContent='Выделено, скопируйте вручную'};
+  try{navigator.clipboard.writeText(t.value).then(()=>{note.textContent='Скопировано'},fallback)}catch(e){fallback()}});
+document.getElementById('download').addEventListener('click',()=>{const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([document.getElementById('export').value],{type:'image/svg+xml'})); a.download='daisy.svg';
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),1000)});
 </script>

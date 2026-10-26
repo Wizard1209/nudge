@@ -50,7 +50,10 @@ Full contract: [docs/journal-spec.md](docs/journal-spec.md)
 ## Tray
 
 - Tray icon — a daisy that drops petals as the next nudge approaches (this
-  is the time-remaining indicator, see `docs/design-spec.md` §5).
+  is the time-remaining indicator, see `docs/design-spec.md` §5). The
+  drawing is `assets/daisy.svg`, exported by the constructor in
+  `docs/daisy/constructor.html`; both apps rasterise it with resvg at the
+  tray's pixel size.
 - Tooltip: `~N min` (rounded up, refreshed once per minute); `now` after the
   timer expires.
 - Left click: open the popup (does not affect the timer).
