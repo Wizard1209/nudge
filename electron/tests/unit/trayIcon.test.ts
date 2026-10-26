@@ -2,21 +2,25 @@ import { describe, it, expect } from "vitest";
 
 import {
   buildTrayIcon,
+  petalWidthAt,
+  PETALS,
+  PETAL_COUNT,
   visiblePetals,
   daisyFrame,
   formatTooltip,
 } from "../../src/electron/trayIcon";
 
-// Spec §5: daisy icon — 12 petals around a yellow centre. Petals fall one per
-// `interval/12`, top petal (12 o'clock, index 0) first, then clockwise. At
+// Spec §5: daisy icon — 16 petals around a yellow centre, from the table in
+// docs/daisy/daisy.json. Petals fall one per `interval/16`, top petal (12 o'clock, index 0) first, then clockwise. At
 // timer expiry only the centre remains. Tooltip is "~N min" (ceil to whole
 // minutes) and flips to "now" when the timer is at zero.
 
 describe("trayIcon / visiblePetals", () => {
-  it("returns all 12 petals at progress 0", () => {
+  it("returns all 16 petals at progress 0, one per table entry", () => {
     const petals = visiblePetals(0);
-    expect(petals).toHaveLength(12);
-    expect(petals).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    expect(petals).toHaveLength(PETAL_COUNT);
+    expect(PETALS).toHaveLength(PETAL_COUNT);
+    expect(petals).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
   });
 
   it("returns no petals at progress 1", () => {
@@ -24,23 +28,23 @@ describe("trayIcon / visiblePetals", () => {
   });
 
   it("drops the 12-o'clock petal (index 0) first", () => {
-    // Just past 1/12 of the interval: petal 0 has fallen, 1..11 remain.
-    const petals = visiblePetals(1 / 12 + 0.001);
-    expect(petals).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    // Just past 1/16 of the interval: petal 0 has fallen, 1..15 remain.
+    const petals = visiblePetals(1 / 16 + 0.001);
+    expect(petals).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
   });
 
   it("drops petals clockwise (index ascends)", () => {
-    // Halfway: petals 0..5 fallen, 6..11 remain.
-    expect(visiblePetals(0.5)).toEqual([6, 7, 8, 9, 10, 11]);
+    // Halfway: petals 0..7 fallen, 8..15 remain.
+    expect(visiblePetals(0.5)).toEqual([8, 9, 10, 11, 12, 13, 14, 15]);
   });
 
   it("keeps the last petal until progress fully hits 1", () => {
-    // 11/12 < progress < 1: 11 fallen, petal 11 still there.
-    expect(visiblePetals(11 / 12 + 0.001)).toEqual([11]);
+    // 15/16 < progress < 1: 15 fallen, petal 15 still there.
+    expect(visiblePetals(15 / 16 + 0.001)).toEqual([15]);
   });
 
   it("clamps progress to [0, 1]", () => {
-    expect(visiblePetals(-0.5)).toHaveLength(12);
+    expect(visiblePetals(-0.5)).toHaveLength(16);
     expect(visiblePetals(1.5)).toEqual([]);
   });
 });
@@ -81,11 +85,45 @@ describe("trayIcon / buildTrayIcon", () => {
     expect(hasWhiteOrPink(buildTrayIcon(1, px))).toBe(false);
   });
 
-  it("petal area at progress 0 is roughly 12x larger than at progress 11/12", () => {
+  // Spec §5: "Each petal is a strip that runs out from under the centre:
+  // narrowest where it leaves the disc, widest about three fifths of the way
+  // out, closed by a pointed-oval tip. Petal and centre meet with no gap
+  // between them."
+  it("the top petal meets the centre with no gap and is narrowest there", () => {
+    const size = 64;
+    const { pixels } = decodeRawRGBA(buildTrayIcon(0, size));
+    const px = (x: number, y: number) => {
+      const i = (y * size + x) * 4;
+      return [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]];
+    };
+    const c = size / 2;
+    // On the top petal's axis (x = 32), from the disc edge outwards, every
+    // pixel is covered: no transparent ring between centre and petal.
+    const discEdge = c - 8.5; // REF_CENTER_R on the 64 px canvas
+    for (let y = Math.floor(discEdge) - 1; y > 8; y--) {
+      const [r, , b, a] = px(c, y);
+      expect(a, `gap at (${c},${y})`).toBeGreaterThan(128);
+      expect(r, `not petal at (${c},${y})`).toBeGreaterThan(200);
+      expect(b).toBeGreaterThan(100);
+    }
+    // Narrower at the base than mid-length, closed at the tip: the width
+    // profile itself, since next to the disc the neighbours' bases overlap
+    // and no single pixel column belongs to one petal.
+    for (let k = 0; k < PETAL_COUNT; k++) {
+      expect(petalWidthAt(k, 0)).toBeLessThan(petalWidthAt(k, 0.3));
+      expect(petalWidthAt(k, 0.3)).toBeLessThan(petalWidthAt(k, 0.6));
+      expect(petalWidthAt(k, 0)).toBeGreaterThan(0.4);
+      expect(petalWidthAt(k, 0.6)).toBeGreaterThan(0.9);
+      expect(petalWidthAt(k, 0.9)).toBeLessThan(0.85);
+      expect(petalWidthAt(k, 1)).toBe(0);
+    }
+  });
+
+  it("petal area at progress 0 is roughly 16x larger than at progress 15/16", () => {
     // Sanity check that visiblePetals actually drives the rendered output —
     // fewer indices → fewer petal pixels.
     const full = countPetalPixels(buildTrayIcon(0));
-    const last = countPetalPixels(buildTrayIcon(11 / 12 + 0.001));
+    const last = countPetalPixels(buildTrayIcon(15 / 16 + 0.001));
     expect(full).toBeGreaterThan(0);
     expect(last).toBeGreaterThan(0);
     // Allow generous slack; we only care about the order of magnitude.
@@ -95,21 +133,21 @@ describe("trayIcon / buildTrayIcon", () => {
 });
 
 describe("trayIcon / daisyFrame", () => {
-  // §5 fall animation: petal k starts falling at t = (k+1) * interval/12
+  // §5 fall animation: petal k starts falling at t = (k+1) * interval/16
   // and is fully gone after `fadeMs`. While falling, it counts as the "in
   // motion" petal (still drawn, but offset + fading), not part of `stable`.
-  const interval = 12_000; // 12s for easy mental math (slot = 1s)
+  const interval = 16_000; // 16s for easy mental math (slot = 1s)
   const fadeMs = 250;
 
-  it("returns all 12 stable petals at t=0, none falling", () => {
+  it("returns all 16 stable petals at t=0, none falling", () => {
     const f = daisyFrame(0, interval, fadeMs);
-    expect(f.stable).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    expect(f.stable).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
     expect(f.falling).toBeUndefined();
   });
 
   it("marks petal 0 as falling right when its slot ends", () => {
     const f = daisyFrame(1000, interval, fadeMs); // exactly at slot boundary
-    expect(f.stable).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    expect(f.stable).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
     expect(f.falling?.index).toBe(0);
     expect(f.falling?.phase).toBeCloseTo(0, 5);
   });
@@ -122,14 +160,14 @@ describe("trayIcon / daisyFrame", () => {
 
   it("drops the falling petal once the fade window ends", () => {
     const f = daisyFrame(1000 + fadeMs, interval, fadeMs);
-    expect(f.stable).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    expect(f.stable).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
     expect(f.falling).toBeUndefined();
   });
 
   it("renders the final petal falling at the very end of the interval", () => {
-    const f = daisyFrame(12_000, interval, fadeMs);
+    const f = daisyFrame(16_000, interval, fadeMs);
     expect(f.stable).toEqual([]);
-    expect(f.falling?.index).toBe(11);
+    expect(f.falling?.index).toBe(15);
     expect(f.falling?.phase).toBeCloseTo(0, 5);
   });
 
@@ -140,11 +178,11 @@ describe("trayIcon / daisyFrame", () => {
   });
 
   it("clamps the fade duration to the slot length on short intervals", () => {
-    // For a 1.2s interval, slot = 100ms — shorter than the default 250ms
+    // For a 1.6s interval, slot = 100ms — shorter than the default 250ms
     // fade. The animation must compress so that one falling petal never
     // overlaps the next slot.
-    const short = 1200;
-    const slot = short / 12;
+    const short = 1600;
+    const slot = short / 16;
     // 60ms into the first slot's fade, with slot=100 the effective fade is
     // 100ms, so phase ≈ 0.6 (not 0.24 you'd get from a literal 250ms fade).
     const f = daisyFrame(slot + 60, short, fadeMs);
