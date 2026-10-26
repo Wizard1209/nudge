@@ -184,7 +184,11 @@ static Napi::Value FrontWindowBounds(const Napi::CallbackInfo &info) {
   for (NSDictionary *entry in (__bridge NSArray *)list) {
     if ([entry[(id)kCGWindowOwnerPID] intValue] != pid) continue;
     if ([entry[(id)kCGWindowLayer] intValue] != 0) continue;
-    if (!CGRectMakeWithDictionaryRepresentation((__bridge CFDictionaryRef)entry[(id)kCGWindowBounds], &bounds)) continue;
+    // Into a rect of its own: the conversion leaves its output unspecified
+    // when it fails, and `bounds` must stay null until an entry converts.
+    CGRect rect;
+    if (!CGRectMakeWithDictionaryRepresentation((__bridge CFDictionaryRef)entry[(id)kCGWindowBounds], &rect)) continue;
+    bounds = rect;
     break;
   }
   CFRelease(list);
