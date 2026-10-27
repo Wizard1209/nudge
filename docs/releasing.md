@@ -12,11 +12,12 @@ Release.
    commit you are about to tag.
 2. **Version** — `version` in `Cargo.toml` matches the tag (`v0.1.0` ↔
    `0.1.0`).
-3. **Windows-only ignored tests** — run `scripts/native-tests.sh`:
-   `perf_idle` (idle CPU budget) and `native_render` (real window render +
-   LLM vision judge). These are local-only for now — CI has no Windows runner
-   with a live desktop. Skip only if they already ran on the same code
-   recently.
+3. **Windows-only ignored tests** — `scripts/native-tests.sh` runs
+   `native_render` (real window render + LLM vision judge); `perf_idle` (idle
+   CPU budget) is not in it and runs on its own:
+   `cargo test --target x86_64-pc-windows-gnu --test perf_idle -- --ignored --nocapture`.
+   These are local-only for now — CI has no Windows runner with a live
+   desktop. Skip only if they already ran on the same code recently.
 4. **macOS ignored tests** — run `scripts/native-tests-macos.sh`, which drives
    `tests/macos_native.rs` inside a Tart guest. Every test in it must pass.
    They stay out of CI for the same reason as the Windows pair, plus one of
@@ -27,6 +28,14 @@ Release.
    screen they cannot run at all — synthetic input, application activation and
    rect captures all fail — so the guest is the reproducible path rather than
    the fallback.
+
+   Then `scripts/perf-macos.sh` — the macOS counterpart of `perf_idle`:
+   `tests/perf_macos.rs` holds the release build to its hidden-footprint,
+   re-show growth, idle-CPU and show-latency budgets and prints the numbers as
+   a `PERF_MACOS_JSON` line. It runs on your own unlocked desktop rather than
+   in the guest, because the guest script ships debug builds and measures on a
+   different display; it needs no grant, but it takes the keyboard for about
+   75 s.
 5. **Manual smoke of a release build on live Windows** — popup opens focused;
    Enter appends a journal line; Esc closes without writing; tray daisy and
    menu work; global hotkey opens the popup; settings window saves.
