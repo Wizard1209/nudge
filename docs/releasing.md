@@ -35,7 +35,7 @@ Release.
    a `PERF_MACOS_JSON` line. It runs on your own unlocked desktop rather than
    in the guest, because the guest script ships debug builds and measures on a
    different display; it needs no grant, but it takes the keyboard for about
-   75 s.
+   three minutes.
 5. **Manual smoke of a release build on live Windows** — popup opens focused;
    Enter appends a journal line; Esc closes without writing; tray daisy and
    menu work; global hotkey opens the popup; settings window saves.

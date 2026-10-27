@@ -8,9 +8,9 @@
 #   RUNS=3 scripts/perf-macos.sh     # three runs, one JSON line each
 #
 # Needs an unlocked, logged-in desktop: the test shows the popup and takes the
-# keyboard away from it repeatedly for about 75 s per run. No TCC grant is
-# needed. Each run's full output (including the `footprint` table) is kept in
-# target/perf-macos/run-N.log.
+# keyboard away from it repeatedly for about three minutes per run. No TCC
+# grant is needed. Each run's full output (including the `footprint` table) is
+# kept in target/perf-macos/run-N.log.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

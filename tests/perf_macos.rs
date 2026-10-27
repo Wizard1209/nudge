@@ -12,7 +12,7 @@
 //! * **steady** — a ten-minute interval, so nothing re-shows the popup:
 //!   (a) startup to on-screen, then hide; (b) 30 s of hidden samples —
 //!   footprint, CPU, wakeups — and the `footprint` category table.
-//! * **cycles** — a six-second interval: hide, then let the timer re-show it
+//! * **cycles** — a 21-second interval: hide, then let the timer re-show it
 //!   [`CYCLES`] times, hiding each one and sampling every hidden gap. The
 //!   last gap against the first re-show's is the leak guard; the
 //!   deadline-to-screen delay of each re-show is the show latency.
@@ -43,7 +43,7 @@
 //! Requirements: a logged-in, unlocked GUI session with no full-screen app in
 //! front, and no other `nudge` popup contending for activation while it runs.
 //! The test takes the keyboard away from the user every few seconds for about
-//! 75 s.
+//! three minutes.
 
 #![cfg(target_os = "macos")]
 
@@ -62,35 +62,31 @@ use core_graphics::window::{
     kCGWindowBounds, kCGWindowIsOnscreen, kCGWindowLayer, kCGWindowOwnerPID,
 };
 
-/// Hidden footprint ceiling, MiB. With the hidden window parked at one point
-/// (`NudgeApp::hide_popup`) four runs measured 38.9–42.3 (release, a
-/// 1470×956 pt display at 2x), IOSurfaces 64 KiB; ~10% over the worst.
-/// Before parking it was ~134, 94 MiB of it IOSurfaces — a hide that keeps
-/// the window's surfaces again fails here.
+/// Hidden footprint ceiling, MiB: ~10% over the worst measured with the
+/// hidden window shrunk to one point (`NudgeApp::hide_popup`; release, a
+/// 1470×956 pt display at 2x). Before the hidden window was shrunk it held
+/// ~134, 94 MiB of it IOSurfaces — a hide that keeps the window's surfaces
+/// again fails here.
 const BUDGET_HIDDEN_MB: f64 = 47.0;
 
-/// The same ceiling after [`CYCLES`] timer re-shows, MiB. A gap is sampled
-/// 2–5 s after its hide, while the parked window's memory is still being
-/// given back: ~110 MiB at the hide, 52–63 a second later, ~42 from about
-/// 8 s on. Three runs read 56.7–63.0 there, and a fourth 75.3, when one
-/// work-area surface (18.7 MiB) had not been released yet; ~10% over that.
-const BUDGET_HIDDEN_AFTER_CYCLES_MB: f64 = 83.0;
+/// The same ceiling after [`CYCLES`] timer re-shows, MiB — the state a
+/// long-running instance lives in. ~10% over the worst measured.
+const BUDGET_HIDDEN_AFTER_CYCLES_MB: f64 = 45.0;
 
 /// How much re-shows 2 to [`CYCLES`] may add to the hidden footprint, MiB.
-/// The gaps move by whole ~6.5 MiB steps either way, and with the window
-/// parked one of them sometimes still holds a work-area surface that is
-/// released later (a 2940×1666 BGRA buffer is 18.7 MiB): four runs measured
-/// -0.1, +6.5, +6.7 and +18.8. This admits that one surface and not a
-/// second, so a surface kept per re-show still fails it.
-const BUDGET_CYCLE_GROWTH_MB: f64 = 21.0;
+/// The gaps move by whole ~6.5 MiB steps either way, so this admits one step
+/// and not two — and not one more work-area surface (a 2940×1666 BGRA buffer
+/// is 18.7 MiB).
+const BUDGET_CYCLE_GROWTH_MB: f64 = 10.0;
 
 /// Hidden CPU ceiling, ms of CPU per wall second — the same 2.5%-of-a-core
 /// budget `tests/perf_idle.rs` holds the Windows build to.
 const BUDGET_HIDDEN_CPU_MS_PER_S: f64 = 25.0;
 
 /// Deadline to on-screen, ms. Includes the last petal's 250 ms fall
-/// (`daisy::frame_at`) and the window server's order-in; master measured
-/// 217–284 over 35 re-shows. Generous so a loaded machine does not fail it,
+/// (`daisy::frame_at`) and the window server's order-in, ~330–400 at the
+/// cycles interval both before and after the hidden window was shrunk.
+/// Generous so a loaded machine does not fail it,
 /// tight enough to catch a re-show that waits for some unrelated wake.
 const BUDGET_SHOW_LATENCY_MS: f64 = 1500.0;
 
@@ -116,9 +112,14 @@ const SETTLE: Duration = Duration::from_secs(2);
 /// status-item refreshes.
 const HIDDEN_SAMPLES: usize = 30;
 
-/// Interval of the cycles launch, minutes: 6 s, long enough for the settle and
-/// [`CYCLE_SAMPLES`] samples to fit between two shows.
-const CYCLE_INTERVAL_MIN: f64 = 0.1;
+/// Interval of the cycles launch, minutes: 21 s, long enough for
+/// [`CYCLE_SETTLE`] and [`CYCLE_SAMPLES`] samples to fit between two shows.
+const CYCLE_INTERVAL_MIN: f64 = 0.35;
+
+/// From a hide to the first gap sample of the cycles launch. A hidden
+/// window's memory goes back in steps, the last about 10 s after the hide;
+/// a gap sampled before that reads the release, not what a re-show kept.
+const CYCLE_SETTLE: Duration = Duration::from_secs(15);
 
 /// Show/hide cycles driven by the timer.
 const CYCLES: usize = 5;
@@ -133,7 +134,7 @@ const HOTKEY: &str = "Ctrl+Alt+Shift+F19";
 const MIB: f64 = 1024.0 * 1024.0;
 
 #[test]
-#[ignore = "macOS GUI session; ~75 s; takes the keyboard repeatedly — run by hand via --ignored"]
+#[ignore = "macOS GUI session; ~3 min; takes the keyboard repeatedly — run by hand via --ignored"]
 fn hidden_footprint_cpu_and_show_latency_stay_in_budget() {
     let steady = measure_steady();
     let cycles = measure_cycles();
@@ -329,9 +330,9 @@ fn measure_cycles() -> Cycles {
 }
 
 /// The median footprint of [`CYCLE_SAMPLES`] samples taken one per second
-/// after [`SETTLE`], all inside one hidden gap of the cycles launch.
+/// after [`CYCLE_SETTLE`], all inside one hidden gap of the cycles launch.
 fn hidden_gap_footprint(pid: u32) -> f64 {
-    std::thread::sleep(SETTLE);
+    std::thread::sleep(CYCLE_SETTLE);
     let mut v = Vec::with_capacity(CYCLE_SAMPLES);
     for _ in 0..CYCLE_SAMPLES {
         assert!(
