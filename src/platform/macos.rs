@@ -323,7 +323,9 @@ fn install_event_handlers([show_id, settings_id, quit_id]: [MenuId; 3]) {
     // no release edge to filter, because none is subscribed.
 }
 
-fn request_manual_open() {
+/// What the status item, the "Show Nudge" item and the hotkey raise. Public
+/// so the kittest tier can drive the same reveal they do.
+pub fn request_manual_open() {
     MANUAL_OPEN_REQUESTED.store(true, Ordering::SeqCst);
     wake();
 }
