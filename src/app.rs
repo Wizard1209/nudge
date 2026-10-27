@@ -205,6 +205,12 @@ pub struct NudgeApp {
     /// `restore_window`.
     #[cfg(target_os = "macos")]
     window_shrunk: bool,
+    /// The pass `hide_popup` shrank the window in; the first `logic` of a
+    /// later pass orders it out. One pass late, because AppKit releases the
+    /// work-area-sized presentation surfaces only while the window is on
+    /// screen. A reveal drops it (`restore_window`).
+    #[cfg(target_os = "macos")]
+    order_out_after_pass: Option<u64>,
     /// Where the card and the sprite go, in window coordinates. `None`
     /// while there is no screen to lay out on: then the card sits in the
     /// window as a box (`sprite::card_in_box`).
@@ -296,6 +302,8 @@ impl NudgeApp {
             placed: None,
             #[cfg(target_os = "macos")]
             window_shrunk: false,
+            #[cfg(target_os = "macos")]
+            order_out_after_pass: None,
             layout: None,
             #[cfg(target_arch = "wasm32")]
             pill_rect: None,
@@ -432,8 +440,23 @@ impl NudgeApp {
         #[cfg(target_os = "macos")]
         {
             self.window_shrunk = false;
+            self.order_out_after_pass = None;
         }
         self.place_window(ctx, frame);
+    }
+
+    /// The order-out `hide_popup` left for a later pass, once one has come.
+    #[cfg(target_os = "macos")]
+    fn order_out_if_owed(&mut self, ctx: &egui::Context) {
+        let Some(pass) = self.order_out_after_pass else {
+            return;
+        };
+        if ctx.cumulative_pass_nr() > pass {
+            self.order_out_after_pass = None;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        } else {
+            ctx.request_repaint();
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -624,6 +647,11 @@ impl NudgeApp {
         }
     }
 
+    /// Close the popup (spec §4) and take the window off screen. On macOS a
+    /// placed window is shrunk to one point in this pass and ordered out in
+    /// the next: AppKit resizes the presentation surfaces only of a window
+    /// that is still on screen, and the pass in between paints one
+    /// transparent 1×1 frame nobody sees.
     // `ctx` is only needed to hide the native window; the browser build has
     // none.
     #[cfg_attr(target_arch = "wasm32", expect(unused_variables))]
@@ -712,21 +740,31 @@ impl NudgeApp {
         // back away.
         self.card_rect = None;
 
+        // macOS: shrink the hidden window to one point, so neither the GL
+        // drawable nor the window server keeps work-area-sized buffers for
+        // the whole interval. Only a window `place_window` placed: that is
+        // the one `restore_window` knows how to give its frame back. Its
+        // order-out then waits a pass (`order_out_after_pass`).
+        #[cfg(target_os = "macos")]
+        let order_out_now = if self.placed.take().is_some() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(HIDDEN_WINDOW_SIZE));
+            self.window_shrunk = true;
+            self.order_out_after_pass = Some(ctx.cumulative_pass_nr());
+            ctx.request_repaint();
+            false
+        } else {
+            true
+        };
+        #[cfg(all(not(target_os = "macos"), not(target_arch = "wasm32")))]
+        let order_out_now = true;
+
         // Tell egui the viewport is hidden. Without this, egui's event
         // loop keeps pumping/scheduling for the "visible" viewport even
         // when we SW_HIDE the HWND directly — winit then burns a full
         // core on the main thread despite update() never being called.
         #[cfg(not(target_arch = "wasm32"))]
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-
-        // macOS: shrink the hidden window to one point, so neither the GL
-        // drawable nor the window server keeps work-area-sized buffers for
-        // the whole interval. Only a window `place_window` placed: that is
-        // the one `restore_window` knows how to give its frame back.
-        #[cfg(target_os = "macos")]
-        if self.placed.take().is_some() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(HIDDEN_WINDOW_SIZE));
-            self.window_shrunk = true;
+        if order_out_now {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
 
         // Windows-only: hide the HWND directly as well. The viewport command
@@ -1032,10 +1070,13 @@ impl eframe::App for NudgeApp {
         let revealing = crate::platform::tick(ctx);
         self.apply_pending_sprite();
         if revealing {
+            // Drops an order-out `hide_popup` still owes.
             self.restore_window(ctx, frame);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             crate::platform::focus_popup(ctx);
         } else {
+            #[cfg(target_os = "macos")]
+            self.order_out_if_owed(ctx);
             self.place_window(ctx, frame);
         }
     }

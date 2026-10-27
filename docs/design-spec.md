@@ -39,8 +39,9 @@ explicitly. Otherwise the spec applies to all of them.
   that monitor closes the popup (§4) and reaches nothing beneath. The menu
   bar and the Dock / taskbar stay above it. Only the popup's own monitor is
   covered. On macOS, while hidden the window is shrunk to one point so its
-  screen-sized buffers are released, and it is placed again before every
-  show.
+  screen-sized buffers are released — shrunk first and ordered out on the
+  following frame, since the buffers are resized only while it is on screen
+  — and it is placed again before every show.
 - Which monitor: the one with the keyboard focus — the display holding the
   frontmost application's front window, as Spotlight chooses — read when the
   popup is shown, on every trigger alike. With no such window it is the

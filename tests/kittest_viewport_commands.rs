@@ -73,20 +73,25 @@ fn manual_open() {
     nudge_web::platform::set_tray_clicked();
 }
 
-fn then(mut a: Vec<ViewportCommand>, b: Vec<ViewportCommand>) -> Vec<ViewportCommand> {
-    a.extend(b);
-    a
-}
-
-/// The hide: an order-out, and on macOS the hidden window's shrink to one
-/// point (`NudgeApp::hide_popup`). Windows keeps the window's size.
+/// The frame the hide lands on. macOS: only the hidden window's shrink to one
+/// point — the order-out waits a frame (`NudgeApp::hide_popup`). Windows:
+/// the order-out, and the window keeps its size.
 fn hide() -> Vec<ViewportCommand> {
-    let shrink = if cfg!(target_os = "macos") {
+    if cfg!(target_os = "macos") {
         vec![ViewportCommand::InnerSize(vec2(1.0, 1.0))]
     } else {
+        vec![ViewportCommand::Visible(false)]
+    }
+}
+
+/// The frame after the hide. macOS: the order-out the shrink left owed.
+/// Windows: nothing.
+fn order_out() -> Vec<ViewportCommand> {
+    if cfg!(target_os = "macos") {
+        vec![ViewportCommand::Visible(false)]
+    } else {
         vec![]
-    };
-    then(vec![ViewportCommand::Visible(false)], shrink)
+    }
 }
 
 /// The frame a manual open lands on.
@@ -126,10 +131,12 @@ fn hide_and_show_emit_exactly_these_viewport_commands() {
     // What is left is the launch popup, up and placed.
     assert_eq!(one_frame(&mut harness), vec![], "a visible frame is quiet");
 
-    // Esc: the hide orders the window out — and on macOS shrinks it.
+    // Esc: the hide orders the window out — on macOS a frame late, after
+    // shrinking it.
     harness.key_down(egui::Key::Escape);
     assert_eq!(one_frame(&mut harness), hide(), "Esc frame");
     harness.key_up(egui::Key::Escape);
+    assert_eq!(one_frame(&mut harness), order_out(), "frame after the Esc");
     assert_eq!(one_frame(&mut harness), vec![], "a hidden frame is quiet");
 
     manual_open();
@@ -138,10 +145,18 @@ fn hide_and_show_emit_exactly_these_viewport_commands() {
 
     harness.key_down(egui::Key::Escape);
     assert_eq!(one_frame(&mut harness), hide(), "second Esc frame");
+    harness.key_up(egui::Key::Escape);
+    assert_eq!(
+        one_frame(&mut harness),
+        order_out(),
+        "frame after the second Esc"
+    );
+    assert_eq!(one_frame(&mut harness), vec![], "a hidden frame is quiet");
 }
 
-/// An open raised between the close's frame and the next one: the reveal is
-/// whole, and nothing left over from the hide orders the window out again.
+/// An open raised between the close's frame and the next one — on macOS the
+/// frame that owes the order-out. The reveal wins: it is whole, and the
+/// owed order-out is dropped rather than sent in or after it.
 #[test]
 fn an_open_in_the_frame_after_a_close_stays_open() {
     let _seam = seam();
