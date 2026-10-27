@@ -489,6 +489,7 @@ pub fn take_pending_sprite() -> Option<config::SpriteConfig> {
 ///
 /// Returns whether it claimed a reveal ([`reveal`]); the caller then places
 /// the window and orders it in.
+#[must_use = "a claimed reveal is only ordered in by the caller"]
 pub fn tick(ctx: &egui::Context) -> bool {
     if QUIT_REQUESTED.swap(false, Ordering::SeqCst) {
         std::process::exit(0);
@@ -1350,7 +1351,7 @@ mod tests {
 
         set_popup_visible(false);
         request_manual_open();
-        tick(&ctx);
+        assert!(tick(&ctx), "a manual open while hidden claims a reveal");
         assert!(
             take_tray_clicked(),
             "a manual trigger raised while the card is hidden must reach the app"
@@ -1360,7 +1361,7 @@ mod tests {
         // trigger is consumed rather than left to fire later.
         set_popup_visible(true);
         request_manual_open();
-        tick(&ctx);
+        assert!(!tick(&ctx), "nothing to reveal while the card is up");
         assert!(
             !take_tray_clicked(),
             "a trigger arriving while the card is already up must not queue up behind it"
@@ -1387,7 +1388,7 @@ mod tests {
         set_timer_state(Instant::now() - Duration::from_secs(1), interval);
         request_manual_open();
 
-        tick(&ctx);
+        assert!(tick(&ctx), "the manual open claims a reveal");
         assert!(take_tray_clicked(), "the manual open reaches the app");
         assert!(
             !take_timer_fired(),
@@ -1396,8 +1397,8 @@ mod tests {
 
         // The frames between that reveal and the `show_popup` that
         // acknowledges it. This is where the deadline used to be thrown away.
-        tick(&ctx);
-        tick(&ctx);
+        assert!(!tick(&ctx), "a re-tick while visible claims nothing");
+        assert!(!tick(&ctx), "a re-tick while visible claims nothing");
         assert!(
             !take_timer_fired(),
             "an expiry must not be raised while a reveal is still unacknowledged"
@@ -1411,7 +1412,7 @@ mod tests {
         // leaves the timer alone, so the nudge that came due during the manual
         // open is still owed, and is delivered now.
         set_popup_visible(false);
-        tick(&ctx);
+        assert!(tick(&ctx), "the expiry claims a reveal");
         assert!(
             take_timer_fired(),
             "the overdue nudge fires once the manual card is out of the way"
