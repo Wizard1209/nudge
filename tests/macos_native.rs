@@ -318,10 +318,11 @@ fn window_rect(pid: u32) -> Option<WindowInfo> {
     let number_key = unsafe { CFString::wrap_under_get_rule(kCGWindowNumber) };
     let on_screen_key = unsafe { CFString::wrap_under_get_rule(kCGWindowIsOnscreen) };
 
-    // Tracks the best candidate found so far, alongside whether it is on an
-    // elevated (always-on-top) window layer — see the comment below on why
-    // that beats picking by area alone.
-    let mut best: Option<(WindowInfo, bool)> = None;
+    let layer_key = unsafe { CFString::wrap_under_get_rule(kCGWindowLayer) };
+
+    // The largest candidate found so far — see the comment below on which
+    // windows are candidates.
+    let mut best: Option<WindowInfo> = None;
 
     for i in 0..windows.len() {
         let Some(entry) = windows.get(i) else {
@@ -372,45 +373,38 @@ fn window_rect(pid: u32) -> Option<WindowInfo> {
             .map(bool::from)
             .unwrap_or(false);
 
-        // `nudge`'s popup is built with `.with_always_on_top()` (src/main.rs),
-        // which macOS represents as a nonzero CGWindowLevel — surfaced here as
-        // `kCGWindowLayer`. This is the reliable signal, confirmed empirically:
-        // the same pid also owns an unnamed 500x500 layer-0 window (an
-        // AppKit/winit-internal surface, not the popup). While visible the
-        // popup covers the work area (spec §1) and so happens to be the
-        // larger of the two, but that is the geometry of the day, not the
-        // rule: elevated-layer candidates win outright, and only among ties
-        // (or if none are elevated) does area break the tie.
-        let layer_key = unsafe { CFString::wrap_under_get_rule(kCGWindowLayer) };
-        let elevated = dict
+        // The popup is identified by its layer, never by its size. It is
+        // built with `.with_always_on_top()` (src/main.rs), which macOS
+        // represents as a floating CGWindowLevel — surfaced here as
+        // `kCGWindowLayer` 3. The same pid owns windows on either side of
+        // that, confirmed empirically: below, unnamed layer-0 surfaces (a
+        // 500x500 one, AppKit/winit-internal, and one that measures the
+        // display in pixels while the popup is up and 2x2 while it is hidden);
+        // above, the status item's pulled-down menu, an on-screen window at
+        // layer 101 while it is up. Neither is the popup, and both can be
+        // larger than it: the hidden popup is parked at one point. So only an
+        // elevated layer below the menu-bar ones (`STATUS_ITEM_MIN_LAYER`) is
+        // a candidate. Only one window has ever been seen there; area merely
+        // keeps the pick deterministic should a second appear.
+        let layer = dict
             .find(&layer_key)
             .and_then(|v| v.downcast::<CFNumber>())
             .and_then(|n| n.to_i64())
-            .is_some_and(|layer| layer != 0);
-        let area = rect.w * rect.h;
-        let candidate = (
-            WindowInfo {
-                id,
-                rect,
-                on_screen,
-            },
-            elevated,
-        );
-
-        let replace = match best {
-            None => true,
-            Some((ref b, b_elevated)) => match (elevated, b_elevated) {
-                (true, false) => true,
-                (false, true) => false,
-                _ => area > b.rect.w * b.rect.h,
-            },
+            .unwrap_or(0);
+        if !(1..STATUS_ITEM_MIN_LAYER).contains(&layer) {
+            continue;
+        }
+        let candidate = WindowInfo {
+            id,
+            rect,
+            on_screen,
         };
-        if replace {
+        if best.is_none_or(|b| rect.w * rect.h > b.rect.w * b.rect.h) {
             best = Some(candidate);
         }
     }
 
-    best.map(|(window, _elevated)| window)
+    best
 }
 
 /// Whether the popup is actually shown to the user right now — not merely
@@ -2183,7 +2177,10 @@ fn popup_reappears_at_its_place_after_a_reveal_desktop_sweep() {
             window_rect_by_id(probe.0).is_some_and(|r| r != probe.1)
         }),
         "guest is not in reveal-desktop mode: a wallpaper click left {:?} where it was. \
-         Without the sweep this test proves nothing.",
+         Without the sweep this test proves nothing. A nudge killed while its status-item \
+         menu was still fading out — a status-item test that failed just before this one — \
+         leaves the guest's wallpaper click dead, with no nudge running, until a status-item \
+         menu is used to completion again.",
         probe.1
     );
 
