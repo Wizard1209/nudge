@@ -43,7 +43,7 @@ const FOCUS_RETRY_WINDOW: std::time::Duration = std::time::Duration::from_millis
 /// The hidden window's size, points (`NudgeApp::hide_popup`). egui-winit
 /// clamps an `InnerSize` to at least one point a side.
 #[cfg(target_os = "macos")]
-const PARKED_SIZE: egui::Vec2 = egui::vec2(1.0, 1.0);
+const HIDDEN_WINDOW_SIZE: egui::Vec2 = egui::vec2(1.0, 1.0);
 
 /// Opacity of the card's fill. Two values, because the fill has two different
 /// jobs depending on whether the platform can put a frosted backdrop behind
@@ -195,9 +195,11 @@ pub struct NudgeApp {
     geometry_override: Option<ScreenGeometry>,
     /// What the window was last placed for (`place_window`).
     placed: Option<Placement>,
-    /// The hidden window has been shrunk to [`PARKED_SIZE`] (`hide_popup`,
-    /// macOS) and `place_window` leaves it alone until `unpark`.
-    parked: bool,
+    /// The hidden window has been shrunk to [`HIDDEN_WINDOW_SIZE`]
+    /// (`hide_popup`) and `place_window` leaves it alone until
+    /// `restore_window`.
+    #[cfg(target_os = "macos")]
+    window_shrunk: bool,
     /// Where the card and the sprite go, in window coordinates. `None`
     /// while there is no screen to lay out on: then the card sits in the
     /// window as a box (`sprite::card_in_box`).
@@ -286,7 +288,8 @@ impl NudgeApp {
             pending_sprite: None,
             geometry_override: None,
             placed: None,
-            parked: false,
+            #[cfg(target_os = "macos")]
+            window_shrunk: false,
             layout: None,
             #[cfg(target_arch = "wasm32")]
             pill_rect: None,
@@ -357,13 +360,14 @@ impl NudgeApp {
     /// Make the window the work area of the monitor spec §1 chose for it
     /// and lay the card and the sprite out in it. Runs every frame; it only
     /// talks to the OS when something it was placed for has changed, and not
-    /// at all while the window is parked — `unpark` places it again before
-    /// it is ordered back in.
+    /// at all while the hidden window is shrunk — `restore_window` places it
+    /// again before it is ordered back in.
     ///
     /// With no screen to read — the kittest harness, the browser canvas —
     /// the card stays in the window as a box.
     fn place_window(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
-        if self.parked {
+        #[cfg(target_os = "macos")]
+        if self.window_shrunk {
             return;
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -414,10 +418,14 @@ impl NudgeApp {
         self.placed = Some(now);
     }
 
-    /// Give a parked window its work-area frame back. Called before every
-    /// `Visible(true)`, so AppKit orders in a window that is already placed.
-    fn unpark(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
-        self.parked = false;
+    /// Give a shrunk window its work-area frame back, before `logic` orders
+    /// it in. Only macOS shrinks the window; elsewhere this is `place_window`.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn restore_window(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        #[cfg(target_os = "macos")]
+        {
+            self.window_shrunk = false;
+        }
         self.place_window(ctx, frame);
     }
 
@@ -448,11 +456,10 @@ impl NudgeApp {
         )
     }
 
-    fn show_popup(&mut self, ctx: &egui::Context, frame: &eframe::Frame, source: TriggerSource) {
+    fn show_popup(&mut self, ctx: &egui::Context, source: TriggerSource) {
         self.trigger_source = source;
         self.popup_visible = true;
         self.focus_first = true;
-        self.unpark(ctx, frame);
 
         // Tell egui itself the viewport is visible again — without this
         // counterpart to the hide_popup `Visible(false)` send, egui keeps
@@ -705,14 +712,14 @@ impl NudgeApp {
         #[cfg(not(target_arch = "wasm32"))]
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
 
-        // macOS: park the hidden window at a few pixels, so neither the GL
+        // macOS: shrink the hidden window to one point, so neither the GL
         // drawable nor the window server keeps work-area-sized buffers for
         // the whole interval. Only a window `place_window` placed: that is
-        // the one `unpark` knows how to give its frame back.
+        // the one `restore_window` knows how to give its frame back.
         #[cfg(target_os = "macos")]
         if self.placed.take().is_some() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(PARKED_SIZE));
-            self.parked = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(HIDDEN_WINDOW_SIZE));
+            self.window_shrunk = true;
         }
 
         // Windows-only: hide the HWND directly as well. The viewport command
@@ -959,7 +966,7 @@ impl NudgeApp {
     }
 
     #[cfg(target_arch = "wasm32")]
-    fn draw_pill(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+    fn draw_pill(&mut self, ctx: &egui::Context) {
         let remaining = self.timer.remaining();
         let mins = remaining.as_secs() / 60;
         let secs = remaining.as_secs() % 60;
@@ -990,7 +997,7 @@ impl NudgeApp {
         self.pill_rect = Some(rect);
 
         if click_response.clicked() {
-            self.show_popup(ctx, frame, TriggerSource::Manual);
+            self.show_popup(ctx, TriggerSource::Manual);
         }
     }
 }
@@ -1018,7 +1025,7 @@ impl eframe::App for NudgeApp {
         let revealing = crate::platform::tick(ctx);
         self.apply_pending_sprite();
         if revealing {
-            self.unpark(ctx, frame);
+            self.restore_window(ctx, frame);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             crate::platform::focus_popup(ctx);
         } else {
@@ -1074,7 +1081,7 @@ impl eframe::App for NudgeApp {
             // at logon — didn't hand us foreground, then arm the
             // focus-loss check). Runs after hwnd capture above because
             // force_foreground needs the handle.
-            self.show_popup(ctx, frame, TriggerSource::Timer);
+            self.show_popup(ctx, TriggerSource::Timer);
 
             self.center_once = false;
         }
@@ -1086,18 +1093,18 @@ impl eframe::App for NudgeApp {
         #[cfg(not(target_arch = "wasm32"))]
         {
             if crate::platform::take_tray_clicked() && !self.popup_visible {
-                self.show_popup(ctx, frame, TriggerSource::Manual);
+                self.show_popup(ctx, TriggerSource::Manual);
             }
 
             if crate::platform::take_timer_fired() && !self.popup_visible {
-                self.show_popup(ctx, frame, TriggerSource::Timer);
+                self.show_popup(ctx, TriggerSource::Timer);
             }
         }
 
         // === WASM-only: timer check (update() always runs on WASM) ===
         #[cfg(target_arch = "wasm32")]
         if !self.popup_visible && self.timer.is_expired() {
-            self.show_popup(ctx, frame, TriggerSource::Timer);
+            self.show_popup(ctx, TriggerSource::Timer);
         }
 
         // === Periodic repaint ===
@@ -1176,7 +1183,7 @@ impl eframe::App for NudgeApp {
             // WASM: show pill with countdown at bottom-right
             // Native: window is SW_HIDE'd, nothing to render
             #[cfg(target_arch = "wasm32")]
-            self.draw_pill(ctx, frame);
+            self.draw_pill(ctx);
         }
     }
 }

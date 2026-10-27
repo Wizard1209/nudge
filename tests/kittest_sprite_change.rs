@@ -2,7 +2,7 @@
 //! "Applying a change"), headless through the real `NudgeApp`.
 //!
 //! Its own test binary for the same reason `macos_manual_open.rs` is: the
-//! reopen goes through `platform::set_tray_clicked`, a process global that a
+//! reopen goes through the platform seam's process-global flags, which a
 //! second harness in the same process could consume.
 
 #![cfg(any(target_os = "macos", target_os = "windows"))]
@@ -22,6 +22,16 @@ const GREEN_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/electron/tests/e2e/fixtures/sprite-green.png"
 );
+
+/// A status-item click or the hotkey, raised where the OS raises it: on
+/// macOS the flag `tick` turns into a reveal, on Windows the tray thread's
+/// edge.
+fn manual_open() {
+    #[cfg(target_os = "macos")]
+    nudge_web::platform::request_manual_open();
+    #[cfg(target_os = "windows")]
+    nudge_web::platform::set_tray_clicked();
+}
 
 /// This host: 1470×956 with a 33 pt menu bar.
 fn g1() -> ScreenGeometry {
@@ -84,7 +94,7 @@ fn a_sprite_change_while_visible_waits_for_hide() {
 
     // The next open draws the re-laid-out card, 679 wide and re-centred,
     // and the sprite over it.
-    nudge_web::platform::set_tray_clicked();
+    manual_open();
     harness.run();
     let field = first_field(&harness);
     assert_eq!(field.min, pos2(395.0, 286.0));

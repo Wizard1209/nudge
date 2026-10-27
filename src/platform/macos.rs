@@ -133,7 +133,7 @@ static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// tray thread does: while the user is looking at the popup we neither count
 /// down nor animate. Starts `true` because the app opens with the launch popup.
 ///
-/// Raised by [`reveal`], the moment the window is ordered in, and by
+/// Raised by [`reveal`], in the frame `App::logic` orders the window in, and by
 /// `App::show_popup` a frame or more later when `ui()` catches up; cleared only
 /// by `App::hide_popup`. Both raise sites matter — see [`reveal`] for what the
 /// gap between them used to cost.
@@ -558,9 +558,10 @@ pub fn tick(ctx: &egui::Context) -> bool {
     true
 }
 
-/// Claim the popup for a reveal. Shared by the timer expiry and every manual
-/// trigger, so all four entry points have identical side effects. Ordering
-/// the window in is `NudgeApp::logic`'s, after it has placed the window.
+/// Claim a reveal: choose the screen, raise `POPUP_VISIBLE` and ask for a
+/// repaint. Shared by the timer expiry and every manual trigger, so all four
+/// entry points have identical side effects. The window is ordered in by
+/// `NudgeApp::logic` when `tick` returns true: placed, shown, activated.
 ///
 /// The `request_repaint` is not redundant: the window is hidden right now,
 /// so `ui()` is being skipped and cannot schedule the frame that will consume
@@ -1433,7 +1434,7 @@ mod tests {
         reveal(&ctx);
         assert!(
             POPUP_VISIBLE.load(Ordering::SeqCst),
-            "the window has been ordered in; `tick` must park until `hide_popup` says otherwise"
+            "a claimed reveal is the popup up; `tick` must park until `hide_popup` says otherwise"
         );
     }
 

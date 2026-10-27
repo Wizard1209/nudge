@@ -10,7 +10,7 @@
 //!
 //! The expected lists are exact on purpose: a change to how the popup is
 //! hidden or revealed — releasing the window instead of ordering it out,
-//! parking it at another size, re-placing it in another order — has to
+//! shrinking it to another size, re-placing it in another order — has to
 //! update them here, deliberately, rather than slip past.
 //!
 //! Its own test binary, like `macos_manual_open.rs`: the reveal goes through
@@ -78,20 +78,20 @@ fn then(mut a: Vec<ViewportCommand>, b: Vec<ViewportCommand>) -> Vec<ViewportCom
     a
 }
 
-/// The hide: an order-out, and on macOS the shrink that parks the hidden
-/// window (`NudgeApp::hide_popup`). Windows keeps the window's size.
+/// The hide: an order-out, and on macOS the hidden window's shrink to one
+/// point (`NudgeApp::hide_popup`). Windows keeps the window's size.
 fn hide() -> Vec<ViewportCommand> {
-    let park = if cfg!(target_os = "macos") {
+    let shrink = if cfg!(target_os = "macos") {
         vec![ViewportCommand::InnerSize(vec2(1.0, 1.0))]
     } else {
         vec![]
     };
-    then(vec![ViewportCommand::Visible(false)], park)
+    then(vec![ViewportCommand::Visible(false)], shrink)
 }
 
 /// The frame a manual open lands on.
 ///
-/// macOS: `App::logic` gives the parked window its work-area frame back,
+/// macOS: `App::logic` gives the shrunk window its work-area frame back,
 /// orders it in and asks for the keyboard; then `ui()` makes the
 /// `show_popup` transition, which repeats the order-in and the focus request.
 /// eframe runs that `ui()` one frame later, once the window is visible; the
@@ -126,7 +126,7 @@ fn hide_and_show_emit_exactly_these_viewport_commands() {
     // What is left is the launch popup, up and placed.
     assert_eq!(one_frame(&mut harness), vec![], "a visible frame is quiet");
 
-    // Esc: the hide orders the window out — and on macOS parks it.
+    // Esc: the hide orders the window out — and on macOS shrinks it.
     harness.key_down(egui::Key::Escape);
     assert_eq!(one_frame(&mut harness), hide(), "Esc frame");
     harness.key_up(egui::Key::Escape);
