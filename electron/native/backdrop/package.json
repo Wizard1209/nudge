@@ -1,7 +1,7 @@
 {
   "name": "nudge-backdrop",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "The frosted material under the popup card on macOS (spec §2)",
   "gypfile": true
 }

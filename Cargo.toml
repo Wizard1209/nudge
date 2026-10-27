@@ -1,6 +1,6 @@
 [package]
 name = "nudge"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Interval journaling for focus — a periodic spotlight popup for Windows that asks what you're doing and appends the answers to an NDJSON journal"
 license = "MIT"
