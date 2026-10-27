@@ -184,6 +184,11 @@ pub struct NudgeApp {
     /// The sprite painted over the card, when the config asks for one and
     /// its PNG passed the check (spec §10).
     sprite: Option<LoadedSprite>,
+    /// Textures of sprites replaced while the popup was hidden, dropped by
+    /// the first `ui()` that starts with the popup up. eframe applies a
+    /// frame's texture frees only when it paints that frame, and it paints
+    /// no hidden one.
+    retired_textures: Vec<egui::TextureHandle>,
     /// A sprite change waiting for the popup to be hidden (spec §10). The
     /// config watcher parks it on the platform seam; the kittest tier sets
     /// it directly (`set_pending_sprite`).
@@ -284,6 +289,7 @@ impl NudgeApp {
             error_message: None,
             card_rect: None,
             sprite: None,
+            retired_textures: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             pending_sprite: None,
             geometry_override: None,
@@ -334,10 +340,11 @@ impl NudgeApp {
             return;
         };
         self.pending_sprite = None;
+        if let Some(tex) = self.sprite.take().and_then(|s| s.tex) {
+            self.retired_textures.push(tex);
+        }
         // A PNG that fails the check counts as off (§10): say why, show the
         // plain card.
-        // TODO: dropping the old handle queues a free that eframe discards
-        // with this hidden frame, so the old texture stays on the GPU.
         self.sprite = match crate::sprite_png::load_sprite(&cfg) {
             Some(Ok(decoded)) => Some(LoadedSprite::decoded(decoded, cfg)),
             Some(Err(reason)) => {
@@ -1039,6 +1046,12 @@ impl eframe::App for NudgeApp {
         // drive everything off its context exactly as the old `update` did.
         let ctx_owned = root_ui.ctx().clone();
         let ctx = &ctx_owned;
+
+        // A frame that starts with the popup up is painted, so the frees in
+        // it are applied (`retired_textures`).
+        if self.popup_visible {
+            self.retired_textures.clear();
+        }
 
         // === First frame setup ===
         if self.center_once {
