@@ -62,22 +62,23 @@ use core_graphics::window::{
     kCGWindowBounds, kCGWindowIsOnscreen, kCGWindowLayer, kCGWindowOwnerPID,
 };
 
-/// Hidden footprint ceiling, MiB. Master (cf87ca5, release, M-series 2x
-/// display) measured 133.9 / 135.5 / 133.9; this is ~10% over the worst, and
-/// 94 MiB of it is the hidden window's IOSurfaces. A fix that releases them
-/// lowers it.
-const BUDGET_HIDDEN_MB: f64 = 148.0;
+/// Hidden footprint ceiling, MiB. Master (cf87ca5, release, a 1470×956 pt
+/// display at 2x) measured 132.5–135.9 in nine runs of ten, 94 MiB of it
+/// IOSurfaces, and 153.9 in the tenth, where the hidden window held one more
+/// 18 MiB surface (112 MiB). This is ~10% over that high mode. A fix that
+/// releases the hidden window's surfaces lowers it.
+const BUDGET_HIDDEN_MB: f64 = 170.0;
 
 /// The same ceiling after [`CYCLES`] timer re-shows, MiB — the state a
-/// long-running instance lives in. Master measured 151.4 / 170.1 / 156.4 —
-/// the spread is whole ~6.5 MiB steps, not noise around one value; ~10% over
-/// the worst.
+/// long-running instance lives in. Master measured 149.9–170.1 over seven
+/// runs — the spread is whole ~6.5 MiB steps, not noise around one value;
+/// ~10% over the worst.
 const BUDGET_HIDDEN_AFTER_CYCLES_MB: f64 = 188.0;
 
 /// How much re-shows 2 to [`CYCLES`] may add to the hidden footprint, MiB.
 /// Master moves by whole ~6.5 MiB steps either way between gaps (measured
-/// -5.0 / +1.4 / +6.7), so this admits one step and not two — and not one more
-/// window surface (a 2940×1666 BGRA buffer is 18.7 MiB).
+/// -5.0 to +6.7 over seven runs), so this admits one step and not two — and
+/// not one more window surface (a 2940×1666 BGRA buffer is 18.7 MiB).
 const BUDGET_CYCLE_GROWTH_MB: f64 = 10.0;
 
 /// Hidden CPU ceiling, ms of CPU per wall second — the same 2.5%-of-a-core
@@ -86,8 +87,8 @@ const BUDGET_HIDDEN_CPU_MS_PER_S: f64 = 25.0;
 
 /// Deadline to on-screen, ms. Includes the last petal's 250 ms fall
 /// (`daisy::frame_at`) and the window server's order-in; master measured
-/// 231–284. Generous so a loaded machine does not fail it, tight enough to
-/// catch a re-show that waits for some unrelated wake.
+/// 217–284 over 35 re-shows. Generous so a loaded machine does not fail it,
+/// tight enough to catch a re-show that waits for some unrelated wake.
 const BUDGET_SHOW_LATENCY_MS: f64 = 1500.0;
 
 /// Launch to first on-screen frame. `macos_native.rs` waits 5 s blind; this
