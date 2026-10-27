@@ -345,9 +345,8 @@ fn tray_thread_main(hotkey: Option<Hotkey>, config_path: PathBuf, initial_config
     let settings_id = settings_item.id().clone();
     let quit_id = quit_item.id().clone();
 
-    let initial_rgba = daisy::render(daisy::PETAL_COUNT, None);
-    let initial_icon = tray_icon::Icon::from_rgba(initial_rgba, daisy::ICON_SIZE, daisy::ICON_SIZE)
-        .expect("failed to create initial tray icon");
+    let initial_icon =
+        tray_icon_frame(daisy::PETAL_COUNT, None).expect("failed to create initial tray icon");
     // Tooltip will be refreshed by the loop below as soon as eframe pushes
     // a timer via set_timer_state. Until then the popup is visible (first
     // launch), so the user never sees this placeholder anyway.
@@ -460,8 +459,7 @@ fn tray_thread_main(hotkey: Option<Hotkey>, config_path: PathBuf, initial_config
         let drift_scaled = drift.map(|d| (d.progress * 100.0) as u16).unwrap_or(0);
         let key = (petals_remaining, drift_scaled, drift.is_some());
         if key != last_state_key {
-            let rgba = daisy::render(petals_remaining, drift);
-            if let Ok(icon) = tray_icon::Icon::from_rgba(rgba, daisy::ICON_SIZE, daisy::ICON_SIZE) {
+            if let Ok(icon) = tray_icon_frame(petals_remaining, drift) {
                 let _ = tray.set_icon(Some(icon));
             }
             last_state_key = key;
@@ -589,6 +587,29 @@ fn apply_config_reload(
     }
 
     *previous_cfg = new_cfg;
+}
+
+/// One frame of the daisy as the notification-area icon, drawn at the size
+/// the shell shows it (spec §5) so the shell does not resample it.
+fn tray_icon_frame(
+    petals_remaining: u8,
+    drift: Option<daisy::DriftState>,
+) -> Result<tray_icon::Icon, tray_icon::BadIcon> {
+    let size = tray_icon_pixels();
+    let rgba = daisy::render(size, petals_remaining, drift);
+    tray_icon::Icon::from_rgba(rgba.to_vec(), size, size)
+}
+
+/// The shell's small-icon size at the system DPI — 16 px at 100 %, 24 at
+/// 150 %, 32 at 200 % — which is what the notification area draws. Asked on
+/// every redraw: it is two cheap calls, and the answer moves when the
+/// process becomes DPI-aware, which winit does when the event loop starts.
+fn tray_icon_pixels() -> u32 {
+    use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetSystemMetricsForDpi};
+    use windows::Win32::UI::WindowsAndMessaging::SM_CXSMICON;
+    // SAFETY: plain metric queries, no pointers.
+    let px = unsafe { GetSystemMetricsForDpi(SM_CXSMICON, GetDpiForSystem()) };
+    if px > 0 { px as u32 } else { 16 }
 }
 
 fn wake_eframe() {

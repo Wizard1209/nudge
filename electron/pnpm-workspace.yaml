@@ -1,3 +1,12 @@
 onlyBuiltDependencies:
   - electron
   - puppeteer
+# `pnpm dist` packages for Windows from any host, so the Windows build of a
+# native dependency (@resvg/resvg-js) is installed next to the host's own.
+supportedArchitectures:
+  os: [current, win32]
+  cpu: [current, x64]
+# electron-builder looks a package's optional dependencies up in the top-level
+# node_modules only; resvg's per-platform binaries have to be there to ship.
+publicHoistPattern:
+  - "@resvg/*"

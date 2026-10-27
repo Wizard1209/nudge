@@ -124,7 +124,7 @@ impl Drop for StatusItem {
 
 /// One frame of the daisy as the `NSImage` the status item shows: 18 pt
 /// square, with one bitmap per density in [`DENSITIES`] — each rendered at
-/// its own pixel size by [`daisy::render_at`] and declared 18 pt, so AppKit
+/// its own pixel size by [`daisy::render`] and declared 18 pt, so AppKit
 /// selects by backing scale and nothing is resampled.
 ///
 /// Not a template image: the daisy is the one coloured thing in the app.
@@ -135,7 +135,7 @@ pub fn status_image(petals_remaining: u8, drift: Option<DriftState>) -> Retained
     let image = unsafe { NSImage::initWithSize(NSImage::alloc(), points) };
     for scale in DENSITIES {
         let pixels = STATUS_ICON_POINTS as u32 * scale;
-        let rep = bitmap_rep(pixels, &daisy::render_at(pixels, petals_remaining, drift));
+        let rep = bitmap_rep(pixels, &daisy::render(pixels, petals_remaining, drift));
         unsafe {
             rep.setSize(points);
             image.addRepresentation(&rep);
@@ -146,8 +146,8 @@ pub fn status_image(petals_remaining: u8, drift: Option<DriftState>) -> Retained
 
 /// An `NSBitmapImageRep` over a `size`×`size` straight-alpha RGBA buffer.
 ///
-/// The daisy's buffer is *not* premultiplied (`render_at` averages colour
-/// and alpha separately), and the rep says so with
+/// The daisy's buffer is *not* premultiplied (`render` demultiplies what
+/// resvg draws), and the rep says so with
 /// `NSBitmapFormat::AlphaNonpremultiplied`: handed over as premultiplied,
 /// AppKit would read a half-covered pink edge pixel as a darker pink and
 /// the petal tips would come out fringed.
@@ -316,7 +316,7 @@ mod tests {
     #[test]
     fn the_2x_rep_holds_the_daisys_straight_alpha_bytes_untouched() {
         let size = 36;
-        let rgba = daisy::render_at(size, daisy::PETAL_COUNT, None);
+        let rgba = daisy::render(size, daisy::PETAL_COUNT, None);
         let probe = rgba
             .chunks_exact(4)
             .position(|px| px[3] > 0 && px[3] < 255 && px[..3].iter().any(|c| *c > px[3]))

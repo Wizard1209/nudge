@@ -42,7 +42,9 @@
     "productName": "Nudge",
     "files": [
       "dist/**/*",
-      "package.json"
+      "package.json",
+      "!**/node_modules/@resvg/resvg-js-{darwin,linux,android}-*{,/**}",
+      "!**/node_modules/@resvg/resvg-js-win32-{arm64,ia32}-msvc{,/**}"
     ],
     "directories": {
       "output": "release",
@@ -73,6 +75,7 @@
     }
   },
   "dependencies": {
+    "@resvg/resvg-js": "^2.6.2",
     "ulid": "^3.0.2"
   }
 }

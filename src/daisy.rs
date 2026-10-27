@@ -1,164 +1,147 @@
-//! RGBA marguerite icon renderer for the system tray / menu bar.
+//! The tray daisy: `assets/daisy.svg`, rasterised at the host's pixel size.
 //!
-//! A Bellis perennis ("marguerite"): 16 petals around a bright yellow
-//! center, white at the base fading to a soft pink at the outermost tip —
-//! the signature look that distinguishes a marguerite from a plain field
-//! daisy. Each petal is a strip that runs out from under the centre (spec
-//! §5): narrowest where it leaves the disc, widest about three fifths of
-//! the way out, closed by a pointed-oval tip, so petal and centre meet with
-//! no gap. The geometry is the table in `docs/daisy/daisy.json`, baked by
-//! `docs/daisy/constructor.html`: every petal's angle, length, width and
-//! width profile, so the small irregularities of a real head are part of
-//! the icon and the same in every render. Petals fall one by one as the nudge timer counts down
-//! (petal 0 at 12 o'clock falls first, then petal 1, …, clockwise).
-//! `DriftState` animates the just-fallen petal radially outward + slightly
-//! downward (gravity) while fading.
+//! The SVG is the icon (spec §5). This module knows nothing about petal
+//! shapes, profiles or colours; it relies on the root viewBox and on the ids
+//! `petal-0` … `petal-15`, whatever their depth. Petal `k` is the k-th to
+//! fall (0 at 12 o'clock, then clockwise), and a fallen petal is removed by
+//! splicing its element's byte range out of the SVG text before parsing —
+//! so a file re-saved from an editor keeps working as long as the ids do.
 //!
-//! Two entry points draw the same flower:
+//! The petal in mid-fall is not removed but wrapped in a group that moves
+//! it outward from the centre, lets it sag and fades it. Its direction is
+//! the line from the canvas centre to the petal's own bounding-box centre,
+//! measured once on the full flower.
 //!
-//! - [`render`] is the Windows path: a fixed 64×64 bitmap, the largest size
-//!   the Windows shell normally requests for a notification-area icon.
-//!   Windows downscales it itself for lower-DPI trays.
-//! - [`render_at`] draws the flower at any pixel size, for hosts that take
-//!   one bitmap per display density and show each as-is (the macOS status
-//!   item: 18 px at 1x, 36 px at 2x). Spec §5, "Drawn at the size the host
-//!   gives…": nothing between the renderer and the screen resamples the
-//!   daisy. Every length is the 64 px design scaled by `size / 64`, and each
-//!   pixel is supersampled so a petal a pixel and a half wide still has a
-//!   graded edge rather than a staircase.
+//! [`render`] draws one frame at any square pixel size: the macOS status
+//! item asks for 18 px and 36 px, the Windows tray for the shell's small-icon
+//! size at the current DPI. Steady frames (no petal in mid-fall) are cached
+//! per (size, petals remaining): the picture changes at most once per
+//! `interval / 16`.
 
-use std::sync::LazyLock;
+use std::collections::BTreeMap;
+use std::ops::Range;
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
-use serde::Deserialize;
+use resvg::{tiny_skia, usvg};
 
-pub const ICON_SIZE: u32 = 64;
-/// Spec §5: 16 petals; the table has one entry each (pinned by a test).
+/// The icon, compiled in.
+const SVG: &str = include_str!("../assets/daisy.svg");
+
+/// Spec §5: 16 petals. The SVG must hold exactly `petal-0` … `petal-15`:
+/// its first read asserts it, and so does a test.
 pub const PETAL_COUNT: u8 = 16;
 
-/// The icon's table, `docs/daisy/daisy.json`, on the 64 px design canvas.
-#[derive(Deserialize)]
-struct Daisy {
-    disc_radius: f32,
-    petal_half_width: f32,
-    /// Where a petal starts, from the flower centre: under the disc, so a
-    /// falling petal's base shows only once it has slid out.
-    petal_base: f32,
-    /// Where a petal of length 1 ends, from the flower centre.
-    petal_tip: f32,
-    pink_tips: bool,
-    petals: Vec<Petal>,
-}
+/// How far a falling petal travels outward over the whole drift, as a share
+/// of the canvas width (8 units of the 64-unit design).
+const DRIFT_OUTWARD: f32 = 8.0 / 64.0;
+/// How far a falling petal sags under "gravity" over the whole drift, as a
+/// share of the canvas height (6 units of 64).
+const DRIFT_GRAVITY: f32 = 6.0 / 64.0;
 
-/// One petal of the table: its angle in degrees clockwise from 12 o'clock,
-/// its length and width as factors of the table's, and its half-width along
-/// the visible length as 21 samples from the disc edge to the tip, as a
-/// share of the full half-width.
-#[derive(Deserialize)]
-struct Petal {
-    angle: f32,
-    length: f32,
-    width: f32,
-    profile: Vec<f32>,
+/// What the renderer needs from the SVG, read once.
+struct Daisy {
+    /// Byte range of the element with id `petal-k`, at index `k`.
+    petals: Vec<Range<usize>>,
+    /// Per petal: the unit vector from the canvas centre toward the petal,
+    /// in the user space of the element's parent — where the wrapper group
+    /// that moves a falling petal lives.
+    outward: Vec<(f32, f32)>,
+    /// The parent's user-space image of one canvas unit straight down, for
+    /// the sag; per petal, like `outward`.
+    down: Vec<(f32, f32)>,
+    /// The canvas size (`usvg::Tree::size`, from the root viewBox and
+    /// width/height).
+    canvas: (f32, f32),
 }
 
 static DAISY: LazyLock<Daisy> = LazyLock::new(|| {
-    serde_json::from_str(include_str!("../docs/daisy/daisy.json"))
-        .expect("docs/daisy/daisy.json is the icon's table")
+    let petals = petal_ranges(SVG).unwrap_or_else(|e| panic!("assets/daisy.svg: {e}"));
+    assert_eq!(
+        petals.len(),
+        PETAL_COUNT as usize,
+        "assets/daisy.svg must hold petal-0 … petal-{}",
+        PETAL_COUNT - 1
+    );
+    let tree = parse(SVG);
+    let size = tree.size();
+    let (cx, cy) = (size.width() / 2.0, size.height() / 2.0);
+    let mut outward = Vec::with_capacity(petals.len());
+    let mut down = Vec::with_capacity(petals.len());
+    for k in 0..petals.len() {
+        let node = tree
+            .node_by_id(&format!("petal-{k}"))
+            .unwrap_or_else(|| panic!("assets/daisy.svg: petal-{k} draws nothing"));
+        let bbox = node.abs_bounding_box();
+        let (dx, dy) = (
+            bbox.x() + bbox.width() / 2.0 - cx,
+            bbox.y() + bbox.height() / 2.0 - cy,
+        );
+        let len = dx.hypot(dy).max(f32::EPSILON);
+        // The wrapper sits in the parent's user space, so a canvas-space
+        // vector is taken back through the parent's transform.
+        let to_parent = parent_transform(node).invert().unwrap_or_default();
+        outward.push(map_vector(
+            to_parent,
+            dx / len * size.width(),
+            dy / len * size.width(),
+        ));
+        down.push(map_vector(to_parent, 0.0, size.height()));
+    }
+    Daisy {
+        petals,
+        outward,
+        down,
+        canvas: (size.width(), size.height()),
+    }
 });
 
-/// Sub-samples per axis per pixel in [`render_at`]. 4×4 is what the Electron
-/// twin uses; 16 coverage levels are plenty for an 18 px edge.
-const SUPERSAMPLE: u32 = 4;
-
-// The flower is designed on a 64 px canvas; `Geometry::at` scales it.
-// Disc radius, petal width, base and tip come from the table.
-
-/// How far a falling petal travels outward over the whole drift.
-const DRIFT_OUTWARD: f32 = 8.0;
-/// How far a falling petal sags under "gravity" over the whole drift.
-const DRIFT_GRAVITY: f32 = 6.0;
-/// Width of the centre disk's edge ramp.
-const DISK_RAMP: f32 = 0.5;
-
-/// The 64 px design scaled to one output size. All lengths in output pixels.
-#[derive(Clone, Copy, Debug)]
-struct Geometry {
-    /// Flower centre, in whichever pixel coordinate convention the caller
-    /// samples with (see [`render`] vs [`render_at`]).
-    center: f32,
-    petal_base: f32,
-    /// Where a petal of length 1 ends; each petal's own tip is this times
-    /// its length factor.
-    petal_tip: f32,
-    petal_width: f32,
-    center_radius: f32,
-    drift_outward: f32,
-    drift_gravity: f32,
-    disk_ramp: f32,
+/// Byte ranges of the elements `petal-0` … `petal-(n-1)`, in index order.
+/// The ids must run without a gap and none may repeat.
+fn petal_ranges(svg: &str) -> Result<Vec<Range<usize>>, String> {
+    let doc = roxmltree::Document::parse(svg).map_err(|e| e.to_string())?;
+    let mut found: Vec<Option<Range<usize>>> = Vec::new();
+    for node in doc.descendants().filter(|n| n.is_element()) {
+        let Some(k) = node
+            .attribute("id")
+            .and_then(|id| id.strip_prefix("petal-"))
+            .and_then(|k| k.parse::<usize>().ok())
+        else {
+            continue;
+        };
+        if found.len() <= k {
+            found.resize(k + 1, None);
+        }
+        if found[k].replace(node.range()).is_some() {
+            return Err(format!("petal-{k} appears twice"));
+        }
+    }
+    found
+        .into_iter()
+        .enumerate()
+        .map(|(k, r)| r.ok_or_else(|| format!("petal-{k} is missing")))
+        .collect()
 }
 
-impl Geometry {
-    /// Geometry for a `size`-px bitmap sampled in continuous coordinates
-    /// (pixel `x` spans `x..x+1`, so the flower centre sits at `size / 2`).
-    fn at(size: u32) -> Self {
-        let k = size as f32 / ICON_SIZE as f32;
-        Self {
-            center: size as f32 * 0.5,
-            petal_base: DAISY.petal_base * k,
-            petal_tip: DAISY.petal_tip * k,
-            petal_width: DAISY.petal_half_width * k,
-            center_radius: DAISY.disc_radius * k,
-            drift_outward: DRIFT_OUTWARD * k,
-            drift_gravity: DRIFT_GRAVITY * k,
-            disk_ramp: DISK_RAMP * k,
-        }
-    }
+fn parse(svg: &str) -> usvg::Tree {
+    usvg::Tree::from_str(svg, &usvg::Options::default()).expect("assets/daisy.svg parses")
+}
 
-    /// The Windows 64 px bitmap samples each pixel at its integer coordinate,
-    /// so its centre is `(64 - 1) / 2`. Scale factor 1, hence every length
-    /// is the design constant itself.
-    #[cfg_attr(target_os = "macos", allow(dead_code))] // the Windows tray's bitmap; macOS draws per density
-    fn windows() -> Self {
-        Self {
-            center: (ICON_SIZE as f32 - 1.0) * 0.5,
-            ..Self::at(ICON_SIZE)
-        }
-    }
-
-    /// Where petal `i` (offset by a drift) is rooted and how it is oriented:
-    /// the frame's origin is the flower centre, moved by the drift, and the
-    /// petal runs out from it along `dir`.
-    fn petal_frame(&self, i: u8, radial_off: f32, gravity_off: f32) -> PetalFrame {
-        let theta = petal_angle(i);
-        // Radial outward direction; y+ is down on screen.
-        let dir_x = theta.sin();
-        let dir_y = -theta.cos();
-        PetalFrame {
-            index: i,
-            cx: self.center + dir_x * radial_off,
-            cy: self.center + dir_y * radial_off + gravity_off,
-            dir_x,
-            dir_y,
-        }
+/// The transform of the user space `node`'s element is placed in.
+fn parent_transform(node: &usvg::Node) -> tiny_skia::Transform {
+    match node {
+        // A group's absolute transform includes its own.
+        usvg::Node::Group(g) => g
+            .abs_transform()
+            .pre_concat(g.transform().invert().unwrap_or_default()),
+        other => other.abs_transform(),
     }
 }
 
-/// One petal's root and radial direction, resolved once per petal rather
-/// than once per sample.
-#[derive(Clone, Copy, Debug)]
-struct PetalFrame {
-    index: u8,
-    cx: f32,
-    cy: f32,
-    dir_x: f32,
-    dir_y: f32,
+/// `t` applied to a vector rather than a point: its translation left out.
+fn map_vector(t: tiny_skia::Transform, x: f32, y: f32) -> (f32, f32) {
+    (t.sx * x + t.kx * y, t.ky * x + t.sy * y)
 }
-
-const COLOR_PETAL_BASE: [u8; 3] = [248, 248, 252];
-/// Soft warm pink at the petal tip — the marguerite signature.
-const COLOR_PETAL_TIP: [u8; 3] = [240, 130, 165];
-const COLOR_CENTER: [u8; 3] = [255, 200, 55];
 
 /// A petal in the middle of falling away from the flower.
 #[derive(Clone, Copy, Debug)]
@@ -243,248 +226,84 @@ pub fn frame_at(duration: Duration, elapsed: Duration) -> DaisyFrame {
     }
 }
 
-/// Render one frame of the daisy as a 64×64 RGBA buffer — the Windows path.
+/// One frame of the daisy as a `size`×`size` straight-alpha RGBA buffer.
 ///
-/// `petals_remaining` counts petals still attached (0..=12); does NOT
-/// include any petal currently animating in `drift`.
-///
-/// One sample per pixel at the pixel's integer coordinate, with the edge
-/// softness coming from the analytic falloff in [`petal_sample`] alone. Kept
-/// as its own loop rather than `render_at(64, ..)`: supersampling changes
-/// the edge bytes, and this bitmap is pinned byte-for-byte by its tests.
-#[cfg_attr(target_os = "macos", allow(dead_code))] // the Windows tray's bitmap; macOS draws per density
-pub fn render(petals_remaining: u8, drift: Option<DriftState>) -> Vec<u8> {
-    let g = Geometry::windows();
-    let scene = Scene::new(&g, petals_remaining, drift);
-    let mut buf = vec![0u8; (ICON_SIZE * ICON_SIZE * 4) as usize];
+/// `petals_remaining` counts the petals still attached; it excludes the one
+/// animating in `drift`. With N remaining, petals `16 - N …` are on the
+/// flower and the ones before them have fallen. The flower's viewBox is
+/// fitted into the square, centred.
+pub fn render(size: u32, petals_remaining: u8, drift: Option<DriftState>) -> Arc<[u8]> {
+    if drift.is_some() {
+        // A fall lasts ~250 ms at ~30 Hz; its frames are never shown twice.
+        return rasterise(size, petals_remaining, drift).into();
+    }
+    /// Steady frames by (size, petals remaining).
+    type Frames = BTreeMap<(u32, u8), Arc<[u8]>>;
+    static STEADY: Mutex<Frames> = Mutex::new(BTreeMap::new());
+    let key = (size, petals_remaining.min(PETAL_COUNT));
+    if let Some(hit) = STEADY.lock().unwrap().get(&key) {
+        return hit.clone();
+    }
+    let frame: Arc<[u8]> = rasterise(size, key.1, None).into();
+    STEADY.lock().unwrap().insert(key, frame.clone());
+    frame
+}
 
-    for y in 0..ICON_SIZE {
-        for x in 0..ICON_SIZE {
-            let (r, gg, b, a) = scene.sample(&g, x as f32, y as f32);
-            let idx = ((y * ICON_SIZE + x) * 4) as usize;
-            buf[idx] = r as u8;
-            buf[idx + 1] = gg as u8;
-            buf[idx + 2] = b as u8;
-            buf[idx + 3] = a as u8;
+/// [`render`] without the cache.
+fn rasterise(size: u32, petals_remaining: u8, drift: Option<DriftState>) -> Vec<u8> {
+    let tree = parse(&frame_svg(petals_remaining, drift));
+    let mut pixmap = tiny_skia::Pixmap::new(size, size).expect("a non-zero icon size");
+    let (w, h) = DAISY.canvas;
+    let scale = (size as f32 / w).min(size as f32 / h);
+    let fit = tiny_skia::Transform::from_row(
+        scale,
+        0.0,
+        0.0,
+        scale,
+        (size as f32 - w * scale) / 2.0,
+        (size as f32 - h * scale) / 2.0,
+    );
+    resvg::render(&tree, fit, &mut pixmap.as_mut());
+    pixmap.take_demultiplied()
+}
+
+/// The SVG text of one frame: fallen petals spliced out, the falling one
+/// wrapped in a group that carries its drift and fade.
+fn frame_svg(petals_remaining: u8, drift: Option<DriftState>) -> String {
+    let daisy = &*DAISY;
+    let fallen = PETAL_COUNT - petals_remaining.min(PETAL_COUNT);
+    let falling = drift.filter(|d| d.petal_index < fallen);
+
+    // Splice in document order, whatever order the ids come in.
+    let mut gone: Vec<u8> = (0..fallen).collect();
+    gone.sort_by_key(|&k| daisy.petals[k as usize].start);
+
+    let mut out = String::with_capacity(SVG.len() + 96);
+    let mut cursor = 0;
+    for k in gone {
+        let range = &daisy.petals[k as usize];
+        if range.start < cursor {
+            // Inside a petal already spliced out.
+            continue;
         }
-    }
-
-    buf
-}
-
-/// Render one frame of the daisy as a `size`×`size` straight-alpha RGBA
-/// buffer, for hosts that draw one bitmap per display density (spec §5).
-///
-/// Same flower as [`render`] with every length scaled by `size / 64`. Each
-/// pixel is the premultiplied average of a [`SUPERSAMPLE`]² grid of samples
-/// across it, so an edge crossing the pixel leaves partial alpha instead of
-/// an in/out decision — at 18 px a petal is about a pixel and a half wide
-/// and would otherwise be a staircase.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // only the macOS status item draws per density
-pub fn render_at(size: u32, petals_remaining: u8, drift: Option<DriftState>) -> Vec<u8> {
-    let g = Geometry::at(size);
-    let scene = Scene::new(&g, petals_remaining, drift);
-    let mut buf = vec![0u8; (size * size * 4) as usize];
-
-    for y in 0..size {
-        for x in 0..size {
-            let (r, gg, b, a) = scene.pixel_supersampled(&g, x, y);
-            let idx = ((y * size + x) * 4) as usize;
-            buf[idx] = r as u8;
-            buf[idx + 1] = gg as u8;
-            buf[idx + 2] = b as u8;
-            buf[idx + 3] = a as u8;
+        out.push_str(&SVG[cursor..range.start]);
+        if let Some(d) = falling.filter(|d| d.petal_index == k) {
+            let p = d.progress.clamp(0.0, 1.0);
+            let (ox, oy) = daisy.outward[k as usize];
+            let (gx, gy) = daisy.down[k as usize];
+            let (out_k, sag_k) = (p * DRIFT_OUTWARD, p * p * DRIFT_GRAVITY);
+            let (tx, ty) = (ox * out_k + gx * sag_k, oy * out_k + gy * sag_k);
+            out.push_str(&format!(
+                r#"<g transform="translate({tx} {ty})" opacity="{}">"#,
+                1.0 - p
+            ));
+            out.push_str(&SVG[range.clone()]);
+            out.push_str("</g>");
         }
+        cursor = range.end;
     }
-
-    buf
-}
-
-/// Everything about one frame that does not depend on the sample point:
-/// which petals are attached, where the drifting one is, how faded it is.
-struct Scene {
-    /// Attached petals: indices `[first_static, PETAL_COUNT)`.
-    first_static: u8,
-    /// The drifting petal, resolved to its frame and alpha scale.
-    drift: Option<(PetalFrame, f32)>,
-}
-
-impl Scene {
-    fn new(g: &Geometry, petals_remaining: u8, drift: Option<DriftState>) -> Self {
-        let petals_remaining = petals_remaining.min(PETAL_COUNT);
-        // Petals fall in order starting from index 0 → with N remaining,
-        // indices [PETAL_COUNT - N .. PETAL_COUNT) are still on the flower.
-        let first_static = PETAL_COUNT - petals_remaining;
-        let drift = drift.filter(|d| d.petal_index < PETAL_COUNT).map(|d| {
-            let radial_off = d.progress * g.drift_outward;
-            // Slight gravity arc — petals drift outward + downward.
-            let gravity_y = d.progress * d.progress * g.drift_gravity;
-            let fade = (1.0 - d.progress).clamp(0.0, 1.0);
-            (g.petal_frame(d.petal_index, radial_off, gravity_y), fade)
-        });
-        Self {
-            first_static,
-            drift,
-        }
-    }
-
-    /// Colour and alpha of the composited flower at one point:
-    /// `(r, g, b)` in `0..=255`, `a` in `0..=255`, all already clamped so a
-    /// bare `as u8` quantizes them.
-    fn sample(&self, g: &Geometry, px: f32, py: f32) -> (f32, f32, f32, f32) {
-        // Pick the petal covering this point most strongly so the tip
-        // colour comes from the *correct* petal (their bounding boxes
-        // overlap slightly near the inner ring).
-        let mut best_alpha: f32 = 0.0;
-        let mut best_color: [u8; 3] = COLOR_PETAL_BASE;
-        for i in self.first_static..PETAL_COUNT {
-            let frame = g.petal_frame(i, 0.0, 0.0);
-            let (a, c) = petal_sample(g, &frame, 1.0, px, py);
-            if a > best_alpha {
-                best_alpha = a;
-                best_color = c;
-            }
-        }
-        if let Some((frame, fade)) = &self.drift {
-            let (a, c) = petal_sample(g, frame, *fade, px, py);
-            if a > best_alpha {
-                best_alpha = a;
-                best_color = c;
-            }
-        }
-
-        // Yellow center disk sits on top of the petals.
-        let dx = px - g.center;
-        let dy = py - g.center;
-        let r = (dx * dx + dy * dy).sqrt();
-        let center_a = soft_disk(r, g.center_radius, g.disk_ramp);
-
-        composite(best_color, best_alpha, COLOR_CENTER, center_a)
-    }
-
-    /// Pixel `(x, y)` as the premultiplied average of a `SUPERSAMPLE`²
-    /// grid of samples across it, so an edge that crosses the pixel leaves
-    /// partial alpha. Same `(r, g, b, a)` convention as [`Scene::sample`].
-    fn pixel_supersampled(&self, g: &Geometry, x: u32, y: u32) -> (f32, f32, f32, f32) {
-        let (mut r, mut gg, mut b, mut a) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
-        let step = 1.0 / SUPERSAMPLE as f32;
-        for j in 0..SUPERSAMPLE {
-            for i in 0..SUPERSAMPLE {
-                let sx = x as f32 + (i as f32 + 0.5) * step;
-                let sy = y as f32 + (j as f32 + 0.5) * step;
-                let (sr, sg, sb, sa) = self.sample(g, sx, sy);
-                // Weight colour by alpha: a transparent sample has no colour
-                // to contribute, and an edge pixel should take the colour of
-                // whatever actually covers it.
-                r += sr * sa;
-                gg += sg * sa;
-                b += sb * sa;
-                a += sa;
-            }
-        }
-        if a <= 0.0 {
-            return (0.0, 0.0, 0.0, 0.0);
-        }
-        let n = (SUPERSAMPLE * SUPERSAMPLE) as f32;
-        (r / a, gg / a, b / a, (a / n).clamp(0.0, 255.0))
-    }
-}
-
-fn petal_angle(i: u8) -> f32 {
-    DAISY.petals[i as usize].angle.to_radians()
-}
-
-/// Half-width of petal `i` at `t` (0 = disc edge, 1 = tip) as a share of
-/// the full half-width: its profile interpolated; the hidden base under
-/// the disc keeps the disc-edge width.
-fn petal_width_at(i: u8, t: f32) -> f32 {
-    let prof = &DAISY.petals[i as usize].profile;
-    if t >= 1.0 {
-        return 0.0;
-    }
-    if t <= 0.0 {
-        return prof[0];
-    }
-    let x = t * (prof.len() - 1) as f32;
-    let j = x.floor() as usize;
-    prof[j] + (prof[j + 1] - prof[j]) * (x - j as f32)
-}
-
-/// Returns (alpha, color) at point (px, py) for the petal at `frame`. Tip
-/// colour blends white→pink along the outward half of the petal.
-fn petal_sample(
-    g: &Geometry,
-    frame: &PetalFrame,
-    alpha_scale: f32,
-    px: f32,
-    py: f32,
-) -> (f32, [u8; 3]) {
-    let PetalFrame {
-        index,
-        cx,
-        cy,
-        dir_x,
-        dir_y,
-    } = *frame;
-    let petal = &DAISY.petals[index as usize];
-    let perp_x = -dir_y;
-    let perp_y = dir_x;
-
-    let vx = px - cx;
-    let vy = py - cy;
-    let r_par = vx * dir_x + vy * dir_y;
-    let r_per = vx * perp_x + vy * perp_y;
-
-    // In or out of the strip: a hard edge, graded by the caller's
-    // supersampling, like the Electron twin.
-    let tip = g.petal_tip * petal.length;
-    let t = (r_par - g.center_radius) / (tip - g.center_radius);
-    let inside = r_par >= g.petal_base
-        && r_per.abs() <= g.petal_width * petal.width * petal_width_at(index, t);
-    let a = if inside { alpha_scale } else { 0.0 };
-
-    // Tip colouring: blend toward pink over the outward half. Squaring
-    // concentrates the pink near the very tip.
-    let tip_factor = if DAISY.pink_tips {
-        ((t - 0.5) / 0.5).max(0.0).powi(2)
-    } else {
-        0.0
-    };
-    let color = lerp_rgb(COLOR_PETAL_BASE, COLOR_PETAL_TIP, tip_factor);
-
-    (a, color)
-}
-
-fn soft_disk(r: f32, radius: f32, ramp: f32) -> f32 {
-    (radius - r + ramp).clamp(0.0, 1.0)
-}
-
-fn lerp_rgb(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
-    let t = t.clamp(0.0, 1.0);
-    [
-        (a[0] as f32 * (1.0 - t) + b[0] as f32 * t) as u8,
-        (a[1] as f32 * (1.0 - t) + b[1] as f32 * t) as u8,
-        (a[2] as f32 * (1.0 - t) + b[2] as f32 * t) as u8,
-    ]
-}
-
-/// "Above over below" alpha compositing (yellow center over white petals).
-/// Returns straight colour and alpha, each clamped to `0..=255`.
-fn composite(below: [u8; 3], a_below: f32, above: [u8; 3], a_above: f32) -> (f32, f32, f32, f32) {
-    let a_out = a_above + a_below * (1.0 - a_above);
-    if a_out <= 0.001 {
-        return (0.0, 0.0, 0.0, 0.0);
-    }
-    let mix = |c_b: u8, c_a: u8| -> f32 {
-        let v = (c_a as f32 * a_above + c_b as f32 * a_below * (1.0 - a_above)) / a_out;
-        v.clamp(0.0, 255.0)
-    };
-    (
-        mix(below[0], above[0]),
-        mix(below[1], above[1]),
-        mix(below[2], above[2]),
-        (a_out * 255.0).clamp(0.0, 255.0),
-    )
+    out.push_str(&SVG[cursor..]);
+    out
 }
 
 #[cfg(test)]
@@ -573,21 +392,12 @@ mod tests {
         assert_eq!(after.petal_duration, Duration::from_millis(100));
     }
 
-    fn alpha_at(buf: &[u8], size: u32, x: u32, y: u32) -> u8 {
-        let i = ((y * size + x) * 4 + 3) as usize;
-        buf[i]
-    }
+    // ---- the SVG contract -------------------------------------------------
 
     fn rgba_at(buf: &[u8], size: u32, x: u32, y: u32) -> [u8; 4] {
         let i = ((y * size + x) * 4) as usize;
         [buf[i], buf[i + 1], buf[i + 2], buf[i + 3]]
     }
-
-    // ---- render: pin the Windows bitmap byte-for-byte ----------------------
-    //
-    // `render` feeds the Windows notification-area icon. These hashes were
-    // taken from its output before `render_at` existed; a change here means
-    // the Windows daisy changed, which is never a side effect of macOS work.
 
     fn fnv1a64(bytes: &[u8]) -> u64 {
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -598,249 +408,208 @@ mod tests {
         h
     }
 
-    const DRIFT_MID: DriftState = DriftState {
-        petal_index: 5,
-        progress: 0.5,
-    };
+    /// The petal's angle (degrees clockwise from 12 o'clock) and tip radius
+    /// (canvas units) as the SVG states them: the group's `rotate(a 32 32)`
+    /// and the topmost point of its vertical path.
+    fn petal_axes() -> Vec<(f32, f32)> {
+        let doc = roxmltree::Document::parse(SVG).unwrap();
+        (0..PETAL_COUNT)
+            .map(|k| {
+                let g = doc
+                    .descendants()
+                    .find(|n| n.attribute("id") == Some(&format!("petal-{k}")))
+                    .unwrap();
+                let rotate = g.attribute("transform").unwrap();
+                let angle: f32 = rotate
+                    .trim_start_matches("rotate(")
+                    .split_whitespace()
+                    .next()
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                let d = g
+                    .descendants()
+                    .find_map(|n| n.attribute("d"))
+                    .expect("a petal path");
+                let numbers: Vec<f32> = d
+                    .split(|c: char| c.is_ascii_alphabetic() || c.is_whitespace() || c == ',')
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.parse().unwrap())
+                    .collect();
+                let top = numbers
+                    .iter()
+                    .skip(1)
+                    .step_by(2)
+                    .fold(f32::MAX, |a, &y| a.min(y));
+                (angle, 32.0 - top)
+            })
+            .collect()
+    }
 
+    /// The pixel on petal `k`'s axis at `share` of its tip radius.
+    fn on_axis(size: u32, (angle, tip): (f32, f32), share: f32) -> (u32, u32) {
+        let s = size as f32 / 64.0;
+        let r = tip * share * s;
+        let (sin, cos) = angle.to_radians().sin_cos();
+        let c = size as f32 / 2.0;
+        ((c + r * sin) as u32, (c - r * cos) as u32)
+    }
+
+    fn is_petal([r, g, b, a]: [u8; 4]) -> bool {
+        // White to pink, mostly covered; the disc's yellow has b < 120.
+        a > 160 && r > 200 && b > 140 && g > 100
+    }
+
+    #[test]
+    fn the_svg_holds_sixteen_petals_and_a_disc() {
+        let doc = roxmltree::Document::parse(SVG).unwrap();
+        let ids: Vec<&str> = doc
+            .descendants()
+            .filter_map(|n| n.attribute("id"))
+            .collect();
+        for k in 0..PETAL_COUNT {
+            assert!(
+                ids.contains(&format!("petal-{k}").as_str()),
+                "petal-{k}: {ids:?}"
+            );
+        }
+        assert!(ids.contains(&"disc"), "{ids:?}");
+        assert_eq!(DAISY.petals.len(), PETAL_COUNT as usize);
+    }
+
+    /// Clockwise from 12 o'clock, so petal order is fall order (spec §5).
+    #[test]
+    fn petals_run_clockwise_from_twelve() {
+        let axes = petal_axes();
+        assert!(axes[0].0.abs() < 5.0, "petal-0 at {}°", axes[0].0);
+        for w in axes.windows(2) {
+            assert!(w[0].0 < w[1].0, "{axes:?}");
+        }
+    }
+
+    /// Removal follows the id, at any depth and for a self-closing element,
+    /// and leaves every other byte alone.
+    #[test]
+    fn petal_ranges_find_ids_at_any_depth() {
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><g id="layer"><path id="petal-1" d="M0 0"/><g id="petal-0"><path d="M1 1"/></g></g></svg>"#;
+        let ranges = petal_ranges(svg).unwrap();
+        assert_eq!(
+            &svg[ranges[0].clone()],
+            r#"<g id="petal-0"><path d="M1 1"/></g>"#
+        );
+        assert_eq!(&svg[ranges[1].clone()], r#"<path id="petal-1" d="M0 0"/>"#);
+        assert!(
+            petal_ranges(r#"<svg><g id="petal-1"/></svg>"#).is_err(),
+            "a gap"
+        );
+    }
+
+    #[test]
+    fn full_daisy_at_36_px_is_yellow_white_and_pink() {
+        let size = 36;
+        let buf = render(size, PETAL_COUNT, None);
+        assert_eq!(buf.len(), (size * size * 4) as usize);
+        let c = size / 2;
+        let [r, g, b, a] = rgba_at(&buf, size, c, c);
+        assert!(
+            a == 255 && r > 240 && g > 180 && b < 80,
+            "centre ({r},{g},{b},{a})"
+        );
+
+        let top = petal_axes()[0];
+        // Just outside the disc (r 8.5 of 64): the white base.
+        let (x, y) = on_axis(size, top, 11.0 / top.1);
+        let [r, g, b, a] = rgba_at(&buf, size, x, y);
+        assert!(
+            a > 200 && r > 230 && g > 230 && b > 230,
+            "base ({r},{g},{b},{a}) at ({x},{y})"
+        );
+        // Near the tip: pink.
+        let (x, y) = on_axis(size, top, 0.93);
+        let [r, g, _, a] = rgba_at(&buf, size, x, y);
+        assert!(
+            a > 60 && r as i32 - g as i32 > 40,
+            "tip ({r},{g},{a}) at ({x},{y})"
+        );
+    }
+
+    /// With k petals fallen, exactly petals k … 15 are on the flower.
+    #[test]
+    fn each_fall_removes_exactly_its_petal() {
+        let axes = petal_axes();
+        for size in [18, 36] {
+            for fallen in 0..=PETAL_COUNT {
+                let buf = rasterise(size, PETAL_COUNT - fallen, None);
+                let present: Vec<u8> = (0..PETAL_COUNT)
+                    .filter(|&k| {
+                        let (x, y) = on_axis(size, axes[k as usize], 0.75);
+                        is_petal(rgba_at(&buf, size, x, y))
+                    })
+                    .collect();
+                assert_eq!(
+                    present,
+                    (fallen..PETAL_COUNT).collect::<Vec<_>>(),
+                    "size {size}, {fallen} fallen"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bare_disc_has_nothing_outside_it() {
+        let size = 36;
+        let buf = render(size, 0, None);
+        let opaque_outside = (0..size * size)
+            .filter(|i| {
+                let (x, y) = (i % size, i / size);
+                let r = ((x as f32 + 0.5 - 18.0).powi(2) + (y as f32 + 0.5 - 18.0).powi(2)).sqrt();
+                r > 8.5 * 36.0 / 64.0 + 1.0 && buf[(*i * 4 + 3) as usize] > 0
+            })
+            .count();
+        assert_eq!(opaque_outside, 0);
+    }
+
+    /// Any host size gives a square buffer of that size.
+    #[test]
+    fn renders_at_every_host_size() {
+        for size in [16, 18, 20, 24, 32, 36, 48, 64] {
+            let buf = render(size, PETAL_COUNT, None);
+            assert_eq!(buf.len(), (size * size * 4) as usize, "size {size}");
+            let c = size / 2;
+            assert_eq!(rgba_at(&buf, size, c, c)[3], 255, "size {size}");
+        }
+    }
+
+    #[test]
+    fn steady_frames_come_from_the_cache() {
+        let a = render(30, 7, None);
+        let b = render(30, 7, None);
+        assert!(Arc::ptr_eq(&a, &b));
+    }
+
+    /// The pixels at 36 px, pinned. They move whenever `assets/daisy.svg` is
+    /// re-exported or resvg changes; re-pin from the failure message then,
+    /// after looking at the frames (`png_dump_host_sizes`).
     #[test]
     fn render_output_is_pinned() {
-        let cases: [(u8, Option<DriftState>, u64); 3] = [
-            (PETAL_COUNT, None, 0xb300_1466_68c2_154a),
-            (6, Some(DRIFT_MID), 0x4286_05c8_450a_7a33),
-            (0, None, 0xf28e_99fd_c2a8_d8c5),
+        let cases: [(u8, u64); 2] = [
+            (PETAL_COUNT, 0xdc8f_39d5_9d0e_5cfc),
+            (9, 0x9bc4_aec4_7357_b9fa),
         ];
-        for (petals, drift, expected) in cases {
-            let buf = render(petals, drift);
-            assert_eq!(buf.len(), (ICON_SIZE * ICON_SIZE * 4) as usize);
-            let got = fnv1a64(&buf);
-            assert_eq!(
-                got, expected,
-                "render({petals}, {drift:?}) changed: fnv1a64 = {got:#018x}"
-            );
+        for (petals, expected) in cases {
+            let got = fnv1a64(&render(36, petals, None));
+            assert_eq!(got, expected, "render(36, {petals}): fnv1a64 = {got:#018x}");
         }
     }
 
-    #[test]
-    fn full_daisy_has_top_petal_opaque() {
-        let buf = render(PETAL_COUNT, None);
-        // Top petal centered around y ≈ 31.5 - 20 = 11.5.
-        // Vertical centerline at x = 32.
-        assert!(
-            alpha_at(&buf, ICON_SIZE, 32, 8) > 100,
-            "top petal should be opaque"
-        );
-    }
+    // ---- the fall ----------------------------------------------------------
 
-    #[test]
-    fn top_petal_tip_is_pink() {
-        let buf = render(PETAL_COUNT, None);
-        // Near the outer tip of the top petal (y ≈ 31.5 - PETAL_TIP ≈ 0.5)
-        let i = ((3 * ICON_SIZE + (Geometry::windows().center as u32)) * 4) as usize;
-        let r = buf[i];
-        let g = buf[i + 1];
-        let _b = buf[i + 2];
-        let a = buf[i + 3];
-        assert!(a > 60, "tip should be at least partially opaque");
-        // Pink ≈ (240, 130, 165): R high, G clearly less than R, B between.
-        assert!(r as i32 - g as i32 > 30, "tip should be warmer than white");
-    }
-
-    #[test]
-    fn empty_daisy_has_only_center() {
-        let buf = render(0, None);
-        // Outer region — transparent.
-        assert_eq!(alpha_at(&buf, ICON_SIZE, 32, 2), 0);
-        // Dead center — opaque yellow.
-        let c = Geometry::windows().center as u32;
-        let i = ((c * ICON_SIZE + c) * 4) as usize;
-        assert!(buf[i + 3] > 200);
-        assert!(buf[i] > 200);
-        assert!(buf[i + 1] > 150);
-        assert!(buf[i + 2] < 120);
-    }
-
+    /// At progress 0 the falling petal is exactly the attached one.
     #[test]
     fn drift_at_progress_zero_matches_attached_petal() {
-        let a = render(PETAL_COUNT, None);
-        let b = render(
-            PETAL_COUNT - 1,
-            Some(DriftState {
-                petal_index: 0,
-                progress: 0.0,
-            }),
-        );
-        for y in 2..16 {
-            for x in 26..38 {
-                let i = ((y * ICON_SIZE + x) * 4 + 3) as usize;
-                assert!(
-                    (a[i] as i32 - b[i] as i32).abs() <= 4,
-                    "alpha mismatch at ({x},{y}): {} vs {}",
-                    a[i],
-                    b[i]
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn drift_fades_at_progress_one() {
-        let buf = render(
-            PETAL_COUNT - 1,
-            Some(DriftState {
-                petal_index: 0,
-                progress: 1.0,
-            }),
-        );
-        assert!(alpha_at(&buf, ICON_SIZE, 32, 8) < 10);
-    }
-
-    // ---- render_at: one bitmap per host density --------------------------
-
-    /// The sizes the macOS status item asks for: 18 px at 1x, 36 px at 2x.
-    const HOST_SIZES: [u32; 2] = [18, 36];
-
-    /// Pixel on the vertical centreline, through the top petal (petal 0,
-    /// 12 o'clock) at `size`, three quarters of the way out: the body is
-    /// still nearly full width there, and the neighbours' bases, which
-    /// overlap the top petal's own out to r ≈ 18 of 64, are clear of it.
-    fn top_petal_pixel(size: u32) -> (u32, u32) {
-        let g = Geometry::at(size);
-        (size / 2, (g.center - g.petal_tip * 0.75) as u32)
-    }
-
-    /// Spec §5: "Each petal is a strip that runs out from under the centre:
-    /// narrowest where it leaves the disc, widest about three fifths of the
-    /// way out, closed by a pointed-oval tip. Petal and centre meet with no
-    /// gap between them."
-    #[test]
-    fn top_petal_meets_the_centre_with_no_gap() {
-        for size in HOST_SIZES.into_iter().chain([ICON_SIZE]) {
-            let g = Geometry::at(size);
-            let buf = render_at(size, PETAL_COUNT, None);
-            let x = size / 2;
-            // Every pixel on the top petal's axis from the disc edge out to
-            // the tip's cap is more than half covered by petal: no
-            // transparent ring. (At 18 px the base is 1.2 px wide, so the
-            // axis column is not fully covered there.)
-            let first = (g.center - g.center_radius - 1.0) as u32;
-            let last = (g.center - g.petal_tip + g.petal_width) as u32;
-            for y in (last..=first).rev() {
-                let [r, _, b, a] = rgba_at(&buf, size, x, y);
-                assert!(a > 128, "size {size}: gap at ({x},{y}), alpha {a}");
-                assert!(r > 200 && b > 100, "size {size}: not petal at ({x},{y})");
-            }
-        }
-        // Narrower at the base than mid-length, closed at the tip: the
-        // width profile itself, since next to the disc the neighbours'
-        // bases overlap and no single pixel column belongs to one petal.
-        for i in 0..PETAL_COUNT {
-            assert!(petal_width_at(i, 0.0) < petal_width_at(i, 0.3), "petal {i}");
-            assert!(petal_width_at(i, 0.3) < petal_width_at(i, 0.6), "petal {i}");
-            assert!(petal_width_at(i, 0.0) > 0.4, "petal {i}");
-            assert!(petal_width_at(i, 0.6) > 0.9, "petal {i}");
-            assert!(petal_width_at(i, 0.9) < 0.85, "petal {i}");
-            assert_eq!(petal_width_at(i, 1.0), 0.0, "petal {i}");
-        }
-    }
-
-    /// The table is the icon: one entry per petal of spec §5, 21 profile
-    /// samples each, petal 0 at 12 o'clock and the rest clockwise, so the
-    /// fall order of §5 is the table order.
-    #[test]
-    fn table_has_one_entry_per_petal_in_clockwise_order() {
-        assert_eq!(DAISY.petals.len(), PETAL_COUNT as usize);
-        assert!(DAISY.petals[0].angle.abs() < 5.0);
-        for w in DAISY.petals.windows(2) {
-            assert!(w[0].angle < w[1].angle);
-        }
-        for p in &DAISY.petals {
-            assert_eq!(p.profile.len(), 21);
-            assert!(p.length > 0.9 && p.length < 1.1);
-            assert!(p.width > 0.9 && p.width < 1.1);
-        }
-    }
-
-    #[test]
-    fn render_at_buffer_is_size_squared_rgba() {
-        for size in HOST_SIZES {
-            assert_eq!(
-                render_at(size, PETAL_COUNT, None).len(),
-                (size * size * 4) as usize
-            );
-        }
-    }
-
-    #[test]
-    fn render_at_centre_pixel_is_opaque_yellow() {
-        for size in HOST_SIZES {
-            for petals in [PETAL_COUNT, 0] {
-                let buf = render_at(size, petals, None);
-                let [r, g, b, a] = rgba_at(&buf, size, size / 2, size / 2);
-                assert!(a > 200, "size {size}, {petals} petals: centre alpha {a}");
-                assert!(
-                    r > 200 && g > 150 && b < 120,
-                    "size {size}: not yellow ({r},{g},{b})"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn render_at_top_petal_present_when_attached_absent_when_not() {
-        for size in HOST_SIZES {
-            let (x, y) = top_petal_pixel(size);
-            let full = render_at(size, PETAL_COUNT, None);
-            assert!(
-                alpha_at(&full, size, x, y) > 100,
-                "size {size}: top petal missing at ({x},{y})"
-            );
-            let bare = render_at(size, 0, None);
-            assert_eq!(
-                alpha_at(&bare, size, x, y),
-                0,
-                "size {size}: something at ({x},{y}) with no petals"
-            );
-        }
-    }
-
-    /// At 18 px the top petal is about 2.6 px wide. A single sample per
-    /// pixel leaves its cross-section as `0,255,255,0`; supersampling has to
-    /// put graded alpha on the edge pixels instead.
-    #[test]
-    fn render_at_petal_edges_are_antialiased() {
-        for size in HOST_SIZES {
-            let g = Geometry::at(size);
-            let (_, y) = top_petal_pixel(size);
-            // Only the top petal's own columns: the 1 o'clock and 11 o'clock
-            // petals reach into this row further out and would otherwise
-            // supply graded pixels of their own.
-            let span =
-                (g.center - g.petal_width - 0.5) as u32..=(g.center + g.petal_width + 0.5) as u32;
-            let buf = render_at(size, PETAL_COUNT, None);
-            let row: Vec<u8> = span.map(|x| alpha_at(&buf, size, x, y)).collect();
-            // The petal sits a fraction of a degree off the axis (its own
-            // angle from the table), so one of its two edges may land on a
-            // pixel boundary; the other still has to be graded.
-            let intermediate = row.iter().filter(|&&a| a > 24 && a < 232).count();
-            assert!(
-                intermediate >= 1,
-                "size {size}: no graded edge pixels across the top petal, row {y}: {row:?}"
-            );
-            // A 0→255 step is fine when that edge sits on a pixel boundary;
-            // with the petal a fraction of a degree off the axis one of the
-            // two edges may, so the staircase check is the graded count
-            // above, not a ban on steps.
-        }
-    }
-
-    /// At progress 0 the drifting petal is exactly the attached one, at every
-    /// size — the drift travel scales with the geometry.
-    #[test]
-    fn render_at_drift_at_progress_zero_matches_attached_petal() {
-        for size in HOST_SIZES {
-            let a = render_at(size, PETAL_COUNT, None);
-            let b = render_at(
+        for size in [18, 36] {
+            let a = render(size, PETAL_COUNT, None);
+            let b = render(
                 size,
                 PETAL_COUNT - 1,
                 Some(DriftState {
@@ -852,31 +621,103 @@ mod tests {
         }
     }
 
-    /// Writes `daisy-rust-18.png` and `daisy-rust-36.png` (full daisy) plus a
-    /// mid-drift pair into `$NUDGE_DAISY_PNG_DIR` (default: the OS temp dir).
-    /// Run with `--ignored` to eyeball the host-density bitmaps.
+    /// Mid-fall the petal has moved outward: its tip reaches past where the
+    /// attached tip ends, and it is fainter.
+    #[test]
+    fn drift_moves_the_petal_outward_and_fades_it() {
+        let size = 36;
+        let top = petal_axes()[0];
+        let mid = render(
+            size,
+            PETAL_COUNT - 1,
+            Some(DriftState {
+                petal_index: 0,
+                progress: 0.5,
+            }),
+        );
+        let (x, y) = on_axis(size, top, 0.75);
+        let a = rgba_at(&mid, size, x, y)[3];
+        assert!(a > 60 && a < 200, "half-faded petal, alpha {a}");
+        // The disc edge on the axis is bare: the petal's base slid out.
+        let gone = render(
+            size,
+            PETAL_COUNT - 1,
+            Some(DriftState {
+                petal_index: 0,
+                progress: 1.0,
+            }),
+        );
+        assert_eq!(rgba_at(&gone, size, x, y)[3], 0, "faded out at progress 1");
+    }
+
+    /// Prints cold and warm costs. `cargo test --release -- --ignored
+    /// --nocapture daisy::tests::perf_report`.
+    #[test]
+    #[ignore]
+    fn perf_report() {
+        use std::time::Instant;
+        let t = Instant::now();
+        let _ = &*DAISY;
+        let svg_read = t.elapsed();
+        let t = Instant::now();
+        let _ = rasterise(36, PETAL_COUNT, None);
+        let cold = t.elapsed();
+        let _ = render(36, PETAL_COUNT, None);
+        let n = 10_000;
+        let t = Instant::now();
+        for _ in 0..n {
+            std::hint::black_box(render(36, PETAL_COUNT, None));
+        }
+        let warm = t.elapsed() / n;
+        let t = Instant::now();
+        for size in [18, 36] {
+            for petals in 0..=PETAL_COUNT {
+                std::hint::black_box(rasterise(size, petals, None));
+            }
+        }
+        let all = t.elapsed();
+        let t = Instant::now();
+        std::hint::black_box(rasterise(
+            36,
+            PETAL_COUNT - 1,
+            Some(DriftState {
+                petal_index: 0,
+                progress: 0.5,
+            }),
+        ));
+        let drift = t.elapsed();
+        println!(
+            "first read of the SVG (ids, ranges, fall directions): {svg_read:?}\n\
+             parse+render 36 px full frame: {cold:?}\n\
+             cached fetch: {warm:?}\n\
+             all 17 frames at 18 and 36 px: {all:?}\n\
+             one drift frame at 36 px: {drift:?}"
+        );
+    }
+
+    /// Writes the full and mid-fall frames at 18 and 36 px as PNGs into
+    /// `$NUDGE_DAISY_PNG_DIR` (default: the OS temp dir). Run with
+    /// `--ignored` to look at them.
     #[test]
     #[ignore]
     fn png_dump_host_sizes() {
         let dir = std::env::var_os("NUDGE_DAISY_PNG_DIR")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(std::env::temp_dir);
-        for size in HOST_SIZES {
-            let save = |name: String, buf: Vec<u8>| {
+        for size in [18, 36] {
+            let save = |name: String, buf: Arc<[u8]>| {
                 let path = dir.join(name);
-                image::RgbaImage::from_raw(size, size, buf)
+                image::RgbaImage::from_raw(size, size, buf.to_vec())
                     .expect("buffer is size*size*4")
                     .save(&path)
                     .expect("write png");
                 println!("wrote {}", path.display());
             };
+            save(format!("daisy-{size}.png"), render(size, PETAL_COUNT, None));
+            save(format!("daisy-{size}-9.png"), render(size, 9, None));
             save(
-                format!("daisy-rust-{size}.png"),
-                render_at(size, PETAL_COUNT, None),
-            );
-            save(
-                format!("daisy-rust-{size}-drift.png"),
-                render_at(
+                format!("daisy-{size}-drift.png"),
+                render(
                     size,
                     PETAL_COUNT - 1,
                     Some(DriftState {
@@ -885,65 +726,6 @@ mod tests {
                     }),
                 ),
             );
-        }
-    }
-
-    /// Eyeball helper. Run with `--ignored --nocapture` to print all 13
-    /// petal counts plus a mid-drift frame as ASCII.
-    #[test]
-    #[ignore]
-    fn ascii_dump_all_states() {
-        for petals in (0..=PETAL_COUNT).rev() {
-            println!("\n=== {} petals remaining ===", petals);
-            dump_ascii(&render(petals, None), ICON_SIZE);
-        }
-        println!("\n=== drift (petal 0, progress=0.5) ===");
-        dump_ascii(
-            &render(
-                PETAL_COUNT - 1,
-                Some(DriftState {
-                    petal_index: 0,
-                    progress: 0.5,
-                }),
-            ),
-            ICON_SIZE,
-        );
-    }
-
-    fn dump_ascii(buf: &[u8], size: u32) {
-        for y in 0..size {
-            let mut row = String::new();
-            for x in 0..size {
-                let i = ((y * size + x) * 4) as usize;
-                let a = buf[i + 3];
-                let r = buf[i];
-                let g = buf[i + 1];
-                let b = buf[i + 2];
-                let ch = if a < 32 {
-                    ' '
-                } else if r > 200 && g > 150 && b < 120 {
-                    if a > 200 { '@' } else { 'o' }
-                } else if r as i32 - g as i32 > 30 {
-                    // Pink-ish
-                    if a > 200 {
-                        'P'
-                    } else if a > 100 {
-                        'p'
-                    } else {
-                        '.'
-                    }
-                } else {
-                    if a > 200 {
-                        '#'
-                    } else if a > 100 {
-                        '*'
-                    } else {
-                        '.'
-                    }
-                };
-                row.push(ch);
-            }
-            println!("{}", row);
         }
     }
 }

@@ -222,25 +222,32 @@ app is running and "ripens" instead of a numeric countdown.
   pointed-oval tip. Petal and centre meet with no gap between them. The white
   petal base softens into a warm pink at the very tips — the daisy's
   signature, distinguishing it from a generic field chamomile.
-- The geometry is the table in `docs/daisy/daisy.json`: the disc radius, the
-  petal width and reach on a 64-unit canvas, and for every petal its angle,
-  length, width and width profile, so the small irregularities of a real
-  head are part of the icon and the same in every render. The table is
-  baked by `docs/daisy/constructor.html` from a petal profile traced on
-  Bellis perennis photographs plus a seeded, dialled-down spread; changing
-  the icon means baking a new table there, not editing a renderer. Both
-  implementations read the table and draw it at the host's pixel size with
-  supersampled edges; no bitmap or vector file is shipped.
+- The icon is one file, `assets/daisy.svg`, and the apps know nothing about
+  petals beyond it. Its root viewBox is the canvas; each petal is an element
+  with the id `petal-0` … `petal-15` (at any depth), `petal-0` at 12 o'clock
+  and the rest clockwise, and `disc` is the centre, drawn after the petals so
+  it covers their bases. Everything else in the file — the petal outlines,
+  the white-to-pink gradient, the small irregularities of a real head — is
+  the drawing, and changing the icon means saving a new file with the same
+  ids, not editing a renderer.
+- A fallen petal is removed by its id: its element, with everything inside
+  it, is cut out of the SVG text before the file is parsed. The petal in
+  mid-fall (below) is wrapped in a group that moves and fades it instead.
+- Both implementations rasterise the file with resvg (the Rust crate; the
+  Electron build uses its Node binding) at the host's pixel size, so the
+  same file gives the same pixels in both. No bitmap is shipped, and nothing
+  between the renderer and the screen resamples the daisy. A frame without
+  a falling petal is rasterised once per size and kept.
 - Just the daisy and its center. No frame, background, shadow, digits, or
   any text inside the icon.
 - The palette is the only place in the app with an accent color (pink tip +
   yellow center). The card and pill stay monochrome.
 - On macOS the daisy is drawn at the menu bar's icon size, 18 pt, with one
   bitmap per display density the bar comes in (18 px for 1x, 36 px for 2x),
-  each drawn at that density's pixel size and declared 18 pt in one image, so
-  nothing between the renderer and the screen resamples it. On Windows it is
-  a single 64 px bitmap that the notification area scales to the icon size
-  (16 px at 100 % DPI).
+  each declared 18 pt in one image, so AppKit picks the one that matches the
+  screen. On Windows it is drawn at the shell's small-icon size for the
+  system DPI (16 px at 100 %, 24 px at 150 %, 32 px at 200 %), the size the
+  notification area shows.
 
 ### Link to the timer
 
