@@ -63,7 +63,8 @@ Full contract: [docs/journal-spec.md](docs/journal-spec.md)
 
 - **Rust** (native, no web engines).
 - GUI: eframe / egui (glow renderer, transparent window).
-- Goal: minimal footprint (~10-20 MB RAM), instant startup, single binary.
+- Single binary. Hidden, the popup holds ≈ 40 MiB physical footprint on a
+  2x macOS display, guarded by `tests/perf_macos.rs`.
 
 ## Defaults
 
