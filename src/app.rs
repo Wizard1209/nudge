@@ -394,8 +394,10 @@ impl NudgeApp {
         }
 
         // TODO: a second monitor is not shielded.
-        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(geometry.work.min));
+        // Size first: winit converts the position to AppKit's bottom-left
+        // origin with the window's current height.
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(geometry.work.size()));
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(geometry.work.min));
 
         let (card_width, placement) = match &self.sprite {
             Some(s) => (

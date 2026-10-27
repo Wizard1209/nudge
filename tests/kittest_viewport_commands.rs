@@ -103,8 +103,8 @@ fn reveal() -> Vec<ViewportCommand> {
     if cfg!(target_os = "macos") {
         let work = geometry().work;
         vec![
-            ViewportCommand::OuterPosition(work.min),
             ViewportCommand::InnerSize(work.size()),
+            ViewportCommand::OuterPosition(work.min),
             ViewportCommand::Visible(true),
             ViewportCommand::Focus,
             ViewportCommand::Visible(true),
