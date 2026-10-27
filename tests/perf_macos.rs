@@ -62,22 +62,22 @@ use core_graphics::window::{
     kCGWindowBounds, kCGWindowIsOnscreen, kCGWindowLayer, kCGWindowOwnerPID,
 };
 
-/// Hidden footprint ceiling, MiB. Master (cf87ca5, release, a 1470×956 pt
-/// display at 2x) measured 132.5–135.9 in nine runs of ten, 94 MiB of it
-/// IOSurfaces, and 153.9 in the tenth, where the hidden window held one more
-/// 18 MiB surface (112 MiB). This is ~10% over that high mode. A fix that
-/// releases the hidden window's surfaces lowers it.
-const BUDGET_HIDDEN_MB: f64 = 170.0;
+/// Hidden footprint ceiling, MiB. With the hidden window parked at one point
+/// (`NudgeApp::hide_popup`) four runs measured 38.9–42.3 (release, a
+/// 1470×956 pt display at 2x), IOSurfaces 64 KiB; ~10% over the worst.
+/// Before parking it was ~134, 94 MiB of it IOSurfaces — a hide that keeps
+/// the window's surfaces again fails here.
+const BUDGET_HIDDEN_MB: f64 = 47.0;
 
 /// The same ceiling after [`CYCLES`] timer re-shows, MiB — the state a
-/// long-running instance lives in. Master measured 149.9–170.1 over seven
-/// runs — the spread is whole ~6.5 MiB steps, not noise around one value;
-/// ~10% over the worst.
-const BUDGET_HIDDEN_AFTER_CYCLES_MB: f64 = 188.0;
+/// long-running instance lives in. Four runs measured 56.7–63.0 — the spread
+/// is whole ~6.5 MiB steps, not noise around one value; ~10% over the worst.
+const BUDGET_HIDDEN_AFTER_CYCLES_MB: f64 = 70.0;
 
 /// How much re-shows 2 to [`CYCLES`] may add to the hidden footprint, MiB.
-/// Master moves by whole ~6.5 MiB steps either way between gaps (measured
-/// -5.0 to +6.7 over seven runs), so this admits one step and not two — and
+/// The footprint moves by whole ~6.5 MiB steps either way between gaps
+/// (-5.0 to +6.7 over seven runs before parking, -0.1 to +6.7 over four
+/// with it), so this admits one step and not two — and
 /// not one more window surface (a 2940×1666 BGRA buffer is 18.7 MiB).
 const BUDGET_CYCLE_GROWTH_MB: f64 = 10.0;
 
