@@ -9,8 +9,8 @@
 //!
 //! The expected lists are exact on purpose: a change to how the popup is
 //! hidden or revealed — releasing the window instead of ordering it out,
-//! shrinking it while hidden, re-placing it on every show — has to update
-//! them here, deliberately, rather than slip past.
+//! parking it at another size, re-placing it in another order — has to
+//! update them here, deliberately, rather than slip past.
 //!
 //! Its own test binary, like `macos_manual_open.rs`: the reveal goes through
 //! the platform seam's process-global tray flag.
@@ -60,6 +60,32 @@ fn then(mut a: Vec<ViewportCommand>, b: Vec<ViewportCommand>) -> Vec<ViewportCom
     a
 }
 
+/// The hide: an order-out, and on macOS the shrink that parks the hidden
+/// window (`NudgeApp::hide_popup`). Windows keeps the window's size.
+fn hide() -> Vec<ViewportCommand> {
+    let park = if cfg!(target_os = "macos") {
+        vec![ViewportCommand::InnerSize(vec2(1.0, 1.0))]
+    } else {
+        vec![]
+    };
+    then(vec![ViewportCommand::Visible(false)], park)
+}
+
+/// What a reveal sends before `Visible(true)`: on macOS the parked window
+/// gets its work-area frame back first. On Windows nothing it was placed for
+/// has changed, so nothing is sent.
+fn placement() -> Vec<ViewportCommand> {
+    if cfg!(target_os = "macos") {
+        let work = geometry().work;
+        vec![
+            ViewportCommand::OuterPosition(work.min),
+            ViewportCommand::InnerSize(work.size()),
+        ]
+    } else {
+        vec![]
+    }
+}
+
 #[test]
 fn hide_and_show_emit_exactly_these_viewport_commands() {
     // Ten minutes, so the interval timer cannot emit anything here.
@@ -73,31 +99,24 @@ fn hide_and_show_emit_exactly_these_viewport_commands() {
     // What is left is the launch popup, up and placed.
     assert_eq!(one_frame(&mut harness), vec![], "a visible frame is quiet");
 
-    // Esc: the hide is an order-out of the same window, nothing else — it
-    // keeps its work-area size while hidden.
+    // Esc: the hide orders the window out — and on macOS parks it.
     harness.key_down(egui::Key::Escape);
-    assert_eq!(
-        one_frame(&mut harness),
-        vec![ViewportCommand::Visible(false)],
-        "Esc frame"
-    );
+    assert_eq!(one_frame(&mut harness), hide(), "Esc frame");
     harness.key_up(egui::Key::Escape);
     assert_eq!(one_frame(&mut harness), vec![], "a hidden frame is quiet");
 
-    // A status-item click / hotkey: the reveal orders the window back in. No
-    // placement, because nothing it was placed for has changed — the window
-    // still has the size it was given at launch.
+    // A status-item click / hotkey: the reveal places the window, then
+    // orders it back in.
     nudge_web::platform::set_tray_clicked();
     assert_eq!(
         one_frame(&mut harness),
-        then(vec![ViewportCommand::Visible(true)], focus()),
+        then(
+            then(placement(), vec![ViewportCommand::Visible(true)]),
+            focus()
+        ),
         "manual reveal frame"
     );
 
     harness.key_down(egui::Key::Escape);
-    assert_eq!(
-        one_frame(&mut harness),
-        vec![ViewportCommand::Visible(false)],
-        "second Esc frame"
-    );
+    assert_eq!(one_frame(&mut harness), hide(), "second Esc frame");
 }

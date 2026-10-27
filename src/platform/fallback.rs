@@ -49,7 +49,9 @@ pub fn take_pending_sprite() -> Option<config::SpriteConfig> {
 
 pub fn focus_popup(_ctx: &egui::Context) {}
 
-pub fn tick(_ctx: &egui::Context) {}
+pub fn tick(_ctx: &egui::Context) -> bool {
+    false
+}
 
 pub fn sync_card_backdrop(_ctx: &egui::Context, _frame: &eframe::Frame, _card: egui::Rect) {}
 

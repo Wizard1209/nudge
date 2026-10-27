@@ -480,11 +480,14 @@ pub fn take_pending_sprite() -> Option<config::SpriteConfig> {
 ///
 /// Drains everything the event handlers raised, then either re-arms the wake
 /// for the remaining time — refreshing the status item on the way — or, once
-/// the deadline has passed, raises `TIMER_FIRED` and reveals the window. It
+/// the deadline has passed, raises `TIMER_FIRED` and claims a reveal. It
 /// deliberately does *not* perform the state transition itself: raising the
 /// flag routes expiry into the same `ui()` branch Windows uses, so there is one
 /// definition of what a timer-fired open does.
-pub fn tick(ctx: &egui::Context) {
+///
+/// Returns whether it claimed a reveal ([`reveal`]); the caller then places
+/// the window and orders it in.
+pub fn tick(ctx: &egui::Context) -> bool {
     if QUIT_REQUESTED.swap(false, Ordering::SeqCst) {
         std::process::exit(0);
     }
@@ -503,18 +506,18 @@ pub fn tick(ctx: &egui::Context) {
         // `TriggerSource::Manual` open.
         set_tray_clicked();
         reveal(ctx);
-        return;
+        return true;
     }
 
     if popup_visible {
         // The popup is up: the countdown is paused and `ui()` is driving its
         // own 1 Hz repaint, so there is nothing to schedule here.
-        return;
+        return false;
     }
 
     let mut slot = TIMER.lock().unwrap();
     let Some(timer) = *slot else {
-        return;
+        return false;
     };
 
     // Spec §5's timeline lives in `daisy::frame_at` (pure + tested); this loop
@@ -538,7 +541,7 @@ pub fn tick(ctx: &egui::Context) {
     if !frame.should_fire {
         drop(slot);
         ctx.request_repaint_after(next_wake(&frame, remaining));
-        return;
+        return false;
     }
 
     // Expired. Disarm so one deadline fires once: every close of a
@@ -549,12 +552,14 @@ pub fn tick(ctx: &egui::Context) {
 
     TIMER_FIRED.store(true, Ordering::SeqCst);
     reveal(ctx);
+    true
 }
 
-/// Put the popup back on screen. Shared by the timer expiry and every manual
-/// trigger, so all four entry points have identical side effects.
+/// Claim the popup for a reveal. Shared by the timer expiry and every manual
+/// trigger, so all four entry points have identical side effects. Ordering
+/// the window in is `NudgeApp::logic`'s, after it has placed the window.
 ///
-/// The last `request_repaint` is not redundant: the window is hidden right now,
+/// The `request_repaint` is not redundant: the window is hidden right now,
 /// so `ui()` is being skipped and cannot schedule the frame that will consume
 /// the flag we just raised.
 ///
@@ -571,22 +576,20 @@ pub fn tick(ctx: &egui::Context) {
 /// re-arm it (a manual Esc yields `reset_timer: None`) and the app never
 /// nudges again.
 ///
-/// Claiming visibility at the moment the window is ordered in — which is what
-/// actually happened — closes that window: from here until `hide_popup`,
+/// Claiming visibility in the frame the window is ordered in — which is what
+/// actually happens — closes that window: from here until `hide_popup`,
 /// `tick` parks, so the expiry cannot be consumed by anything other than the
 /// card `ui()` is about to show. An expiry that fell inside a manual reveal is
 /// simply still armed and still overdue when that card closes, and fires then.
 fn reveal(ctx: &egui::Context) {
     // First, while the user's application is still the frontmost one: the
-    // activation two lines down makes it Nudge, whose only window is the
-    // floating popup — not an ordinary-level window, so the read would find
-    // nothing and the rule would fall through to the pointer.
+    // caller's `focus_popup` activation makes it Nudge, whose only window is
+    // the floating popup — not an ordinary-level window, so the read would
+    // find nothing and the rule would fall through to the pointer.
     if let Some(mtm) = MainThreadMarker::new() {
         choose_screen(mtm);
     }
     set_popup_visible(true);
-    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-    focus_popup(ctx);
     ctx.request_repaint();
 }
 

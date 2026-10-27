@@ -54,8 +54,11 @@ pub fn focus_popup(_ctx: &egui::Context) {
 }
 
 /// No-op: the tray thread already polls the deadline on its own message
-/// pump and `ShowWindow`s the popup when it expires.
-pub fn tick(_ctx: &egui::Context) {}
+/// pump and `ShowWindow`s the popup when it expires, so no tick here ever
+/// claims a reveal.
+pub fn tick(_ctx: &egui::Context) -> bool {
+    false
+}
 
 /// No-op: the frosted glass behind the card (spec §2) is a macOS
 /// `NSVisualEffectView`. The Windows counterpart would be a DWM backdrop, and
