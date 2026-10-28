@@ -329,11 +329,11 @@ function trayImage(frame: number | DaisyFrame) {
   const img = nativeImage.createEmpty();
   if (process.platform === "darwin") {
     for (const scale of [1, 2]) {
-      img.addRepresentation({ scaleFactor: scale, buffer: buildTrayIcon(frame, MAC_TRAY_ICON_POINTS * scale) });
+      img.addRepresentation({ scaleFactor: scale, buffer: buildTrayIcon(frame, MAC_TRAY_ICON_POINTS * scale, { mark: true }) });
     }
   } else {
     const px = Math.round(WIN_TRAY_ICON_PX * screen.getPrimaryDisplay().scaleFactor);
-    img.addRepresentation({ scaleFactor: 1, buffer: buildTrayIcon(frame, px) });
+    img.addRepresentation({ scaleFactor: 1, buffer: buildTrayIcon(frame, px, { mark: true }) });
   }
   return img;
 }

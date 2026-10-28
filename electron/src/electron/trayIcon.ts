@@ -186,6 +186,20 @@ export function frameSvg(frame: DaisyFrame): string {
   return editElements(DAISY_SVG, edits);
 }
 
+/**
+ * The prototype's own mark, not spec §5: one orbit tilted up to the right
+ * with its electron at the upper end, in Electron's light cyan. Drawn over
+ * the petals so it stays put while they fall. In the daisy's 64-unit space.
+ */
+const ELECTRON_MARK =
+  '<ellipse cx="32" cy="32" rx="30" ry="11" transform="rotate(-30 32 32)" fill="none" stroke="#9feaf9" stroke-width="3.2"/>' +
+  '<circle cx="58" cy="17" r="4.5" fill="#9feaf9"/>';
+
+export interface TrayIconOptions {
+  /** Draw ELECTRON_MARK over the daisy. */
+  mark?: boolean;
+}
+
 // The daisy has no text, and resvg otherwise loads every system font on
 // each parse: some 140 ms on macOS for an 18 px icon.
 function render(svg: string, size: number): Buffer {
@@ -207,14 +221,19 @@ const cache = new Map<string, Buffer>();
  * (0..1) for snapshots, or a full DaisyFrame when the caller wants the
  * in-flight falling petal too.
  */
-export function buildTrayIcon(input: number | DaisyFrame, size = REFERENCE_SIZE): Buffer {
+export function buildTrayIcon(
+  input: number | DaisyFrame,
+  size = REFERENCE_SIZE,
+  { mark = false }: TrayIconOptions = {},
+): Buffer {
   const frame: DaisyFrame =
     typeof input === "number" ? { stable: visiblePetals(input) } : input;
-  if (frame.falling) return render(frameSvg(frame), size);
-  const key = `${size}:${frame.stable.join(",")}`;
+  const svg = () => (mark ? frameSvg(frame).replace(/<\/svg>\s*$/, `${ELECTRON_MARK}</svg>`) : frameSvg(frame));
+  if (frame.falling) return render(svg(), size);
+  const key = `${size}:${mark ? "mark:" : ""}${frame.stable.join(",")}`;
   let png = cache.get(key);
   if (!png) {
-    png = render(frameSvg(frame), size);
+    png = render(svg(), size);
     cache.set(key, png);
   }
   return png;
