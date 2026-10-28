@@ -2,20 +2,19 @@
 //!
 //! Three things summon the popup by hand on macOS — a left click on the
 //! menu-bar status item, the "Show Nudge" menu entry, and the global hotkey —
-//! and all three converge on one edge: `platform::set_tray_clicked`, raised
-//! from `platform::tick`, consumed by `App::ui`. This test drives that edge
-//! directly, so the half of the path that lives in the app is covered without a
-//! window server, a status item, or a keystroke.
+//! and all three raise one flag, `platform::request_manual_open`, which
+//! `platform::tick` turns into a reveal in `App::logic` and an edge `App::ui`
+//! consumes. This test raises that flag, so the half of the path that lives
+//! in the app is covered without a window server, a status item, or a
+//! keystroke.
 //!
 //! What it cannot cover, and what `tests/macos_native.rs` and a real unlocked
 //! screen are still for: that AppKit delivers the click, that Carbon delivers
 //! the hotkey, and that the revealed window actually takes the keyboard.
-//! `platform::macos`'s own unit tests cover the middle link — `tick` turning a
-//! handler's flag into this edge.
 //!
 //! Its own test binary for the same reason `macos_timer.rs` is: the platform
-//! seam holds `TRAY_CLICKED` and the popup-visible flag in process globals, so
-//! a second harness in the same process could consume this one's edge.
+//! seam holds its flags and the popup-visible flag in process globals, so a
+//! second harness in the same process could consume this one's edge.
 
 #![cfg(target_os = "macos")]
 
@@ -51,7 +50,7 @@ fn a_manual_trigger_brings_a_dismissed_card_back() {
         "Esc dismissed the card, and the ten-minute timer will not bring it back"
     );
 
-    nudge_web::platform::set_tray_clicked();
+    nudge_web::platform::request_manual_open();
     harness.run();
     assert_eq!(
         harness.get_all_by_role(Role::TextInput).count(),

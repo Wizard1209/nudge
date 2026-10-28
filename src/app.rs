@@ -40,6 +40,11 @@ const FOCUS_FIELD_RADIUS: u8 = 8;
 #[cfg(target_os = "macos")]
 const FOCUS_RETRY_WINDOW: std::time::Duration = std::time::Duration::from_millis(500);
 
+/// The hidden window's size, points (`NudgeApp::hide_popup`). egui-winit
+/// clamps an `InnerSize` to at least one point a side.
+#[cfg(target_os = "macos")]
+const HIDDEN_WINDOW_SIZE: egui::Vec2 = egui::vec2(1.0, 1.0);
+
 /// Opacity of the card's fill. Two values, because the fill has two different
 /// jobs depending on whether the platform can put a frosted backdrop behind
 /// the window (spec §2).
@@ -179,6 +184,11 @@ pub struct NudgeApp {
     /// The sprite painted over the card, when the config asks for one and
     /// its PNG passed the check (spec §10).
     sprite: Option<LoadedSprite>,
+    /// Textures of sprites replaced while the popup was hidden, dropped by
+    /// the first `ui()` that starts with the popup up. eframe applies a
+    /// frame's texture frees only when it paints that frame, and it paints
+    /// no hidden one.
+    retired_textures: Vec<egui::TextureHandle>,
     /// A sprite change waiting for the popup to be hidden (spec §10). The
     /// config watcher parks it on the platform seam; the kittest tier sets
     /// it directly (`set_pending_sprite`).
@@ -190,6 +200,17 @@ pub struct NudgeApp {
     geometry_override: Option<ScreenGeometry>,
     /// What the window was last placed for (`place_window`).
     placed: Option<Placement>,
+    /// The hidden window has been shrunk to [`HIDDEN_WINDOW_SIZE`]
+    /// (`hide_popup`) and `place_window` leaves it alone until
+    /// `restore_window`.
+    #[cfg(target_os = "macos")]
+    window_shrunk: bool,
+    /// The pass `hide_popup` shrank the window in; the first `logic` of a
+    /// later pass orders it out. One pass late, because AppKit releases the
+    /// work-area-sized presentation surfaces only while the window is on
+    /// screen. A reveal drops it (`restore_window`).
+    #[cfg(target_os = "macos")]
+    order_out_after_pass: Option<u64>,
     /// Where the card and the sprite go, in window coordinates. `None`
     /// while there is no screen to lay out on: then the card sits in the
     /// window as a box (`sprite::card_in_box`).
@@ -274,10 +295,15 @@ impl NudgeApp {
             error_message: None,
             card_rect: None,
             sprite: None,
+            retired_textures: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             pending_sprite: None,
             geometry_override: None,
             placed: None,
+            #[cfg(target_os = "macos")]
+            window_shrunk: false,
+            #[cfg(target_os = "macos")]
+            order_out_after_pass: None,
             layout: None,
             #[cfg(target_arch = "wasm32")]
             pill_rect: None,
@@ -322,10 +348,11 @@ impl NudgeApp {
             return;
         };
         self.pending_sprite = None;
+        if let Some(tex) = self.sprite.take().and_then(|s| s.tex) {
+            self.retired_textures.push(tex);
+        }
         // A PNG that fails the check counts as off (§10): say why, show the
         // plain card.
-        // TODO: dropping the old handle queues a free that eframe discards
-        // with this hidden frame, so the old texture stays on the GPU.
         self.sprite = match crate::sprite_png::load_sprite(&cfg) {
             Some(Ok(decoded)) => Some(LoadedSprite::decoded(decoded, cfg)),
             Some(Err(reason)) => {
@@ -346,13 +373,18 @@ impl NudgeApp {
     }
 
     /// Make the window the work area of the monitor spec §1 chose for it
-    /// and lay the card and the sprite out in it. Runs every frame, hidden ones
-    /// included, so the window is already right when it is revealed; it
-    /// only talks to the OS when something it was placed for has changed.
+    /// and lay the card and the sprite out in it. Runs every frame; it only
+    /// talks to the OS when something it was placed for has changed, and not
+    /// at all while the hidden window is shrunk — `restore_window` places it
+    /// again before it is ordered back in.
     ///
     /// With no screen to read — the kittest harness, the browser canvas —
     /// the card stays in the window as a box.
     fn place_window(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        #[cfg(target_os = "macos")]
+        if self.window_shrunk {
+            return;
+        }
         #[cfg(not(target_arch = "wasm32"))]
         let screen = self
             .geometry_override
@@ -381,10 +413,10 @@ impl NudgeApp {
         }
 
         // TODO: a second monitor is not shielded.
-        // TODO: invalidateShadow() after a resize if AppKit's cached shadow
-        // goes stale (check in the guest).
-        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(geometry.work.min));
+        // Size first: winit converts the position to AppKit's bottom-left
+        // origin with the window's current height.
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(geometry.work.size()));
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(geometry.work.min));
 
         let (card_width, placement) = match &self.sprite {
             Some(s) => (
@@ -399,6 +431,32 @@ impl NudgeApp {
             placement,
         ));
         self.placed = Some(now);
+    }
+
+    /// Give a shrunk window its work-area frame back, before `logic` orders
+    /// it in. Only macOS shrinks the window; elsewhere this is `place_window`.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn restore_window(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        #[cfg(target_os = "macos")]
+        {
+            self.window_shrunk = false;
+            self.order_out_after_pass = None;
+        }
+        self.place_window(ctx, frame);
+    }
+
+    /// The order-out `hide_popup` left for a later pass, once one has come.
+    #[cfg(target_os = "macos")]
+    fn order_out_if_owed(&mut self, ctx: &egui::Context) {
+        let Some(pass) = self.order_out_after_pass else {
+            return;
+        };
+        if ctx.cumulative_pass_nr() > pass {
+            self.order_out_after_pass = None;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        } else {
+            ctx.request_repaint();
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -589,6 +647,11 @@ impl NudgeApp {
         }
     }
 
+    /// Close the popup (spec §4) and take the window off screen. On macOS a
+    /// placed window is shrunk to one point in this pass and ordered out in
+    /// the next: AppKit resizes the presentation surfaces only of a window
+    /// that is still on screen, and the pass in between paints one
+    /// transparent 1×1 frame nobody sees.
     // `ctx` is only needed to hide the native window; the browser build has
     // none.
     #[cfg_attr(target_arch = "wasm32", expect(unused_variables))]
@@ -677,12 +740,32 @@ impl NudgeApp {
         // back away.
         self.card_rect = None;
 
+        // macOS: shrink the hidden window to one point, so neither the GL
+        // drawable nor the window server keeps work-area-sized buffers for
+        // the whole interval. Only a window `place_window` placed: that is
+        // the one `restore_window` knows how to give its frame back. Its
+        // order-out then waits a pass (`order_out_after_pass`).
+        #[cfg(target_os = "macos")]
+        let order_out_now = if self.placed.take().is_some() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(HIDDEN_WINDOW_SIZE));
+            self.window_shrunk = true;
+            self.order_out_after_pass = Some(ctx.cumulative_pass_nr());
+            ctx.request_repaint();
+            false
+        } else {
+            true
+        };
+        #[cfg(all(not(target_os = "macos"), not(target_arch = "wasm32")))]
+        let order_out_now = true;
+
         // Tell egui the viewport is hidden. Without this, egui's event
         // loop keeps pumping/scheduling for the "visible" viewport even
         // when we SW_HIDE the HWND directly — winit then burns a full
         // core on the main thread despite update() never being called.
         #[cfg(not(target_arch = "wasm32"))]
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        if order_out_now {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
 
         // Windows-only: hide the HWND directly as well. The viewport command
         // above is what stops winit burning a core; this is what the tray
@@ -977,11 +1060,25 @@ impl eframe::App for NudgeApp {
     /// anything that has to notice the interval elapsing belongs here.
     /// Drawing, and the state transitions that depend on what was drawn,
     /// stay in `ui()`.
+    ///
+    /// A reveal (macOS: the timer, the status item, the hotkey) is ordered in
+    /// here, because `ui()` does not run until the window is visible: placed
+    /// first, then shown and given the keyboard. `ui()` makes the
+    /// `show_popup` transition on the next frame.
     #[cfg(not(target_arch = "wasm32"))]
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        crate::platform::tick(ctx);
+        let revealing = crate::platform::tick(ctx);
         self.apply_pending_sprite();
-        self.place_window(ctx, frame);
+        if revealing {
+            // Drops an order-out `hide_popup` still owes.
+            self.restore_window(ctx, frame);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            crate::platform::focus_popup(ctx);
+        } else {
+            #[cfg(target_os = "macos")]
+            self.order_out_if_owed(ctx);
+            self.place_window(ctx, frame);
+        }
     }
 
     fn ui(&mut self, root_ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -990,6 +1087,12 @@ impl eframe::App for NudgeApp {
         // drive everything off its context exactly as the old `update` did.
         let ctx_owned = root_ui.ctx().clone();
         let ctx = &ctx_owned;
+
+        // A frame that starts with the popup up is painted, so the frees in
+        // it are applied (`retired_textures`).
+        if self.popup_visible {
+            self.retired_textures.clear();
+        }
 
         // === First frame setup ===
         if self.center_once {
