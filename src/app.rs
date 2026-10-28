@@ -1110,20 +1110,7 @@ impl eframe::App for NudgeApp {
                     self.hwnd = Some(hwnd_val);
                     crate::platform::note_window_handle(hwnd_val);
 
-                    // Exclude window from ALT+TAB by applying WS_EX_TOOLWINDOW
-                    // (also hides from taskbar as a side effect; with_taskbar(false)
-                    // already handles the taskbar but tool-window style is what
-                    // reliably hides from ALT+TAB).
-                    unsafe {
-                        use windows::Win32::Foundation::HWND;
-                        use windows::Win32::UI::WindowsAndMessaging::{
-                            GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW, WS_EX_TOOLWINDOW,
-                        };
-                        let h = HWND(hwnd_val as *mut _);
-                        let ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
-                        let _ =
-                            SetWindowLongPtrW(h, GWL_EXSTYLE, ex | (WS_EX_TOOLWINDOW.0 as isize));
-                    }
+                    crate::platform::keep_tool_window(hwnd_val);
                 }
             }
 

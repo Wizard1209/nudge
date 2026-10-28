@@ -6,8 +6,9 @@
 //! out on (spec §1), which `tray_bridge::force_foreground` picks at show time.
 
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicIsize, Ordering};
 
-use ::windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, TRUE};
+use ::windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, TRUE, WPARAM};
 use ::windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
 };
@@ -15,7 +16,9 @@ use ::windows::Win32::UI::Shell::{
     ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP, ABM_GETAUTOHIDEBAREX, APPBARDATA, SHAppBarMessage,
 };
 use ::windows::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, GetForegroundWindow, GetWindowRect, MONITORINFOF_PRIMARY,
+    CallWindowProcW, GWL_EXSTYLE, GWLP_WNDPROC, GetCursorPos, GetForegroundWindow,
+    GetWindowLongPtrW, GetWindowRect, MONITORINFOF_PRIMARY, STYLESTRUCT, SetWindowLongPtrW,
+    WM_STYLECHANGING, WNDPROC, WS_EX_TOOLWINDOW,
 };
 use ::windows::core::BOOL;
 use eframe::egui;
@@ -50,6 +53,35 @@ pub fn start_on_event_loop(_ctx: &egui::Context) {}
 /// `tray_bridge::store_hwnd` under a name that doesn't presume a handle.
 pub fn note_window_handle(handle: isize) {
     crate::tray_bridge::store_hwnd(handle);
+}
+
+/// winit's window procedure, which `keep_tool_window` chains to.
+static WINIT_WNDPROC: AtomicIsize = AtomicIsize::new(0);
+
+/// Keep `WS_EX_TOOLWINDOW` on the popup for its whole life. winit rewrites
+/// the extended style wholesale on every show and hide, which drops the bit.
+/// The bit keeps the popup out of Alt+Tab, and it is what Chromium-based apps
+/// beneath read to not count the transparent, screen-sized popup as covering
+/// them — without it they stop painting while it is up and show black.
+pub fn keep_tool_window(handle: isize) {
+    unsafe extern "system" fn proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+        if msg == WM_STYLECHANGING && w.0 as i32 == GWL_EXSTYLE.0 {
+            // SAFETY: for GWL_EXSTYLE, `l` points at the STYLESTRUCT being applied.
+            let change = unsafe { &mut *(l.0 as *mut STYLESTRUCT) };
+            change.styleNew |= WS_EX_TOOLWINDOW.0;
+        }
+        // SAFETY: the value `keep_tool_window` stored is winit's WNDPROC.
+        let winit: WNDPROC = unsafe { std::mem::transmute(WINIT_WNDPROC.load(Ordering::Relaxed)) };
+        unsafe { CallWindowProcW(winit, h, msg, w, l) }
+    }
+    let hwnd = HWND(handle as *mut _);
+    // SAFETY: `hwnd` is the live popup window, and this runs on its thread.
+    unsafe {
+        let winit = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, proc as *const () as isize);
+        WINIT_WNDPROC.store(winit, Ordering::Relaxed);
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex | WS_EX_TOOLWINDOW.0 as isize);
+    }
 }
 
 /// Make the popup the foreground window. Reads the stored handle itself so
@@ -181,7 +213,10 @@ pub fn choose_screen(popup: HWND) {
 /// egui multiplies a viewport command's points by on the way back out.
 // TODO: a monitor with a different scale factor from the one the window is
 // on — the conversion uses the window's current factor, not the target's.
-pub fn screen_geometry(ctx: &egui::Context, _frame: &eframe::Frame) -> Option<ScreenGeometry> {
+pub fn screen_geometry(ctx: &egui::Context, frame: &eframe::Frame) -> Option<ScreenGeometry> {
+    use raw_window_handle::HasWindowHandle;
+    // No native window, as under a test harness: no screen to lay out on.
+    frame.window_handle().ok()?;
     let (monitor, work) = {
         let mut chosen = CHOSEN_SCREEN.lock().unwrap();
         if chosen.is_none() {
