@@ -11,7 +11,10 @@ fn main() {
         .set("FileDescription", "Nudge")
         .set("OriginalFilename", "nudge.exe")
         .set("InternalName", "nudge")
-        .set("LegalCopyright", "Copyright (c) 2026 Wizard1209. MIT License.");
+        .set(
+            "LegalCopyright",
+            "Copyright (c) 2026 Wizard1209. MIT License.",
+        );
     // TODO: the daisy as the exe icon — needs an .ico rasterised from
     // assets/daisy.svg (16/32/48/256 px).
     res.compile().expect("compiling the Windows resource file");
