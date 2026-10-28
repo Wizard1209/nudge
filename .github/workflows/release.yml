@@ -71,13 +71,50 @@ jobs:
   release:
     needs: [e2e-full, build-macos]
     runs-on: ubuntu-latest
+    # `actions: read` lets SignPath fetch the unsigned exe from this run.
+    permissions:
+      contents: write
+      actions: read
     steps:
       - uses: actions/checkout@v7
       - run: sudo apt-get update && sudo apt-get install -y mingw-w64
       - run: rustup target add x86_64-pc-windows-gnu
-      - uses: Swatinem/rust-cache@v2
+      # No rust-cache here: SignPath's origin verification wants the signed
+      # exe built from the repository alone, not from a previous run's cache.
       - run: cargo build --release --bin nudge --target x86_64-pc-windows-gnu
       - run: cp target/x86_64-pc-windows-gnu/release/nudge.exe "nudge-${{ github.ref_name }}-x86_64-windows.exe"
+      # Signing runs once the SignPath project exists: the repository
+      # variable SIGNPATH_ORGANIZATION_ID and the secret SIGNPATH_API_TOKEN.
+      # Without them the release ships the exe unsigned.
+      - name: Version without the tag's v
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - name: Upload unsigned exe for signing
+        id: unsigned
+        if: vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: actions/upload-artifact@v7
+        with:
+          path: nudge-${{ github.ref_name }}-x86_64-windows.exe
+          archive: false
+      - name: Sign with SignPath
+        if: vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: nudge
+          signing-policy-slug: release-signing
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          # The approval is a person clicking in SignPath's UI.
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed
+          skip-decompress: true
+          # The artifact configuration pins the exe's VERSIONINFO to this.
+          parameters: |
+            version: "${{ steps.ver.outputs.version }}"
+      - name: Replace the exe with the signed one
+        if: vars.SIGNPATH_ORGANIZATION_ID != ''
+        run: mv "signed/nudge-${{ github.ref_name }}-x86_64-windows.exe" .
       - uses: actions/download-artifact@v4
         with:
           name: macos-dmg
@@ -88,6 +125,10 @@ jobs:
             nudge-${{ github.ref_name }}-macos-universal.dmg
           generate_release_notes: true
           body: |
+            ### Windows
+
+            Run the exe; there is no installer. [Code signing policy](https://github.com/Wizard1209/nudge#code-signing-policy)
+
             ### macOS
 
             The `.app` inside the DMG carries an ad-hoc signature, not a
