@@ -684,9 +684,9 @@ consistency but have no active UI effect:
 ## 10. Sprite overlay
 
 An optional PNG — a character, a mascot — drawn in front of the popup card.
-Both implementations follow this section. Pending on Windows: the window
-covering the work area (§1), drawing the sprite at all (the card stays plain
-and `card_width` is ignored there today) and `Browse…`.
+Both implementations follow this section. Pending on Windows: laying the
+popup out for a monitor whose scale factor differs from the one the window
+was last on.
 
 ### Config
 
@@ -736,7 +736,7 @@ sprite were off.
   silhouette, so on macOS the sprite's opaque pixels cast one the way the
   card does. On Windows the Acrylic material §2 mentions needs a window
   that is not transparent, so it is off while a sprite is on and the card's
-  fill carries the 95% alone; the Windows port of the shield is pending.
+  fill carries the 95% alone.
 
 ### Position on screen
 

@@ -1,15 +1,20 @@
-//! Windows backend: `tray_bridge`, verbatim.
+//! Windows backend: mostly `tray_bridge`, re-exported.
 //!
-//! This is the shipped product, and the port cannot test it, so nothing in
-//! here may add or reorder behaviour — every function is either a re-export
-//! or a one-line adapter around the identical `tray_bridge` call the app made
-//! before the seam existed.
-//!
-//! Only two entry points needed adapting, both because their signatures
-//! carried Win32 types (`HWND`) that must not cross the seam. The adaptation
-//! lives here rather than in `tray_bridge` so the tray module keeps its own
-//! shape.
+//! The tray thread there owns the timer, the hotkey and the popup wakeup.
+//! What lives here is what the seam needs on top: adapters for the entry
+//! points whose signatures carried `HWND`, and the screen the popup is laid
+//! out on (spec §1), which `tray_bridge::force_foreground` picks at show time.
 
+use std::sync::Mutex;
+
+use ::windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, TRUE};
+use ::windows::Win32::Graphics::Gdi::{
+    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
+};
+use ::windows::Win32::UI::WindowsAndMessaging::{
+    GetCursorPos, GetForegroundWindow, GetWindowRect, MONITORINFOF_PRIMARY,
+};
+use ::windows::core::BOOL;
 use eframe::egui;
 
 use crate::config;
@@ -49,7 +54,7 @@ pub fn note_window_handle(handle: isize) {
 /// the whole job here (macOS needs a viewport command as well).
 pub fn focus_popup(_ctx: &egui::Context) {
     if let Some(hwnd) = crate::tray_bridge::load_hwnd() {
-        crate::tray_bridge::force_foreground(::windows::Win32::Foundation::HWND(hwnd as *mut _));
+        crate::tray_bridge::force_foreground(HWND(hwnd as *mut _));
     }
 }
 
@@ -66,21 +71,103 @@ pub fn tick(_ctx: &egui::Context) -> bool {
 /// has always been.
 pub fn sync_card_backdrop(_ctx: &egui::Context, _frame: &eframe::Frame, _card: egui::Rect) {}
 
-/// No screen to report on Windows yet, so the popup keeps its 520×320 box at
-/// the position `main.rs` computed at creation; the card sits in the box as
-/// it always has. The spec's click shield (§1) is pending here, and so is
-/// the sprite (§10): without a layout there is no sprite rect, so the
-/// texture `main.rs` uploads is never drawn and `card_width` is ignored.
-// TODO: GetForegroundWindow → MonitorFromWindow + GetMonitorInfoW rcMonitor/rcWork,
-// in points: the monitor of the front window, else the cursor's (spec §1, which monitor).
-// The rule itself is `crate::screen_pick::pick_screen` (tested, every target):
-// feed it the foreground window's rect (GetWindowRect), the cursor
-// (GetCursorPos) and every monitor (EnumDisplayMonitors), all in virtual-screen
-// points, and read the chosen monitor's rcMonitor/rcWork back — at show time,
-// before the popup takes the foreground, the way `platform::macos::reveal` does.
-// TODO: sprite drawing pending — no layout without screen geometry.
-pub fn screen_geometry(_ctx: &egui::Context, _frame: &eframe::Frame) -> Option<ScreenGeometry> {
-    None
+/// The monitor `choose_screen` picked for the last show: its `rcMonitor` and
+/// `rcWork`, in physical pixels of the virtual screen.
+static CHOSEN_SCREEN: Mutex<Option<(RECT, RECT)>> = Mutex::new(None);
+
+/// Every monitor's `rcMonitor` and `rcWork`, the primary first — the order
+/// `screen_pick::pick_screen` falls back on.
+fn monitors() -> Vec<(RECT, RECT)> {
+    unsafe extern "system" fn push(m: HMONITOR, _: HDC, _: *mut RECT, out: LPARAM) -> BOOL {
+        // SAFETY: `out` is the `&mut Vec` `monitors` passed, alive for the call.
+        let out = unsafe { &mut *(out.0 as *mut Vec<(RECT, RECT)>) };
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if unsafe { GetMonitorInfoW(m, &mut info) }.as_bool() {
+            let entry = (info.rcMonitor, info.rcWork);
+            if info.dwFlags & MONITORINFOF_PRIMARY != 0 {
+                out.insert(0, entry);
+            } else {
+                out.push(entry);
+            }
+        }
+        TRUE
+    }
+    let mut out: Vec<(RECT, RECT)> = Vec::new();
+    // SAFETY: the callback only runs inside this call, while `out` is alive.
+    unsafe {
+        let _ = EnumDisplayMonitors(None, None, Some(push), LPARAM(&mut out as *mut _ as isize));
+    }
+    out
+}
+
+fn px_rect(r: RECT) -> egui::Rect {
+    egui::Rect::from_min_max(
+        egui::pos2(r.left as f32, r.top as f32),
+        egui::pos2(r.right as f32, r.bottom as f32),
+    )
+}
+
+/// Pick the popup's monitor (spec §1) and keep it for `screen_geometry`.
+/// Called at show time, before the popup takes the foreground, so the
+/// foreground window is still the one the user was in. With the popup
+/// itself in front — a re-show while visible — the last choice stands.
+pub fn choose_screen(popup: HWND) {
+    let screens = monitors();
+    if screens.is_empty() {
+        return;
+    }
+    // SAFETY: plain Win32 reads into locals.
+    let (fg, pointer) = unsafe {
+        let mut p = POINT::default();
+        let _ = GetCursorPos(&mut p);
+        (GetForegroundWindow(), egui::pos2(p.x as f32, p.y as f32))
+    };
+    let mut chosen = CHOSEN_SCREEN.lock().unwrap();
+    if fg == popup && chosen.is_some() {
+        return;
+    }
+    let front = (!fg.0.is_null() && fg != popup)
+        .then(|| {
+            let mut r = RECT::default();
+            // SAFETY: `fg` came from the OS just now; a stale handle fails the call.
+            unsafe { GetWindowRect(fg, &mut r) }
+                .ok()
+                .map(|_| px_rect(r))
+        })
+        .flatten();
+    let rects: Vec<egui::Rect> = screens.iter().map(|(m, _)| px_rect(*m)).collect();
+    let i = crate::screen_pick::pick_screen(front, pointer, &rects);
+    *chosen = screens.get(i).copied();
+}
+
+/// The monitor `choose_screen` picked, in points; the primary until the first
+/// show. Pixels over the window's `pixels_per_point`, because that is what
+/// egui multiplies a viewport command's points by on the way back out.
+// TODO: a monitor with a different scale factor from the one the window is
+// on — the conversion uses the window's current factor, not the target's.
+pub fn screen_geometry(ctx: &egui::Context, _frame: &eframe::Frame) -> Option<ScreenGeometry> {
+    let (monitor, work) = {
+        let mut chosen = CHOSEN_SCREEN.lock().unwrap();
+        if chosen.is_none() {
+            *chosen = monitors().first().copied();
+        }
+        (*chosen)?
+    };
+    let ppp = ctx.pixels_per_point();
+    let points = |r: RECT| {
+        let r = px_rect(r);
+        egui::Rect::from_min_max(
+            (r.min.to_vec2() / ppp).to_pos2(),
+            (r.max.to_vec2() / ppp).to_pos2(),
+        )
+    };
+    Some(ScreenGeometry {
+        monitor: points(monitor),
+        work: points(work),
+    })
 }
 
 /// No-op on Windows: the shortcut vocabulary here is words (`Ctrl+Shift+A`),
