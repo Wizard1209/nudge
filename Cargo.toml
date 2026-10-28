@@ -40,8 +40,10 @@ raw-window-handle = "0.6"
 # The settings window's `Browse…` for the sprite PNG: one `pick_file` call on
 # the native open panel. No default features — those are the Linux portal
 # backends, and this is not built there. On macOS its objc2 0.6 line is the
-# one arboard already pulls in, so this adds no second objc2 tree.
-rfd = { version = "0.15", default-features = false, features = ["common-controls-v6"] }
+# one arboard already pulls in, so this adds no second objc2 tree. Not
+# `common-controls-v6`: it imports TaskDialogIndirect, which only comctl32 v6
+# exports, and without a manifest selecting v6 the loader refuses the exe.
+rfd = { version = "0.15", default-features = false }
 # The tray daisy is `assets/daisy.svg`, rasterised at the host's pixel size
 # (spec §5). No default features: those are text shaping, system fonts,
 # svgz and embedded raster images, none of which a 16-path icon uses — paths,
