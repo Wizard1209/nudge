@@ -112,6 +112,7 @@ pub fn load_hwnd() -> Option<isize> {
 /// current foreground thread's. While attached, Win32 treats SetForegroundWindow
 /// as if it came from the foreground process and grants the activation.
 pub fn force_foreground(hwnd: HWND) {
+    crate::platform::choose_screen(hwnd);
     unsafe {
         let _ = ShowWindow(hwnd, SW_RESTORE);
 

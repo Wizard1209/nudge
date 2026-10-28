@@ -18,9 +18,7 @@ mod nudge_state;
 #[cfg(not(target_arch = "wasm32"))]
 mod platform;
 mod recorder;
-// Only the macOS backend feeds it so far; the Windows port lifts this cfg
-// (`platform::windows::screen_geometry`).
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 mod screen_pick;
 #[cfg(not(target_arch = "wasm32"))]
 mod settings_app;
@@ -455,9 +453,9 @@ fn main() -> eframe::Result {
         }
     };
 
-    // The window's creation size. Windows also positions it here, once, from
-    // the primary monitor; on macOS `NudgeApp::place_window` makes it the
-    // work area on the first frame (spec §1).
+    // The window's creation size. On both platforms `NudgeApp::place_window`
+    // makes it the work area on the first frame (spec §1); Windows also
+    // positions it here, so the box is centred until then.
     let win_size = [
         nudge_state::POPUP_SIZE.0 as f32,
         nudge_state::POPUP_SIZE.1 as f32,

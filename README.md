@@ -155,7 +155,7 @@ the running app immediately via a file watcher; a sprite change is applied
 the next time the popup is hidden.
 
 The sprite group has three rows with the five fields of the `sprite` block;
-`Browse…` picks the PNG with the system's file dialog (macOS). `Save` refuses
+`Browse…` picks the PNG with the system's file dialog. `Save` refuses
 an enabled sprite whose file is missing, not a PNG, or has no transparent
 background, and says which.
 
