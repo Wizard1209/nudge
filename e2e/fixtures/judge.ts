@@ -194,7 +194,7 @@ export const PROMPT_SETTINGS_HOTKEY_ROW =
 
 /** Use with `region: SETTINGS_REGION`. Spec §9: the fields and their labels. */
 export const PROMPT_SETTINGS_FIELDS =
-    "There is a text field labelled 'Default interval (min):' containing '10', and below it a checkbox whose label reads 'Launch with Windows'."
+    "There is a text field labelled 'Default interval' containing '10', with 'min' right after the field, and below it a checkbox whose label reads 'Launch with Windows'."
 
 /**
  * Use with `region: SETTINGS_REGION`. Every glyph in the vocabulary line

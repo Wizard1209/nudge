@@ -116,6 +116,36 @@ past Gatekeeper. The alternative is one trip through System Settings › Privacy
 Nudge runs as a menu-bar agent: no Dock icon, no Cmd-Tab entry, and the daisy
 in the menu bar is where Settings and Quit live.
 
+## Installing on Windows
+
+Download `nudge-v<version>-x86_64-windows.exe` from the Releases page, put it
+in any folder and run it. There is no installer: the exe is the whole program,
+and it lives in the notification area.
+
+## Uninstalling
+
+1. In Settings, turn off launch at login. This removes the `HKCU\…\Run\Nudge`
+   value on Windows and the LaunchAgent plist on macOS.
+2. Quit from the tray menu.
+3. Delete the exe, or `Nudge.app` from Applications.
+4. Optionally delete the data: `%USERPROFILE%\Documents\Nudge` on Windows;
+   `~/Documents/Nudge` and `~/Library/Application Support/Nudge` on macOS.
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io),
+certificate by [SignPath Foundation](https://signpath.org).
+
+- Committers and reviewers: [Wizard1209](https://github.com/Wizard1209)
+- Approvers: [Wizard1209](https://github.com/Wizard1209)
+
+Every signed release is built by the release workflow in this repository on
+GitHub-hosted runners and approved by hand before it is signed.
+
+Privacy policy: this program will not transfer any information to other
+networked systems unless specifically requested by the user or the person
+installing or operating it. The journal and the settings stay in local files.
+
 ## Settings
 
 The settings window opens from the tray menu (`Settings`) and edits the same
