@@ -11,6 +11,9 @@ use ::windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, TRUE};
 use ::windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
 };
+use ::windows::Win32::UI::Shell::{
+    ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP, ABM_GETAUTOHIDEBAREX, APPBARDATA, SHAppBarMessage,
+};
 use ::windows::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, GetForegroundWindow, GetWindowRect, MONITORINFOF_PRIMARY,
 };
@@ -72,10 +75,10 @@ pub fn tick(_ctx: &egui::Context) -> bool {
 pub fn sync_card_backdrop(_ctx: &egui::Context, _frame: &eframe::Frame, _card: egui::Rect) {}
 
 /// The monitor `choose_screen` picked for the last show: its `rcMonitor` and
-/// `rcWork`, in physical pixels of the virtual screen.
+/// `shield_area`, in physical pixels of the virtual screen.
 static CHOSEN_SCREEN: Mutex<Option<(RECT, RECT)>> = Mutex::new(None);
 
-/// Every monitor's `rcMonitor` and `rcWork`, the primary first — the order
+/// Every monitor's `rcMonitor` and `shield_area`, the primary first — the order
 /// `screen_pick::pick_screen` falls back on.
 fn monitors() -> Vec<(RECT, RECT)> {
     unsafe extern "system" fn push(m: HMONITOR, _: HDC, _: *mut RECT, out: LPARAM) -> BOOL {
@@ -86,7 +89,7 @@ fn monitors() -> Vec<(RECT, RECT)> {
             ..Default::default()
         };
         if unsafe { GetMonitorInfoW(m, &mut info) }.as_bool() {
-            let entry = (info.rcMonitor, info.rcWork);
+            let entry = (info.rcMonitor, shield_area(info.rcMonitor, info.rcWork));
             if info.dwFlags & MONITORINFOF_PRIMARY != 0 {
                 out.insert(0, entry);
             } else {
@@ -101,6 +104,36 @@ fn monitors() -> Vec<(RECT, RECT)> {
         let _ = EnumDisplayMonitors(None, None, Some(push), LPARAM(&mut out as *mut _ as isize));
     }
     out
+}
+
+/// What an auto-hidden taskbar keeps on screen: the strip the pointer
+/// reveals it from.
+const AUTOHIDE_STRIP_PX: i32 = 2;
+
+/// The part of a monitor the popup may cover. `rcWork` leaves out a docked
+/// taskbar but not an auto-hidden one, so each auto-hide edge gives up its
+/// reveal strip — the taskbar stays reachable above the popup (spec §1).
+fn shield_area(monitor: RECT, work: RECT) -> RECT {
+    let mut area = work;
+    for edge in [ABE_LEFT, ABE_TOP, ABE_RIGHT, ABE_BOTTOM] {
+        let mut bar = APPBARDATA {
+            cbSize: std::mem::size_of::<APPBARDATA>() as u32,
+            uEdge: edge,
+            rc: monitor,
+            ..Default::default()
+        };
+        // SAFETY: `bar` is a valid APPBARDATA for the call's duration.
+        if unsafe { SHAppBarMessage(ABM_GETAUTOHIDEBAREX, &mut bar) } == 0 {
+            continue;
+        }
+        match edge {
+            ABE_LEFT => area.left = area.left.max(monitor.left + AUTOHIDE_STRIP_PX),
+            ABE_TOP => area.top = area.top.max(monitor.top + AUTOHIDE_STRIP_PX),
+            ABE_RIGHT => area.right = area.right.min(monitor.right - AUTOHIDE_STRIP_PX),
+            _ => area.bottom = area.bottom.min(monitor.bottom - AUTOHIDE_STRIP_PX),
+        }
+    }
+    area
 }
 
 fn px_rect(r: RECT) -> egui::Rect {
