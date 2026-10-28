@@ -1,6 +1,6 @@
 {
   "name": "nudge-electron",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Interval journaling for focus",
   "type": "module",
   "main": "dist/electron/main.js",
