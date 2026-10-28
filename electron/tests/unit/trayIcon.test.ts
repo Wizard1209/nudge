@@ -140,6 +140,31 @@ describe("trayIcon / buildTrayIcon", () => {
   });
 });
 
+// Not spec §5: the prototype's own mark, so its tray icon is told apart from
+// the Rust app's at a glance. An orbit tilted up to the right, its electron
+// at the upper-right end.
+describe("trayIcon / the Electron mark", () => {
+  const size = 36;
+  const electron = (png: Buffer) => pixels(png, size).at(Math.round((58 * size) / 64), Math.round((17 * size) / 64));
+  const cyan = ([r, g, b, a]: number[]) => a > 200 && b > 200 && g > 200 && r < 200;
+
+  it("puts the electron at the orbit's upper-right end", () => {
+    expect(cyan(electron(buildTrayIcon(0, size, { mark: true })))).toBe(true);
+  });
+
+  it("is drawn only when asked for", () => {
+    expect(cyan(electron(buildTrayIcon(0, size)))).toBe(false);
+  });
+
+  it("stays on the flower with every petal fallen", () => {
+    expect(cyan(electron(buildTrayIcon(1, size, { mark: true })))).toBe(true);
+  });
+
+  it("caches the marked frame apart from the plain one", () => {
+    expect(buildTrayIcon({ stable: [3, 4, 5] }, 18, { mark: true })).not.toBe(buildTrayIcon({ stable: [3, 4, 5] }, 18));
+  });
+});
+
 describe("trayIcon / daisyFrame", () => {
   // §5 fall animation: petal k starts falling at t = (k+1) * interval/16
   // and is fully gone after `fadeMs`. While falling, it counts as the "in
