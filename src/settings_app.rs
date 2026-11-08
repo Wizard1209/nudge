@@ -106,16 +106,13 @@ impl SettingsForm {
     }
 
     /// Whether any field differs from the file — what greys `Save` and gates
-    /// [`SettingsApp::save`] (§9).
+    /// [`SettingsApp::save`] (§9). "The file" is the form [`from_config`]
+    /// would build from the baseline, so there is one mapping from a config
+    /// to field text and this is a comparison against it, not a second copy.
+    ///
+    /// [`from_config`]: Self::from_config
     pub fn is_dirty(&self) -> bool {
-        self.hotkey != self.original.hotkey
-            || self.interval_text != format_interval(self.original.default_interval_minutes)
-            || self.autostart != self.original.autostart
-            || self.sprite_enabled != self.original.sprite.enabled
-            || self.sprite_path != self.original.sprite.path
-            || self.sprite_x_text != self.original.sprite.x.to_string()
-            || self.sprite_y_text != self.original.sprite.y.to_string()
-            || self.card_width_text != self.original.sprite.card_width.to_string()
+        *self != Self::from_config(self.original.clone())
     }
 
     /// The hotkey as last saved — what every cancelling path in the recorder
@@ -183,15 +180,7 @@ impl SettingsForm {
     /// user reads back is the stored text — the canonical hotkey spelling
     /// rather than however they typed it.
     pub fn mark_clean(&mut self, saved: Config) {
-        self.hotkey = saved.hotkey.clone();
-        self.interval_text = format_interval(saved.default_interval_minutes);
-        self.autostart = saved.autostart;
-        self.sprite_enabled = saved.sprite.enabled;
-        self.sprite_path = saved.sprite.path.clone();
-        self.sprite_x_text = saved.sprite.x.to_string();
-        self.sprite_y_text = saved.sprite.y.to_string();
-        self.card_width_text = saved.sprite.card_width.to_string();
-        self.original = saved;
+        *self = Self::from_config(saved);
     }
 
     /// Drive the autostart checkbox through the transactional rule. On
@@ -209,16 +198,11 @@ impl SettingsForm {
         F: FnOnce(&Config) -> Result<(), ConfigError>,
     {
         // The transactional rule mutates a Config-shaped buffer. We feed it
-        // a snapshot of "current persisted view" (interval + hotkey from the
-        // original baseline, autostart from the form's current bit) so a
+        // the baseline with only the autostart bit taken from the form, so a
         // successful toggle persists ONLY the autostart change — the other
         // fields aren't half-saved without the user clicking Save.
-        let mut staged = Config {
-            hotkey: self.original.hotkey.clone(),
-            default_interval_minutes: self.original.default_interval_minutes,
-            autostart: self.autostart,
-            sprite: self.original.sprite.clone(),
-        };
+        let mut staged = self.original.clone();
+        staged.autostart = self.autostart;
         apply_autostart(provider, &mut staged, desired, persist)?;
         // Provider + persist both succeeded; reflect into the form + baseline.
         self.autostart = desired;
