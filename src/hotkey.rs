@@ -264,8 +264,8 @@ pub fn from_parts(modifiers: Modifiers, token: &str) -> Result<Hotkey, ParseErro
 /// tables against each other is the defect this whole feature exists to
 /// remove, and a list nobody can enumerate is how that defect hides.
 ///
-/// Test-only, so far — the `dead_code` allow is for the binary's copy of this
-/// module, where nothing calls it.
+/// Test-only — the `dead_code` allow is for the binary's copy of this module,
+/// where nothing calls it.
 #[allow(dead_code)]
 pub fn all_key_tokens() -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(80);
@@ -275,7 +275,7 @@ pub fn all_key_tokens() -> Vec<String> {
     for ch in '0'..='9' {
         out.push(ch.to_string());
     }
-    for n in 1..=24u8 {
+    for n in 1..=MAX_FUNCTION_KEY {
         out.push(format!("F{n}"));
     }
     for key in NAMED_KEYS {
@@ -287,13 +287,17 @@ pub fn all_key_tokens() -> Vec<String> {
     out
 }
 
+/// The top of the F-row the grammar knows: `F1`..`F24`.
+const MAX_FUNCTION_KEY: u8 = 24;
+
 /// The `n` of an `F{n}` token (uppercased) when it is on the F-row the
-/// grammar knows, `F1`..`F24`; `None` for every other token.
-fn function_key_number(upper: &str) -> Option<u8> {
+/// grammar knows, `F1`..`F24`; `None` for every other token. A backend maps
+/// the F-row by this number rather than re-reading the token.
+pub fn function_key_number(upper: &str) -> Option<u8> {
     upper
         .strip_prefix('F')
         .and_then(|rest| rest.parse::<u8>().ok())
-        .filter(|n| (1..=24).contains(n))
+        .filter(|n| (1..=MAX_FUNCTION_KEY).contains(n))
 }
 
 /// Whether a canonical key token is one of `F1`..`F24` — the keys that type

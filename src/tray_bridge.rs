@@ -164,10 +164,7 @@ fn vk_for_key(key: &str) -> Option<u32> {
             return Some(ch as u32);
         }
     }
-    if let Some(rest) = key.strip_prefix('F')
-        && let Ok(n) = rest.parse::<u8>()
-        && (1..=24).contains(&n)
-    {
+    if let Some(n) = hotkey::function_key_number(key) {
         // VK_F1 = 0x70 … VK_F24 = 0x87
         return Some(0x70 + (n as u32) - 1);
     }
@@ -499,48 +496,25 @@ mod tests {
         // The invariant that matters: `hotkey::parse` and `vk_for_key` share
         // one key set. Anything the config file can legally name has to reach
         // `RegisterHotKey`, or a hotkey saved on the Mac side of the same
-        // `config.json` silently stops working here.
-        let mut labels: Vec<String> = Vec::new();
-        for ch in ('A'..='Z').chain('0'..='9') {
-            labels.push(format!("Ctrl+{ch}"));
+        // `config.json` silently stops working here. Enumerated from the
+        // grammar, so a key added there fails here until it has a VK.
+        let tokens = hotkey::all_key_tokens();
+        assert!(tokens.len() > 80, "the grammar enumerates its keys");
+        for token in tokens {
+            assert!(vk_for_key(&token).is_some(), "{token} parses but has no VK");
         }
-        for n in 1..=24u8 {
-            labels.push(format!("Ctrl+F{n}"));
-        }
-        for named in [
-            "Space",
-            "Enter",
-            "Return",
-            "Tab",
-            "Esc",
-            "Escape",
-            "Backspace",
-            "Left",
-            "Right",
-            "Up",
-            "Down",
-            "Home",
-            "End",
-            "PageUp",
-            "PgUp",
-            "PageDown",
-            "PgDn",
-            "Insert",
-            "Ins",
-            "Delete",
-            "Del",
-        ] {
-            labels.push(format!("Ctrl+{named}"));
-        }
-        for symbol in ["-", "=", "[", "]", "\\", ";", "'", ",", ".", "/", "`"] {
-            labels.push(format!("Ctrl+{symbol}"));
-        }
-        for label in labels {
-            let hk = hotkey::parse(&label).expect("label must parse");
-            assert!(
-                vk_for_key(hk.key.as_str()).is_some(),
-                "{label} parses but has no VK"
-            );
+    }
+
+    #[test]
+    fn every_vk_is_distinct() {
+        // Two tokens on one VK would be two spellings of one binding that
+        // format differently — the grammar names each key once.
+        let mut seen = std::collections::HashMap::new();
+        for token in hotkey::all_key_tokens() {
+            let vk = vk_for_key(&token).unwrap();
+            if let Some(other) = seen.insert(vk, token.clone()) {
+                panic!("{token} and {other} share VK {vk:#x}");
+            }
         }
     }
 
