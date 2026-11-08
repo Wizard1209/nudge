@@ -523,15 +523,30 @@ pub fn save(path: &std::path::Path, config: &Config) -> Result<(), ConfigError> 
 #[cfg(target_arch = "wasm32")]
 const LOCALSTORAGE_KEY: &str = "nudge-config";
 
+/// The browser build's errors name the storage slot where the native ones
+/// name a file.
+#[cfg(target_arch = "wasm32")]
+fn storage_io(detail: impl Into<String>) -> ConfigError {
+    ConfigError::Io {
+        path: format!("localStorage:{LOCALSTORAGE_KEY}"),
+        detail: detail.into(),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn storage_parse(detail: impl Into<String>) -> ConfigError {
+    ConfigError::Parse {
+        path: format!("localStorage:{LOCALSTORAGE_KEY}"),
+        detail: detail.into(),
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 fn localstorage() -> Result<web_sys::Storage, ConfigError> {
     web_sys::window()
         .and_then(|w| w.local_storage().ok())
         .flatten()
-        .ok_or_else(|| ConfigError::Io {
-            path: format!("localStorage:{LOCALSTORAGE_KEY}"),
-            detail: "localStorage unavailable".to_string(),
-        })
+        .ok_or_else(|| storage_io("localStorage unavailable"))
 }
 
 /// Load config from localStorage (WASM), or `Config::default()` if absent or
@@ -547,42 +562,22 @@ pub fn load_from_localstorage() -> (Config, Option<ConfigError>) {
     let raw = match storage.get_item(LOCALSTORAGE_KEY) {
         Ok(Some(s)) if !s.is_empty() => s,
         Ok(_) => return (Config::default(), None),
-        Err(_) => {
-            return (
-                Config::default(),
-                Some(ConfigError::Io {
-                    path: format!("localStorage:{LOCALSTORAGE_KEY}"),
-                    detail: "get_item failed".to_string(),
-                }),
-            );
-        }
+        Err(_) => return (Config::default(), Some(storage_io("get_item failed"))),
     };
     match serde_json::from_str::<Config>(&raw) {
         Ok(cfg) => (cfg, None),
-        Err(e) => (
-            Config::default(),
-            Some(ConfigError::Parse {
-                path: format!("localStorage:{LOCALSTORAGE_KEY}"),
-                detail: e.to_string(),
-            }),
-        ),
+        Err(e) => (Config::default(), Some(storage_parse(e.to_string()))),
     }
 }
 
 /// Persist config to localStorage (WASM). The browser analogue of `save`.
 #[cfg(target_arch = "wasm32")]
 pub fn save_to_localstorage(config: &Config) -> Result<(), ConfigError> {
-    let body = serde_json::to_string(config).map_err(|e| ConfigError::Parse {
-        path: format!("localStorage:{LOCALSTORAGE_KEY}"),
-        detail: e.to_string(),
-    })?;
+    let body = serde_json::to_string(config).map_err(|e| storage_parse(e.to_string()))?;
     let storage = localstorage()?;
     storage
         .set_item(LOCALSTORAGE_KEY, &body)
-        .map_err(|_| ConfigError::Io {
-            path: format!("localStorage:{LOCALSTORAGE_KEY}"),
-            detail: "set_item failed".to_string(),
-        })
+        .map_err(|_| storage_io("set_item failed"))
 }
 
 #[cfg(test)]
