@@ -744,34 +744,22 @@ fn try_register_hotkey(hk: &Hotkey) -> Option<hotkey_carbon::Registration> {
     }
 }
 
-// ---------- config live-reload ---------------------------------------------
+// ---------- the settings window process ------------------------------------
 
 /// Settings processes we have spawned and not yet reaped. See
 /// [`spawn_settings_process`].
 static SETTINGS_CHILDREN: Mutex<Vec<std::process::Child>> = Mutex::new(Vec::new());
 
-/// Spawn a second instance of the binary with `--settings`, exactly as the
-/// Windows tray menu does. The two processes communicate ONLY through
-/// `config.json` (and `~/Library/LaunchAgents` for autostart). Fire-and-forget
-/// as far as *policy* goes: a failed spawn is logged and ignored, since
-/// settings are editable by hand per spec §5. `--settings` is single-instance
-/// in its own right (see [`acquire_settings_singleton`]), so repeat clicks
-/// cannot stack windows.
-///
-/// It is not fire-and-forget as far as the *process table* goes. Dropping the
-/// `Child` does not reap it: on Unix an exited child stays a zombie until its
-/// parent waits, and this parent is a menu-bar app that runs for days. The
-/// identical Windows line has no such consequence — there the handle is closed
-/// on drop and the process object goes away — which is why it was inherited
+/// Open the settings window (`shared::spawn_settings_process`) and keep the
+/// `Child`. Dropping it does not reap it: on Unix an exited child stays a
+/// zombie until its parent waits, and this parent is a menu-bar app that runs
+/// for days. The Windows drop has no such consequence — there the handle is
+/// closed and the process object goes away — which is why it was inherited
 /// unexamined. So we keep every `Child` and [`reap_settings_children`] waits on
 /// the exited ones from `tick`.
 fn spawn_settings_process() {
-    match std::env::current_exe() {
-        Ok(exe) => match std::process::Command::new(exe).arg("--settings").spawn() {
-            Ok(child) => SETTINGS_CHILDREN.lock().unwrap().push(child),
-            Err(e) => eprintln!("[nudge] could not open settings: {e}"),
-        },
-        Err(e) => eprintln!("[nudge] could not locate own executable: {e}"),
+    if let Some(child) = shared::spawn_settings_process() {
+        SETTINGS_CHILDREN.lock().unwrap().push(child);
     }
 }
 
@@ -802,6 +790,8 @@ fn reap_exited(children: &mut Vec<std::process::Child>) {
         }
     });
 }
+
+// ---------- config live-reload ---------------------------------------------
 
 /// Re-read `config.json` and act on what changed — the re-read, the diff and
 /// the logging are [`LiveConfig::reload`]'s, shared with the Windows tray

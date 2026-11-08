@@ -217,6 +217,26 @@ pub(crate) fn clear_timer() {
     *TIMER.lock().unwrap() = None;
 }
 
+/// Start the settings window: a second instance of this binary with
+/// `--settings`. The two processes talk only through `config.json` (and the
+/// OS's autostart entry). A failed spawn is logged and otherwise ignored —
+/// settings are editable by hand (spec §5) — and `--settings` is
+/// single-instance in its own right, so repeat clicks cannot stack windows.
+///
+/// What to do with the `Child` is the backend's: dropping it closes the
+/// handle on Windows, while on Unix an exited child stays a zombie until
+/// its parent waits.
+pub(crate) fn spawn_settings_process() -> Option<std::process::Child> {
+    let exe = std::env::current_exe()
+        .map_err(|e| eprintln!("[nudge] could not locate own executable: {e}"))
+        .ok()?;
+    std::process::Command::new(exe)
+        .arg("--settings")
+        .spawn()
+        .map_err(|e| eprintln!("[nudge] could not open settings: {e}"))
+        .ok()
+}
+
 /// Park a sprite change for the app to apply while hidden (spec §10).
 pub(crate) fn park_sprite(cfg: SpriteConfig) {
     *PENDING_SPRITE.lock().unwrap() = Some(cfg);

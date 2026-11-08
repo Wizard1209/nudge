@@ -326,14 +326,8 @@ fn tray_thread_main(hotkey: Option<Hotkey>, config_path: PathBuf, initial_config
                 request_manual_open();
             }
             if event.id == settings_id {
-                // Spawn a second instance of nudge.exe with --settings.
-                // The two processes communicate ONLY through config.json
-                // (and the registry for autostart). We fire-and-forget; a
-                // failed spawn is logged-and-ignored — settings are also
-                // editable by hand per spec §5.
-                if let Ok(exe) = std::env::current_exe() {
-                    let _ = std::process::Command::new(exe).arg("--settings").spawn();
-                }
+                // Dropping the `Child` closes its handle; nothing to reap.
+                drop(shared::spawn_settings_process());
             }
         },
     ));
