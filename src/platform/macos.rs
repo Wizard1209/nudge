@@ -518,8 +518,8 @@ fn reveal(ctx: &egui::Context) {
 /// The arithmetic is `screen_pick::pick_screen`, over rects in one space:
 /// AppKit points with a top-left origin. The window list reports bounds in
 /// CoreGraphics' global space, which is already that; screens and the
-/// pointer come from AppKit with a bottom-left origin and are flipped
-/// through the primary screen's height, as `screen_geometry` flips them.
+/// pointer come from AppKit with a bottom-left origin and are flipped by
+/// [`top_left_rect`], the flip `screen_geometry` uses.
 fn choose_screen(mtm: MainThreadMarker) {
     let screens = NSScreen::screens(mtm);
     // SAFETY: the array is a fresh retained copy; `firstObject` only reads it.
@@ -527,15 +527,11 @@ fn choose_screen(mtm: MainThreadMarker) {
         return;
     };
     let primary_height = primary.frame().size.height;
-    let flip = |r: NSRect| {
-        let top = primary_height - (r.origin.y + r.size.height);
-        egui::Rect::from_min_size(
-            egui::pos2(r.origin.x as f32, top as f32),
-            egui::vec2(r.size.width as f32, r.size.height as f32),
-        )
-    };
     let frames: Vec<NSRect> = screens.iter().map(|s| s.frame()).collect();
-    let rects: Vec<egui::Rect> = frames.iter().copied().map(flip).collect();
+    let rects: Vec<egui::Rect> = frames
+        .iter()
+        .map(|&r| top_left_rect(r, primary_height, 1.0))
+        .collect();
     let front = front_window::front_window_bounds().map(|r| {
         egui::Rect::from_min_size(
             egui::pos2(r.origin.x as f32, r.origin.y as f32),
@@ -631,17 +627,22 @@ pub fn screen_geometry(ctx: &egui::Context, frame: &eframe::Frame) -> Option<Scr
     let primary = unsafe { screens.firstObject() }?;
     let primary_height = primary.frame().size.height;
     let zoom = f64::from(ctx.zoom_factor());
-    let flip = |r: NSRect| {
-        let top = primary_height - (r.origin.y + r.size.height);
-        egui::Rect::from_min_size(
-            egui::pos2((r.origin.x / zoom) as f32, (top / zoom) as f32),
-            egui::vec2((r.size.width / zoom) as f32, (r.size.height / zoom) as f32),
-        )
-    };
     Some(ScreenGeometry {
-        monitor: flip(screen.frame()),
-        work: flip(screen.visibleFrame()),
+        monitor: top_left_rect(screen.frame(), primary_height, zoom),
+        work: top_left_rect(screen.visibleFrame(), primary_height, zoom),
     })
+}
+
+/// An AppKit screen-space rect — origin at the primary screen's bottom left,
+/// y up — as an egui rect with a top-left origin, y down, divided by
+/// `zoom` (egui's zoom factor; 1 for plain AppKit points). The flip goes
+/// through the primary screen's height, which is how winit flips too.
+fn top_left_rect(r: NSRect, primary_height: f64, zoom: f64) -> egui::Rect {
+    let top = primary_height - (r.origin.y + r.size.height);
+    egui::Rect::from_min_size(
+        egui::pos2((r.origin.x / zoom) as f32, (top / zoom) as f32),
+        egui::vec2((r.size.width / zoom) as f32, (r.size.height / zoom) as f32),
+    )
 }
 
 // ---------- status item ----------------------------------------------------
@@ -1102,6 +1103,42 @@ mod tests {
     }
 
     const INTERVAL: Duration = Duration::from_secs(600);
+
+    // === the AppKit → top-left flip ==========================================
+
+    fn ns_rect(x: f64, y: f64, w: f64, h: f64) -> NSRect {
+        NSRect::new(NSPoint::new(x, y), NSSize::new(w, h))
+    }
+
+    #[test]
+    fn the_primary_screen_flips_onto_the_origin() {
+        let primary = ns_rect(0.0, 0.0, 1512.0, 982.0);
+        assert_eq!(
+            top_left_rect(primary, 982.0, 1.0),
+            egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1512.0, 982.0))
+        );
+    }
+
+    #[test]
+    fn a_screen_above_the_primary_has_a_negative_top() {
+        // AppKit puts a display stacked above the primary at a positive y;
+        // in a y-down space its top is above zero.
+        let above = ns_rect(0.0, 982.0, 1920.0, 1080.0);
+        assert_eq!(top_left_rect(above, 982.0, 1.0).top(), -1080.0);
+        // A work area 25 points short at the top (the menu bar) starts 25
+        // points lower than its screen.
+        let work = ns_rect(0.0, 0.0, 1512.0, 957.0);
+        assert_eq!(top_left_rect(work, 982.0, 1.0).top(), 25.0);
+    }
+
+    #[test]
+    fn zoom_divides_every_coordinate() {
+        let r = ns_rect(100.0, 0.0, 800.0, 600.0);
+        assert_eq!(
+            top_left_rect(r, 1000.0, 2.0),
+            egui::Rect::from_min_size(egui::pos2(50.0, 200.0), egui::vec2(400.0, 300.0))
+        );
+    }
 
     // === the handler → tick → app edge =======================================
 
