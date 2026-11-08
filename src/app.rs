@@ -2,8 +2,8 @@ use eframe::egui;
 
 use crate::config::SpriteConfig;
 use crate::journal::{self, JournalSink};
+use crate::layout::{self, PopupLayout, ScreenGeometry};
 use crate::nudge_state::{self, Action, TriggerSource};
-use crate::sprite::{self, PopupLayout, ScreenGeometry};
 use crate::timer::Timer;
 use crate::word_jump;
 
@@ -229,7 +229,7 @@ pub struct NudgeApp {
     order_out_after_pass: Option<u64>,
     /// Where the card and the sprite go, in window coordinates. `None`
     /// while there is no screen to lay out on: then the card sits in the
-    /// window as a box (`sprite::card_in_box`).
+    /// window as a box (`layout::card_in_box`).
     layout: Option<PopupLayout>,
     #[cfg(target_arch = "wasm32")]
     pill_rect: Option<egui::Rect>,
@@ -448,8 +448,8 @@ impl NudgeApp {
         let placement = self
             .sprite
             .as_ref()
-            .map(|s| sprite::placement_of(&s.cfg, s.px, now.ppp));
-        self.layout = Some(sprite::shield_layout(&geometry, placement));
+            .map(|s| layout::placement_of(&s.cfg, s.px, now.ppp));
+        self.layout = Some(layout::shield_layout(&geometry, placement));
         self.placed = Some(now);
     }
 
@@ -816,7 +816,7 @@ impl NudgeApp {
         // content_rect() is the in-window content area the box is sized against.
         let card = self
             .layout
-            .map_or_else(|| sprite::card_in_box(ctx.content_rect()), |l| l.card);
+            .map_or_else(|| layout::card_in_box(ctx.content_rect()), |l| l.card);
         let card_width = card.width();
 
         let inner = egui::Area::new(egui::Id::new("nudge_card"))

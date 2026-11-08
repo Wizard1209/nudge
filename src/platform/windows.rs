@@ -26,7 +26,7 @@ use eframe::egui;
 
 use crate::config;
 use crate::hotkey::Hotkey;
-use crate::sprite::ScreenGeometry;
+use crate::layout::ScreenGeometry;
 
 pub use crate::tray_bridge::{
     request_config_reload, set_popup_visible, set_timer_state, take_pending_sprite,

@@ -19,7 +19,7 @@ use eframe::egui;
 
 use crate::config;
 use crate::hotkey::Hotkey;
-use crate::sprite::ScreenGeometry;
+use crate::layout::ScreenGeometry;
 
 pub fn start(_hotkey: Option<Hotkey>, _config_path: std::path::PathBuf, _initial: config::Config) {}
 

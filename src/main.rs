@@ -14,6 +14,8 @@ mod hotkey;
 #[cfg(not(target_arch = "wasm32"))]
 mod journal;
 #[cfg(not(target_arch = "wasm32"))]
+mod layout;
+#[cfg(not(target_arch = "wasm32"))]
 mod nudge_state;
 #[cfg(not(target_arch = "wasm32"))]
 mod platform;
@@ -22,8 +24,6 @@ mod recorder;
 mod screen_pick;
 #[cfg(not(target_arch = "wasm32"))]
 mod settings_app;
-#[cfg(not(target_arch = "wasm32"))]
-mod sprite;
 #[cfg(not(target_arch = "wasm32"))]
 mod sprite_png;
 #[cfg(not(target_arch = "wasm32"))]
@@ -250,7 +250,7 @@ fn main() -> eframe::Result {
     // The window's creation size. On both platforms `NudgeApp::place_window`
     // makes it the work area on the first frame (spec §1); Windows also
     // positions it here, so the box is centred until then.
-    let win_size = [sprite::POPUP_SIZE.0 as f32, sprite::POPUP_SIZE.1 as f32];
+    let win_size = [layout::POPUP_SIZE.0 as f32, layout::POPUP_SIZE.1 as f32];
     #[cfg(target_os = "windows")]
     let viewport = {
         use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
@@ -260,7 +260,7 @@ fn main() -> eframe::Result {
                 GetSystemMetrics(SM_CYSCREEN).max(1) as u32,
             )
         };
-        let (x, y) = sprite::window_position(
+        let (x, y) = layout::window_position(
             (screen_w, screen_h),
             (win_size[0] as u32, win_size[1] as u32),
         );

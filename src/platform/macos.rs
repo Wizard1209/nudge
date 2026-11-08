@@ -77,9 +77,9 @@ use crate::config;
 use crate::config_watcher::{LiveChange, LiveConfig};
 use crate::daisy;
 use crate::hotkey::{self, Hotkey};
+use crate::layout::ScreenGeometry;
 use crate::nudge_state;
 use crate::screen_pick;
-use crate::sprite::ScreenGeometry;
 
 pub mod front_window;
 pub mod hotkey_carbon;

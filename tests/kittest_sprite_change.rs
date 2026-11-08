@@ -17,7 +17,7 @@ use egui_kittest::kittest::Queryable;
 
 use nudge_web::app::NudgeApp;
 use nudge_web::config::SpriteConfig;
-use nudge_web::sprite::ScreenGeometry;
+use nudge_web::layout::ScreenGeometry;
 
 const PPP: f32 = 2.0;
 
