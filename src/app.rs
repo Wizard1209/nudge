@@ -783,7 +783,10 @@ impl NudgeApp {
         {
             if let Some(interval) = outcome.reset_timer {
                 let deadline = std::time::Instant::now() + interval;
-                crate::platform::set_timer_state(deadline, interval);
+                crate::platform::set_timer_state(crate::platform::ArmedTimer {
+                    deadline,
+                    duration: interval,
+                });
             }
             crate::platform::set_popup_visible(false);
             // Hidden now: a change that waited for this close goes in before

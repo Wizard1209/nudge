@@ -28,17 +28,18 @@ use crate::config;
 use crate::hotkey::Hotkey;
 use crate::layout::ScreenGeometry;
 
-pub use crate::tray_bridge::{
-    request_config_reload, set_popup_visible, set_timer_state, take_pending_sprite,
-    take_timer_fired, take_tray_clicked,
-};
-
-/// The raise side of `take_tray_clicked`. No caller goes through the seam for
-/// it today — on Windows the tray thread's own event handlers set the flag
-/// directly, and macOS has no status item yet — but it is half of a pair, and
-/// dropping it would leave the macOS tray with nothing to call when it lands.
+pub use super::shared::set_popup_visible;
+/// The seam's entry for a manual summons. The tray thread's own handlers
+/// call `tray_bridge` directly, so in the binary nothing reaches it through
+/// here; the kittests do.
 #[allow(unused_imports)]
-pub use crate::tray_bridge::set_tray_clicked;
+pub use crate::tray_bridge::request_manual_open;
+
+/// Wake the tray thread's message pump, so a write to the shared state is
+/// acted on now rather than at its next scheduled pass.
+pub(super) fn wake() {
+    crate::tray_bridge::wake_tray_thread();
+}
 
 /// Start the OS-integration machinery: here, the tray thread, which also
 /// owns the global hotkey and the config-reload diff.

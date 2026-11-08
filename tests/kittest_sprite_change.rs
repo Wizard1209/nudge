@@ -37,10 +37,7 @@ const GREEN_PATH: &str = concat!(
 /// macOS the flag `tick` turns into a reveal, on Windows the tray thread's
 /// edge.
 fn manual_open() {
-    #[cfg(target_os = "macos")]
     nudge_web::platform::request_manual_open();
-    #[cfg(target_os = "windows")]
-    nudge_web::platform::set_tray_clicked();
 }
 
 /// This host: 1470×956 with a 33 pt menu bar.

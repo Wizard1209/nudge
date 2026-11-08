@@ -73,6 +73,7 @@ use objc2_app_kit::{
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
+use super::shared;
 use crate::config;
 use crate::config_watcher::{LiveChange, LiveConfig};
 use crate::daisy;
@@ -93,33 +94,9 @@ use status_item::StatusItem;
 
 // ---------- shared state ---------------------------------------------------
 
-/// The armed interval: when the next nudge is due and how long the interval
-/// was. `None` when no timer is armed — before the first close (spec §4 freezes
-/// the timer until then) and between an expiry and the reset that follows it.
-///
-/// The duration is what the petal countdown needs; the deadline is what the
-/// wake schedule needs.
-#[derive(Clone, Copy)]
-struct ArmedTimer {
-    deadline: Instant,
-    duration: Duration,
-}
-
-static TIMER: Mutex<Option<ArmedTimer>> = Mutex::new(None);
-
-/// Edge flags polled by `NudgeApp::ui`, mirroring the Windows ones so the
-/// state transition on expiry is the app's existing code path, not a second
-/// implementation of it.
-static TRAY_CLICKED: AtomicBool = AtomicBool::new(false);
-static TIMER_FIRED: AtomicBool = AtomicBool::new(false);
-
-/// Set by the `config_watcher` callback when `config.json` changes on disk,
-/// drained by `tick`.
-static CONFIG_RELOAD_REQUESTED: AtomicBool = AtomicBool::new(false);
-
 /// Raised by the status-item left click, by the menu's "Show Nudge" item and by
 /// the global hotkey — the three manual ways to summon the popup. Drained by
-/// `tick`, which turns it into the same `TRAY_CLICKED` edge Windows raises.
+/// `tick`, which turns it into the same tray-clicked edge Windows raises.
 static MANUAL_OPEN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 /// Raised by the menu's "Settings" / "Quit" items, drained by `tick`. The
@@ -128,16 +105,6 @@ static MANUAL_OPEN_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// menu's tracking loop still on the stack.
 static SETTINGS_REQUESTED: AtomicBool = AtomicBool::new(false);
 static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
-
-/// `true` while the popup is on screen. `tick` parks on it exactly as the
-/// tray thread does: while the user is looking at the popup we neither count
-/// down nor animate. Starts `true` because the app opens with the launch popup.
-///
-/// Raised by [`reveal`], in the frame `App::logic` orders the window in, and by
-/// `App::show_popup` a frame or more later when `ui()` catches up; cleared only
-/// by `App::hide_popup`. Both raise sites matter — see [`reveal`] for what the
-/// gap between them used to cost.
-static POPUP_VISIBLE: AtomicBool = AtomicBool::new(true);
 
 /// The application that had the keyboard when the popup took it, by pid:
 /// what [`hand_back_activation`] gives it back to (spec §1). Written by
@@ -155,11 +122,6 @@ static CHOSEN_SCREEN: Mutex<Option<NSRect>> = Mutex::new(None);
 
 /// What [`start`] recorded for [`start_on_event_loop`] to build. Taken once.
 static PENDING_START: Mutex<Option<(Option<Hotkey>, PathBuf, config::Config)>> = Mutex::new(None);
-
-/// A sprite change from a config reload, waiting for the app to apply it
-/// while the popup is hidden (spec §10). The newest change replaces an
-/// older one still waiting.
-static PENDING_SPRITE: Mutex<Option<config::SpriteConfig>> = Mutex::new(None);
 
 /// A clone of the egui context, so an AppKit / Carbon callback on the main
 /// thread can wake the event loop. `egui::Context` is `Send + Sync` and
@@ -329,8 +291,9 @@ pub fn request_manual_open() {
 }
 
 /// Wake the event loop so `logic` → [`tick`] runs now rather than at the next
-/// scheduled repaint. The macOS counterpart of `tray_bridge::wake_eframe`.
-fn wake() {
+/// scheduled repaint — after a handler raised a flag, and after every write
+/// to `platform::shared` (which calls this).
+pub(super) fn wake() {
     if let Some(ctx) = WAKE_CTX.lock().unwrap().as_ref() {
         ctx.request_repaint();
     }
@@ -351,39 +314,14 @@ fn wake() {
 #[allow(dead_code)]
 pub fn note_window_handle(_handle: isize) {}
 
-pub fn set_tray_clicked() {
-    TRAY_CLICKED.store(true, Ordering::SeqCst);
-}
-
-pub fn take_tray_clicked() -> bool {
-    TRAY_CLICKED.swap(false, Ordering::SeqCst)
-}
-
-pub fn take_timer_fired() -> bool {
-    TIMER_FIRED.swap(false, Ordering::SeqCst)
-}
-
-/// Arm the timer. `duration` is what the petal countdown draws against;
-/// `deadline` is what the wake schedule and the tooltip count down to.
-///
-/// Wakes the event loop, because nothing else here will. A new deadline is
-/// only ever set from `hide_popup`, and `tick` refuses to schedule anything
-/// while `POPUP_VISIBLE` is still true — which it is at this point, since
-/// `hide_popup` clears it one line later. So the frame that turns this
-/// deadline into a `request_repaint_after` has to be asked for; without the
-/// wake the only thing producing it is the popup's own 1 Hz repaint request,
-/// issued earlier in the same `ui()` pass for an unrelated reason.
-pub fn set_timer_state(deadline: Instant, duration: Duration) {
-    // Scoped so the lock is released before `wake` — it takes a different
-    // mutex and calls into egui, and nothing here needs both at once.
-    {
-        *TIMER.lock().unwrap() = Some(ArmedTimer { deadline, duration });
-    }
-    wake();
-}
-
+/// The shared flag, plus what only this backend has to do when the popup
+/// goes away. The wake the shared write issues matters here: a new deadline
+/// is only ever set from `hide_popup`, and `tick` refuses to schedule
+/// anything while the popup still counts as visible — which it does at that
+/// point, since `hide_popup` clears it one line later. So the frame that
+/// turns the deadline into a `request_repaint_after` has to be asked for.
 pub fn set_popup_visible(visible: bool) {
-    POPUP_VISIBLE.store(visible, Ordering::SeqCst);
+    shared::set_popup_visible(visible);
     if !visible {
         // The blur panel hangs off the *window*, which is ordered out rather
         // than destroyed, so nothing else takes it down — left alone it keeps
@@ -462,25 +400,11 @@ fn remember_front_application() {
     }
 }
 
-/// Signal that `config.json` changed on disk. Idempotent — N saves before
-/// the next `tick` collapse into one re-read, which is the correct behaviour.
-pub fn request_config_reload() {
-    CONFIG_RELOAD_REQUESTED.store(true, Ordering::SeqCst);
-    // The hotkey is live-reloadable, so a reload must not sit unapplied until
-    // the timer happens to wake us.
-    wake();
-}
-
-/// The sprite change parked by the last reload, if any; `NudgeApp` drains it.
-pub fn take_pending_sprite() -> Option<config::SpriteConfig> {
-    PENDING_SPRITE.lock().unwrap().take()
-}
-
 /// One pass of the OS integration, called from `NudgeApp::logic` on every tick.
 ///
 /// Drains everything the event handlers raised, then either re-arms the wake
 /// for the remaining time — refreshing the status item on the way — or, once
-/// the deadline has passed, raises `TIMER_FIRED` and claims a reveal. It
+/// the deadline has passed, raises the timer-fired edge and claims a reveal. It
 /// deliberately does *not* perform the state transition itself: raising the
 /// flag routes expiry into the same `ui()` branch Windows uses, so there is one
 /// definition of what a timer-fired open does.
@@ -496,16 +420,16 @@ pub fn tick(ctx: &egui::Context) -> bool {
         spawn_settings_process();
     }
     reap_settings_children();
-    if CONFIG_RELOAD_REQUESTED.swap(false, Ordering::SeqCst) {
+    if shared::take_config_reload_requested() {
         apply_config_reload();
     }
 
-    let popup_visible = POPUP_VISIBLE.load(Ordering::SeqCst);
+    let popup_visible = shared::popup_visible();
 
     if MANUAL_OPEN_REQUESTED.swap(false, Ordering::SeqCst) && !popup_visible {
         // Same edge the Windows tray raises; `ui()` turns it into a
         // `TriggerSource::Manual` open.
-        set_tray_clicked();
+        shared::raise_tray_clicked();
         reveal(ctx);
         return true;
     }
@@ -516,8 +440,7 @@ pub fn tick(ctx: &egui::Context) -> bool {
         return false;
     }
 
-    let mut slot = TIMER.lock().unwrap();
-    let Some(timer) = *slot else {
+    let Some(timer) = shared::armed_timer() else {
         return false;
     };
 
@@ -540,23 +463,18 @@ pub fn tick(ctx: &egui::Context) -> bool {
     refresh_status_item(&frame, remaining);
 
     if !frame.should_fire {
-        drop(slot);
         ctx.request_repaint_after(next_wake(&frame, remaining));
         return false;
     }
 
-    // Expired. Disarm so one deadline fires once: every close of a
-    // timer-fired popup resets the timer (`nudge_state::decide_close`), and
-    // that reset is what re-arms us through `set_timer_state`.
-    *slot = None;
-    drop(slot);
-
-    TIMER_FIRED.store(true, Ordering::SeqCst);
+    // Expired: disarm so one deadline fires once, and raise the edge.
+    shared::disarm_timer();
+    shared::raise_timer_fired();
     reveal(ctx);
     true
 }
 
-/// Claim a reveal: choose the screen, raise `POPUP_VISIBLE` and ask for a
+/// Claim a reveal: choose the screen, mark the popup visible and ask for a
 /// repaint. Shared by the timer expiry and every manual trigger, so all four
 /// entry points have identical side effects. The window is ordered in by
 /// `NudgeApp::logic` when `tick` returns true: placed, shown, activated.
@@ -565,15 +483,15 @@ pub fn tick(ctx: &egui::Context) -> bool {
 /// so `ui()` is being skipped and cannot schedule the frame that will consume
 /// the flag we just raised.
 ///
-/// # Why this claims `POPUP_VISIBLE` itself
+/// # Why this marks the popup visible itself
 ///
-/// `POPUP_VISIBLE` used to be written only by `show_popup`, i.e. from `ui()`,
+/// The visible flag used to be written only by `show_popup`, i.e. from `ui()`,
 /// which cannot run in the same frame as this call: eframe samples
 /// `is_visible` at the top of the frame, before `logic()`, and gates `app.ui`
 /// on that sample (`glow_integration.rs` → `epi_integration.rs`). So between a
 /// reveal and its `show_popup` there is always at least one further `tick`
 /// that still saw the popup as hidden — and that tick would happily disarm the
-/// timer and raise `TIMER_FIRED` into a card `ui()` is about to open manually,
+/// timer and raise the timer-fired edge into a card `ui()` is about to open manually,
 /// where the flag is dropped. The deadline is then gone with nothing left to
 /// re-arm it (a manual Esc yields `reset_timer: None`) and the app never
 /// nudges again.
@@ -950,7 +868,7 @@ fn reload_config(state: &mut ReloadState) {
                 state.registered = hk.and_then(|hk| try_register_hotkey(&hk));
             }
             LiveChange::Sprite(to) => {
-                *PENDING_SPRITE.lock().unwrap() = Some(to);
+                shared::park_sprite(to);
                 wake();
             }
         }
@@ -1188,6 +1106,9 @@ pub fn hotkey_conflict(hk: &Hotkey) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::shared::{
+        ArmedTimer, set_timer_state, take_pending_sprite, take_timer_fired, take_tray_clicked,
+    };
     use super::*;
 
     // === hotkey registration =================================================
@@ -1299,16 +1220,16 @@ mod tests {
     /// Put the module back in the state a fresh process starts in, so the
     /// order libtest happens to pick cannot change what a test sees.
     fn reset_globals() {
-        let _ = take_tray_clicked();
-        let _ = take_timer_fired();
+        let _ = shared::take_tray_clicked();
+        let _ = shared::take_timer_fired();
         let _ = MANUAL_OPEN_REQUESTED.swap(false, Ordering::SeqCst);
-        *TIMER.lock().unwrap() = None;
+        shared::disarm_timer();
         set_popup_visible(false);
     }
 
     /// The middle link of the manual-open path: a handler raises a flag from
     /// outside any frame, and the *next* tick has to turn it into the
-    /// `TRAY_CLICKED` edge `ui()` consumes. If `tick` dropped it, a status-item
+    /// tray-clicked edge `ui()` consumes. If `tick` dropped it, a status-item
     /// click while the popup is hidden — the only state the status item exists
     /// for — would do nothing at all.
     #[test]
@@ -1339,7 +1260,7 @@ mod tests {
     /// A reveal is not instantaneous: `ui()` cannot run in the same frame that
     /// `tick` revealed in, so there is always at least one more `tick` before
     /// the card is acknowledged. If the timer is allowed to expire in that gap
-    /// it disarms itself and raises `TIMER_FIRED` into a card `ui()` is about
+    /// it disarms itself and raises the timer-fired edge into a card `ui()` is about
     /// to open as `Manual` — where the flag is dropped. A manual Esc then
     /// yields `reset_timer: None`, so nothing re-arms, and the app never
     /// nudges again.
@@ -1353,7 +1274,10 @@ mod tests {
         // out: hidden card, deadline already a second in the past (well past
         // the 250 ms final drift, so `should_fire` is true).
         let interval = Duration::from_secs(600);
-        set_timer_state(Instant::now() - Duration::from_secs(1), interval);
+        set_timer_state(ArmedTimer {
+            deadline: Instant::now() - Duration::from_secs(1),
+            duration: interval,
+        });
         request_manual_open();
 
         assert!(tick(&ctx), "the manual open claims a reveal");
@@ -1372,7 +1296,7 @@ mod tests {
             "an expiry must not be raised while a reveal is still unacknowledged"
         );
         assert!(
-            TIMER.lock().unwrap().is_some(),
+            shared::armed_timer().is_some(),
             "and the deadline must still be armed — nothing else would re-arm it"
         );
 
@@ -1386,7 +1310,7 @@ mod tests {
             "the overdue nudge fires once the manual card is out of the way"
         );
         assert!(
-            TIMER.lock().unwrap().is_none(),
+            shared::armed_timer().is_none(),
             "and one deadline still fires exactly once"
         );
     }
@@ -1400,14 +1324,14 @@ mod tests {
 
         reveal(&ctx);
         assert!(
-            POPUP_VISIBLE.load(Ordering::SeqCst),
+            shared::popup_visible(),
             "a claimed reveal is the popup up; `tick` must park until `hide_popup` says otherwise"
         );
     }
 
     /// A new deadline has to produce the tick that schedules it. Nothing else
     /// here will: `set_timer_state` is only ever called from `hide_popup`,
-    /// where `POPUP_VISIBLE` is still true, and `tick` schedules nothing in
+    /// where the popup still counts as visible, and `tick` schedules nothing in
     /// that state. Before this, the frame that armed the real deadline came
     /// from the popup's own 1 Hz repaint request, issued a few lines earlier
     /// in `ui()` for an unrelated reason — correct by accident.
@@ -1440,7 +1364,10 @@ mod tests {
              or this test cannot see the wake it exists for"
         );
 
-        set_timer_state(Instant::now() + Duration::from_secs(600), INTERVAL);
+        set_timer_state(ArmedTimer {
+            deadline: Instant::now() + Duration::from_secs(600),
+            duration: INTERVAL,
+        });
         assert!(
             ctx.has_requested_repaint(),
             "arming a deadline must ask for the frame that will schedule it"

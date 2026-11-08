@@ -67,10 +67,7 @@ fn harness() -> Harness<'static, NudgeApp> {
 /// `App::logic`. Windows: the edge the tray thread raises after it has shown
 /// the window itself.
 fn manual_open() {
-    #[cfg(target_os = "macos")]
     nudge_web::platform::request_manual_open();
-    #[cfg(target_os = "windows")]
-    nudge_web::platform::set_tray_clicked();
 }
 
 /// The frame the hide lands on. macOS: only the hidden window's shrink to one
