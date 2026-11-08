@@ -190,7 +190,7 @@ impl FixtureLog {
         let PhysicalKey(code) = edge.key;
         let line = format!(
             "{{\"keycode\":{code},\"modifiers\":{},\"ns_flags\":{ns_flags}}}\n",
-            edge.modifiers
+            edge.modifiers.bits()
         );
         if let Err(e) = file.write_all(line.as_bytes()) {
             eprintln!("[nudge] cannot record a key edge: {e}");

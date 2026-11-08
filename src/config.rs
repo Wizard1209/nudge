@@ -602,7 +602,7 @@ mod tests {
             ..Config::default()
         };
         let hk = cfg.hotkey_or_unbound().expect("Alt+J parses");
-        assert_eq!(hk.modifiers, hotkey::MOD_ALT);
+        assert_eq!(hk.modifiers, hotkey::Modifiers::ALT);
         assert_eq!(hk.key.as_str(), "J");
     }
 

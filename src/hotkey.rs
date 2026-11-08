@@ -5,11 +5,66 @@
 //! everything here is platform-agnostic so it is unit-tested on any host.
 
 use std::fmt;
+use std::ops::{BitOr, BitOrAssign};
 
-pub const MOD_CTRL: u8 = 1 << 0;
-pub const MOD_ALT: u8 = 1 << 1;
-pub const MOD_SHIFT: u8 = 1 << 2;
-pub const MOD_WIN: u8 = 1 << 3;
+/// The modifiers held with a hotkey's key: a set drawn from Ctrl, Alt, Shift
+/// and Win. `WIN` is the one bit every spelling of the platform key lands on
+/// — `Win`, `Super`, `Meta`, `Cmd`, `⌘` — and it is Command on macOS.
+///
+/// A type rather than a bare mask so it cannot be mixed up with the OS masks
+/// each backend translates it into, which travel right next to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+pub struct Modifiers(u8);
+
+impl Modifiers {
+    pub const NONE: Self = Self(0);
+    pub const CTRL: Self = Self(1 << 0);
+    pub const ALT: Self = Self(1 << 1);
+    pub const SHIFT: Self = Self(1 << 2);
+    pub const WIN: Self = Self(1 << 3);
+
+    /// Whether every modifier in `other` is held.
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// The set as the number the recorded keystreams store
+    /// (`tests/fixtures/keystreams`): written by the macOS recorder, read
+    /// back by the replay tier.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    /// The inverse of [`bits`](Self::bits); `None` for a number with a bit
+    /// that is not one of the four.
+    #[allow(dead_code)] // only the replay tier reads keystreams, through the lib
+    pub const fn from_bits(bits: u8) -> Option<Self> {
+        let all = Self::CTRL.0 | Self::ALT.0 | Self::SHIFT.0 | Self::WIN.0;
+        if bits & !all == 0 {
+            Some(Self(bits))
+        } else {
+            None
+        }
+    }
+}
+
+impl BitOr for Modifiers {
+    type Output = Self;
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl BitOrAssign for Modifiers {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
 
 /// The "real" key part of a hotkey — everything that isn't a modifier.
 /// Stored as the canonical, uppercased token (e.g. "A", "SPACE", "F5") so
@@ -25,7 +80,7 @@ impl HotkeyKey {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hotkey {
-    pub modifiers: u8,
+    pub modifiers: Modifiers,
     pub key: HotkeyKey,
 }
 
@@ -102,12 +157,12 @@ const MOD_GLYPH_WIN: char = '⌘';
 /// being unregistrable there, not "unknown token ⌥⌘J" — and the settings
 /// window on macOS writes this form into the file, so a config copied
 /// between machines has to keep meaning what it said.
-fn modifier_glyph(c: char) -> Option<u8> {
+fn modifier_glyph(c: char) -> Option<Modifiers> {
     match c {
-        MOD_GLYPH_CTRL => Some(MOD_CTRL),
-        MOD_GLYPH_ALT => Some(MOD_ALT),
-        MOD_GLYPH_SHIFT => Some(MOD_SHIFT),
-        MOD_GLYPH_WIN | '⊞' => Some(MOD_WIN),
+        MOD_GLYPH_CTRL => Some(Modifiers::CTRL),
+        MOD_GLYPH_ALT => Some(Modifiers::ALT),
+        MOD_GLYPH_SHIFT => Some(Modifiers::SHIFT),
+        MOD_GLYPH_WIN | '⊞' => Some(Modifiers::WIN),
         _ => None,
     }
 }
@@ -130,7 +185,7 @@ pub fn parse(input: &str) -> Result<Hotkey, ParseError> {
         return Err(ParseError::Empty);
     }
 
-    let mut modifiers: u8 = 0;
+    let mut modifiers = Modifiers::NONE;
     let mut key: Option<&str> = None;
 
     for segment in trimmed.split('+') {
@@ -154,10 +209,10 @@ pub fn parse(input: &str) -> Result<Hotkey, ParseError> {
         }
         let upper = tok.to_ascii_uppercase();
         match upper.as_str() {
-            "CTRL" | "CONTROL" => modifiers |= MOD_CTRL,
-            "ALT" | "OPTION" | "OPT" => modifiers |= MOD_ALT,
-            "SHIFT" => modifiers |= MOD_SHIFT,
-            "WIN" | "SUPER" | "META" | "CMD" | "COMMAND" => modifiers |= MOD_WIN,
+            "CTRL" | "CONTROL" => modifiers |= Modifiers::CTRL,
+            "ALT" | "OPTION" | "OPT" => modifiers |= Modifiers::ALT,
+            "SHIFT" => modifiers |= Modifiers::SHIFT,
+            "WIN" | "SUPER" | "META" | "CMD" | "COMMAND" => modifiers |= Modifiers::WIN,
             _ => {
                 // Judged here, not only in `from_parts` below, so that an
                 // unknown token is refused by name even when a key was
@@ -185,14 +240,14 @@ pub fn parse(input: &str) -> Result<Hotkey, ParseError> {
 /// the door a *typed* string comes through — [`parse`] tokenises and then ends
 /// here, so the platform never has to format a label and re-parse it to get a
 /// `Hotkey`, and there is one place that says what a key plus a mask may be.
-pub fn from_parts(modifiers: u8, token: &str) -> Result<Hotkey, ParseError> {
+pub fn from_parts(modifiers: Modifiers, token: &str) -> Result<Hotkey, ParseError> {
     let upper = token.to_ascii_uppercase();
     let key =
         canonicalize_key(&upper).ok_or_else(|| ParseError::UnknownToken(token.to_string()))?;
     // §5: at least one modifier, except for the F-row. The registration call
     // accepts a bare key on both platforms and then owns it machine-wide —
     // this is the only place that says no.
-    if modifiers == 0 && !is_function_key(&key) {
+    if modifiers.is_empty() && !is_function_key(&key) {
         return Err(ParseError::MissingModifier(key));
     }
     Ok(Hotkey {
@@ -347,16 +402,16 @@ const MOD_WIN_LABEL: &str = "Win";
 /// describe it.
 pub fn format(hk: &Hotkey) -> String {
     let mut parts: Vec<&str> = Vec::with_capacity(5);
-    if hk.modifiers & MOD_CTRL != 0 {
+    if hk.modifiers.contains(Modifiers::CTRL) {
         parts.push("Ctrl");
     }
-    if hk.modifiers & MOD_ALT != 0 {
+    if hk.modifiers.contains(Modifiers::ALT) {
         parts.push("Alt");
     }
-    if hk.modifiers & MOD_SHIFT != 0 {
+    if hk.modifiers.contains(Modifiers::SHIFT) {
         parts.push("Shift");
     }
-    if hk.modifiers & MOD_WIN != 0 {
+    if hk.modifiers.contains(Modifiers::WIN) {
         parts.push(MOD_WIN_LABEL);
     }
     let key_label = key_label(&hk.key.0);
@@ -420,12 +475,12 @@ pub fn format_native(hk: &Hotkey) -> String {
     {
         let mut out = String::with_capacity(8);
         for (bit, glyph) in [
-            (MOD_CTRL, MOD_GLYPH_CTRL),
-            (MOD_ALT, MOD_GLYPH_ALT),
-            (MOD_SHIFT, MOD_GLYPH_SHIFT),
-            (MOD_WIN, MOD_GLYPH_WIN),
+            (Modifiers::CTRL, MOD_GLYPH_CTRL),
+            (Modifiers::ALT, MOD_GLYPH_ALT),
+            (Modifiers::SHIFT, MOD_GLYPH_SHIFT),
+            (Modifiers::WIN, MOD_GLYPH_WIN),
         ] {
-            if hk.modifiers & bit != 0 {
+            if hk.modifiers.contains(bit) {
                 out.push(glyph);
             }
         }
@@ -472,7 +527,7 @@ mod tests {
     #[test]
     fn parses_ctrl_shift_space() {
         let hk = parse("Ctrl+Shift+Space").unwrap();
-        assert_eq!(hk.modifiers, MOD_CTRL | MOD_SHIFT);
+        assert_eq!(hk.modifiers, Modifiers::CTRL | Modifiers::SHIFT);
         assert_eq!(hk.key.as_str(), "SPACE");
     }
 
@@ -488,14 +543,14 @@ mod tests {
     #[test]
     fn tolerates_whitespace() {
         let hk = parse("  Ctrl +  Shift +Space  ").unwrap();
-        assert_eq!(hk.modifiers, MOD_CTRL | MOD_SHIFT);
+        assert_eq!(hk.modifiers, Modifiers::CTRL | Modifiers::SHIFT);
         assert_eq!(hk.key.as_str(), "SPACE");
     }
 
     #[test]
     fn accepts_control_alias() {
         let hk = parse("Control+A").unwrap();
-        assert_eq!(hk.modifiers, MOD_CTRL);
+        assert_eq!(hk.modifiers, Modifiers::CTRL);
         assert_eq!(hk.key.as_str(), "A");
     }
 
@@ -503,7 +558,7 @@ mod tests {
     fn accepts_win_super_meta_cmd_as_win() {
         for s in ["Win+J", "Super+J", "Meta+J", "Cmd+J"] {
             let hk = parse(s).unwrap();
-            assert_eq!(hk.modifiers, MOD_WIN, "for {}", s);
+            assert_eq!(hk.modifiers, Modifiers::WIN, "for {}", s);
             assert_eq!(hk.key.as_str(), "J", "for {}", s);
         }
     }
@@ -511,7 +566,7 @@ mod tests {
     #[test]
     fn single_letter_key_is_recognised() {
         let hk = parse("Ctrl+A").unwrap();
-        assert_eq!(hk.modifiers, MOD_CTRL);
+        assert_eq!(hk.modifiers, Modifiers::CTRL);
         assert_eq!(hk.key.as_str(), "A");
     }
 
@@ -549,7 +604,7 @@ mod tests {
     #[test]
     fn duplicate_modifiers_collapse() {
         let hk = parse("Ctrl+Ctrl+A").unwrap();
-        assert_eq!(hk.modifiers, MOD_CTRL);
+        assert_eq!(hk.modifiers, Modifiers::CTRL);
     }
 
     #[test]
@@ -629,7 +684,7 @@ mod tests {
         // This is the shape the settings field holds on macOS, so if it does
         // not parse, Save writes a hotkey the next launch cannot read.
         let hk = parse("⌥⌘J").unwrap();
-        assert_eq!(hk.modifiers, MOD_ALT | MOD_WIN);
+        assert_eq!(hk.modifiers, Modifiers::ALT | Modifiers::WIN);
         assert_eq!(hk.key.as_str(), "J");
     }
 
@@ -755,7 +810,7 @@ mod tests {
     fn the_f_row_may_stand_alone() {
         for s in ["F1", "F13", "F24"] {
             let hk = parse(s).unwrap_or_else(|e| panic!("{s} should parse: {e}"));
-            assert_eq!(hk.modifiers, 0);
+            assert_eq!(hk.modifiers, Modifiers::NONE);
             assert_eq!(hk.key.as_str(), s);
         }
     }
@@ -778,7 +833,7 @@ mod tests {
             let typed = parse(&format!("Ctrl+{token}")).unwrap_or_else(|e| {
                 panic!("Ctrl+{token} must parse: {e}");
             });
-            let built = from_parts(MOD_CTRL, &token)
+            let built = from_parts(Modifiers::CTRL, &token)
                 .unwrap_or_else(|e| panic!("from_parts(Ctrl, {token}) must build: {e}"));
             assert_eq!(built, typed, "token {token}");
         }
@@ -789,11 +844,11 @@ mod tests {
         // Same rule, same error, same exception — this door cannot be the one
         // that lets a bare letter through.
         assert!(matches!(
-            from_parts(0, "J"),
+            from_parts(Modifiers::NONE, "J"),
             Err(ParseError::MissingModifier(_))
         ));
-        let f13 = from_parts(0, "F13").expect("the F-row may stand alone");
-        assert_eq!(f13.modifiers, 0);
+        let f13 = from_parts(Modifiers::NONE, "F13").expect("the F-row may stand alone");
+        assert_eq!(f13.modifiers, Modifiers::NONE);
         assert_eq!(f13.key.as_str(), "F13");
     }
 
@@ -802,11 +857,11 @@ mod tests {
         // A platform reporting a key by an accepted spelling gets the same
         // hotkey a user typing it does.
         assert_eq!(
-            from_parts(MOD_WIN, "esc").unwrap(),
+            from_parts(Modifiers::WIN, "esc").unwrap(),
             parse("Cmd+Escape").unwrap()
         );
         assert!(matches!(
-            from_parts(MOD_CTRL, "Numpad5"),
+            from_parts(Modifiers::CTRL, "Numpad5"),
             Err(ParseError::UnknownToken(t)) if t == "Numpad5"
         ));
     }

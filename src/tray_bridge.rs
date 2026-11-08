@@ -39,9 +39,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::config;
 use crate::config_watcher::{LiveChange, LiveConfig};
 use crate::daisy;
-use crate::hotkey::{
-    self, Hotkey, MOD_ALT as MY_MOD_ALT, MOD_CTRL, MOD_SHIFT as MY_MOD_SHIFT, MOD_WIN as MY_MOD_WIN,
-};
+use crate::hotkey::{self, Hotkey, Modifiers};
 use crate::nudge_state;
 use crate::platform::shared;
 
@@ -207,18 +205,18 @@ fn vk_for_key(key: &str) -> Option<u32> {
     }
 }
 
-fn modifiers_to_win32(m: u8) -> HOT_KEY_MODIFIERS {
+fn modifiers_to_win32(m: Modifiers) -> HOT_KEY_MODIFIERS {
     let mut out = MOD_NOREPEAT;
-    if m & MOD_CTRL != 0 {
+    if m.contains(Modifiers::CTRL) {
         out |= MOD_CONTROL;
     }
-    if m & MY_MOD_ALT != 0 {
+    if m.contains(Modifiers::ALT) {
         out |= MOD_ALT;
     }
-    if m & MY_MOD_SHIFT != 0 {
+    if m.contains(Modifiers::SHIFT) {
         out |= MOD_SHIFT;
     }
-    if m & MY_MOD_WIN != 0 {
+    if m.contains(Modifiers::WIN) {
         out |= MOD_WIN;
     }
     out
