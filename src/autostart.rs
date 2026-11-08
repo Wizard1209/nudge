@@ -363,10 +363,18 @@ impl MacLaunchAgentProvider {
         let program = std::fs::canonicalize(&exe).unwrap_or(exe);
 
         let home = dirs::home_dir().ok_or_else(|| "cannot resolve home directory".to_string())?;
-        Ok(Self {
-            plist_path: launch_agent_plist_path(&home, LAUNCH_AGENT_LABEL),
+        Ok(Self::in_home(&home, program))
+    }
+
+    /// A provider whose plist lives under `home` and names `program`. What
+    /// [`Self::for_current_exe`] builds over the real home and the running
+    /// binary, and what a test builds over a temp dir — the plist half of this
+    /// provider is then exercised without the process's `HOME` ever changing.
+    pub fn in_home(home: &std::path::Path, program: std::path::PathBuf) -> Self {
+        Self {
+            plist_path: launch_agent_plist_path(home, LAUNCH_AGENT_LABEL),
             program,
-        })
+        }
     }
 
     /// Where this provider writes its plist.
