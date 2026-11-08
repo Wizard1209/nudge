@@ -116,6 +116,18 @@ pub struct LoadedSprite {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl LoadedSprite {
+    /// The sprite a config asks for, decoded; `None` while it is off. A PNG
+    /// that fails the check counts as off (§10): say why, show the plain card.
+    fn from_config(cfg: &SpriteConfig) -> Option<Self> {
+        match crate::sprite_png::load_sprite(cfg)? {
+            Ok(decoded) => Some(Self::decoded(decoded, cfg.clone())),
+            Err(reason) => {
+                eprintln!("[nudge] sprite not shown: {reason}");
+                None
+            }
+        }
+    }
+
     fn decoded(sprite: crate::sprite_png::DecodedSprite, cfg: SpriteConfig) -> Self {
         let image = egui::ColorImage::from_rgba_unmultiplied(
             [sprite.px[0] as usize, sprite.px[1] as usize],
@@ -315,9 +327,19 @@ impl NudgeApp {
         }
     }
 
-    /// Paint this sprite over the card. Uploaded once, here; drawn at its
-    /// native pixel density, so the texture is never filtered.
+    /// Paint the sprite `cfg` asks for over the card, if it asks for one and
+    /// the file passes the §10 check. Drawn at its native pixel density, so
+    /// the texture is never filtered.
     #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_sprite_config(mut self, cfg: &SpriteConfig) -> Self {
+        self.sprite = LoadedSprite::from_config(cfg);
+        self
+    }
+
+    /// Paint already-decoded pixels over the card. The kittest tier's hook,
+    /// where the sprite comes from fixture bytes rather than a file.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[allow(dead_code)]
     pub fn with_sprite(
         mut self,
         sprite: crate::sprite_png::DecodedSprite,
@@ -351,16 +373,7 @@ impl NudgeApp {
         if let Some(tex) = self.sprite.take().and_then(|s| s.tex) {
             self.retired_textures.push(tex);
         }
-        // A PNG that fails the check counts as off (§10): say why, show the
-        // plain card.
-        self.sprite = match crate::sprite_png::load_sprite(&cfg) {
-            Some(Ok(decoded)) => Some(LoadedSprite::decoded(decoded, cfg)),
-            Some(Err(reason)) => {
-                eprintln!("[nudge] sprite not shown: {reason}");
-                None
-            }
-            None => None,
-        };
+        self.sprite = LoadedSprite::from_config(&cfg);
         self.placed = None;
     }
 

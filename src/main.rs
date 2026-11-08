@@ -286,9 +286,7 @@ fn run_settings_ui() -> eframe::Result {
         Box::new(move |c: &config::Config| config::save(&path_for_persist, c));
     // §9: an enabled sprite must pass the §10 check or Save refuses it.
     let sprite_check: settings_app::SpriteCheckFn = Box::new(|path: &std::path::Path| {
-        sprite_png::check_sprite_file(path)
-            .map(|_size| ())
-            .map_err(|e| e.to_string())
+        sprite_png::check_sprite_file(path).map_err(|e| e.to_string())
     });
     // §5: a saved combination someone else holds is warned about, not
     // refused. Windows answers nothing here: its arbitration is documented
@@ -384,16 +382,6 @@ fn main() -> eframe::Result {
             config::DEFAULT_INTERVAL_MINUTES
         );
     }
-    // A PNG that fails the check is not a sprite (spec §10): say why, show
-    // the plain card.
-    let sprite = match sprite_png::load_sprite(&config.sprite) {
-        Some(Ok(decoded)) => Some((decoded, config.sprite.clone())),
-        Some(Err(reason)) => {
-            eprintln!("[nudge] sprite not shown: {reason}");
-            None
-        }
-        None => None,
-    };
 
     // Whatever OS integration this platform has, started before the event
     // loop takes the main thread.
@@ -527,11 +515,9 @@ fn main() -> eframe::Result {
             // The half of the OS integration that needs the main thread to
             // already be the event loop: the status item and the hotkey.
             platform::start_on_event_loop(&cc.egui_ctx);
-            let mut app = NudgeApp::new(cc, default_minutes);
-            if let Some((decoded, cfg)) = sprite {
-                app = app.with_sprite(decoded, cfg);
-            }
-            Ok(Box::new(app))
+            Ok(Box::new(
+                NudgeApp::new(cc, default_minutes).with_sprite_config(&config.sprite),
+            ))
         }),
     )
 }

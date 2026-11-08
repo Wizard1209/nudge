@@ -33,8 +33,7 @@ fn g1() -> ScreenGeometry {
 }
 
 fn green_sprite() -> DecodedSprite {
-    let (rgba, px) = decode_rgba(GREEN).expect("the green fixture decodes");
-    DecodedSprite { rgba, px }
+    decode_rgba(GREEN).expect("the green fixture decodes")
 }
 
 /// Our sprite's config: hanging above and left of a 679 pt card.
