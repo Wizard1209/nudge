@@ -4,6 +4,7 @@ use crate::config::SpriteConfig;
 use crate::journal::{self, JournalSink};
 use crate::layout::{self, PopupLayout, ScreenGeometry};
 use crate::nudge_state::{self, Action, TriggerSource};
+#[cfg(target_arch = "wasm32")]
 use crate::timer::Timer;
 use crate::word_jump;
 
@@ -187,6 +188,9 @@ pub struct NudgeApp {
     center_once: bool,
 
     // Shared state
+    /// The browser's countdown, polled by `ui`. Native has none here: the
+    /// platform runs the countdown there (`arm_timer`).
+    #[cfg(target_arch = "wasm32")]
     timer: Timer,
     /// Where a Submit's event goes. The real store for this build unless the
     /// kittest tier hands in a recorder (`with_journal_sink`).
@@ -292,8 +296,9 @@ impl NudgeApp {
             focus_first: true,
             center_once: true,
             // Spec §4: timer is frozen until the user closes the popup for
-            // the first time (Submit / Esc / Switch). hide_popup → reset()
+            // the first time (Submit / Esc / Switch). hide_popup → arm_timer
             // unfreezes it with the interval the user chose.
+            #[cfg(target_arch = "wasm32")]
             timer: Timer::frozen(),
             journal: journal::default_sink(),
             trigger_source: TriggerSource::Timer,
@@ -624,11 +629,8 @@ impl NudgeApp {
         }
     }
 
-    /// Close the popup (spec §4) and take the window off screen. On macOS a
-    /// placed window is shrunk to one point in this pass and ordered out in
-    /// the next: AppKit resizes the presentation surfaces only of a window
-    /// that is still on screen, and the pass in between paints one
-    /// transparent 1×1 frame nobody sees.
+    /// Close the popup (spec §4): execute the close decision, take the
+    /// window off screen, start the next interval if the decision says so.
     // `ctx` is only needed to hide the native window; the browser build has
     // none.
     #[cfg_attr(target_arch = "wasm32", expect(unused_variables))]
@@ -670,15 +672,9 @@ impl NudgeApp {
         // Clear error on successful action
         self.error_message = None;
 
-        // Shared: timer reset. `Some(interval)` ⇒ reset; `None` ⇒ leave the
-        // live timer ticking (manual Esc / Switch).
-        if let Some(interval) = outcome.reset_timer {
-            self.timer.reset(interval);
-        }
-
-        // Shared: reset form per the decision. Only Submit clears
-        // doing/bullshit; Esc and Switch preserve them so the next open
-        // resumes where the user left off.
+        // Reset the form per the decision. Only Submit clears doing/bullshit;
+        // Esc and Switch preserve them so the next open resumes where the
+        // user left off.
         if outcome.clear_form {
             self.doing.clear();
             self.bullshit.clear();
@@ -693,52 +689,67 @@ impl NudgeApp {
         // back away.
         self.card_rect = None;
 
-        // macOS: shrink the hidden window to one point, so neither the GL
-        // drawable nor the window server keeps work-area-sized buffers for
-        // the whole interval. Only a window `place_window` placed: that is
-        // the one `restore_window` knows how to give its frame back. Its
-        // order-out then waits a pass (`order_out_after_pass`).
-        #[cfg(target_os = "macos")]
-        let order_out_now = if self.placed.take().is_some() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(HIDDEN_WINDOW_SIZE));
-            self.window_shrunk = true;
-            self.order_out_after_pass = Some(ctx.cumulative_pass_nr());
-            ctx.request_repaint();
-            false
-        } else {
-            true
-        };
-        #[cfg(all(not(target_os = "macos"), not(target_arch = "wasm32")))]
-        let order_out_now = true;
-
-        // Tell egui the viewport is hidden. Without this, egui's event
-        // loop keeps pumping/scheduling for the "visible" viewport even
-        // when we SW_HIDE the HWND directly — winit then burns a full
-        // core on the main thread despite update() never being called.
         #[cfg(not(target_arch = "wasm32"))]
-        if order_out_now {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        self.withdraw_window(ctx);
+
+        // `Some(interval)` ⇒ start the next interval; `None` ⇒ leave the live
+        // timer ticking (manual Esc / Switch).
+        if let Some(interval) = outcome.reset_timer {
+            self.arm_timer(interval);
         }
 
-        // Native: hand the platform the new deadline, then tell it the popup
-        // is gone. Whatever owns the countdown there — the tray thread on
-        // Windows, `App::logic` on macOS — takes it from here and wakes the
-        // popup when it expires.
+        // Native: tell the platform the popup is gone. Whatever owns the
+        // countdown there — the tray thread on Windows, `App::logic` on macOS
+        // — takes it from here and wakes the popup when it expires.
         #[cfg(not(target_arch = "wasm32"))]
         {
-            if let Some(interval) = outcome.reset_timer {
-                let deadline = std::time::Instant::now() + interval;
-                crate::platform::set_timer_state(crate::platform::ArmedTimer {
-                    deadline,
-                    duration: interval,
-                });
-            }
             crate::platform::set_popup_visible(false);
             // Hidden now: a change that waited for this close goes in before
             // the next reveal, which on Windows the tray thread may do
             // before another frame runs.
             self.apply_pending_sprite();
         }
+    }
+
+    /// Start the next interval. The countdown belongs to whoever runs it:
+    /// the platform on native, which wakes the popup on expiry; this app's
+    /// own `Timer` in the browser, which `ui` polls every frame.
+    fn arm_timer(&mut self, interval: std::time::Duration) {
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::platform::set_timer_state(crate::platform::ArmedTimer {
+            deadline: std::time::Instant::now() + interval,
+            duration: interval,
+        });
+        #[cfg(target_arch = "wasm32")]
+        self.timer.reset(interval);
+    }
+
+    /// Take the native window off screen. On macOS a placed window is shrunk
+    /// to one point in this pass and ordered out in the next: AppKit resizes
+    /// the presentation surfaces only of a window that is still on screen,
+    /// and the pass in between paints one transparent 1×1 frame nobody sees.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn withdraw_window(&mut self, ctx: &egui::Context) {
+        // macOS: shrink the hidden window to one point, so neither the GL
+        // drawable nor the window server keeps work-area-sized buffers for
+        // the whole interval. Only a window `place_window` placed: that is
+        // the one `restore_window` knows how to give its frame back. Its
+        // order-out then waits a pass (`order_out_after_pass`).
+        #[cfg(target_os = "macos")]
+        if self.placed.take().is_some() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(HIDDEN_WINDOW_SIZE));
+            self.window_shrunk = true;
+            self.order_out_after_pass = Some(ctx.cumulative_pass_nr());
+            ctx.request_repaint();
+            return;
+        }
+
+        // Tell egui the viewport is hidden. Without this, egui's event
+        // loop keeps pumping/scheduling for the "visible" viewport even
+        // when the platform hides the native window directly — winit then
+        // burns a full core on the main thread despite update() never being
+        // called.
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
     }
 
     fn card_frame() -> egui::Frame {
