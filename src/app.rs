@@ -689,21 +689,10 @@ impl NudgeApp {
             }
         };
 
-        if outcome.write_journal {
-            // The interval the journal records is whatever the decision is
-            // about to reset the timer to. `write_journal` implies Submit,
-            // and Submit always resets, so `reset_timer` is `Some` here.
-            let minutes: f64 = outcome
-                .reset_timer
-                .map(|d| d.as_secs_f64() / 60.0)
-                .unwrap_or(10.0);
-            let trigger = match self.trigger_source {
-                TriggerSource::Timer => "timer",
-                TriggerSource::Manual => "manual",
-            };
+        if let Some(minutes) = outcome.journal_minutes {
             let event = crate::journal::new_submitted_event(
                 Self::now_timestamp(),
-                trigger,
+                self.trigger_source,
                 self.doing.clone(),
                 self.bullshit.clone(),
                 minutes,

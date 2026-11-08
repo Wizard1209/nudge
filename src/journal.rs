@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+use crate::nudge_state::TriggerSource;
+
 /// A single journal event in NDJSON format per the journal spec.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JournalEvent {
@@ -174,10 +176,19 @@ pub fn write_event_to_localstorage(event: &JournalEvent) -> Result<(), JournalEr
     Ok(())
 }
 
+/// How the journal spells each way a popup can open — the `trigger_source`
+/// vocabulary of the on-disk contract, which [`validate_event`] checks.
+fn trigger_source_name(source: TriggerSource) -> &'static str {
+    match source {
+        TriggerSource::Timer => "timer",
+        TriggerSource::Manual => "manual",
+    }
+}
+
 /// Create a new JournalEvent with all required fields for a v1 submission.
 pub fn new_submitted_event(
     captured_at: String,
-    trigger_source: &str,
+    trigger_source: TriggerSource,
     doing: String,
     bullshit: String,
     next_interval_minutes: f64,
@@ -188,7 +199,7 @@ pub fn new_submitted_event(
         entry_id: ulid::Ulid::new().to_string(),
         captured_at,
         implementation: "rust".to_string(),
-        trigger_source: trigger_source.to_string(),
+        trigger_source: trigger_source_name(trigger_source).to_string(),
         doing,
         bullshit,
         next_interval_minutes,
@@ -202,7 +213,7 @@ mod tests {
     fn test_event() -> JournalEvent {
         new_submitted_event(
             "2026-04-17T14:30:00.000+02:00".to_string(),
-            "timer",
+            TriggerSource::Timer,
             "writing tests".to_string(),
             "no".to_string(),
             10.0,
@@ -282,7 +293,7 @@ mod tests {
     fn serialize_float_interval() {
         let e = new_submitted_event(
             "2026-04-17T14:30:00.000+02:00".to_string(),
-            "manual",
+            TriggerSource::Manual,
             "test".to_string(),
             "no".to_string(),
             0.5,
@@ -296,7 +307,7 @@ mod tests {
     fn unicode_roundtrips() {
         let e = new_submitted_event(
             "2026-04-17T14:30:00.000+02:00".to_string(),
-            "timer",
+            TriggerSource::Timer,
             "пишу код 🚀".to_string(),
             "нет 你好".to_string(),
             10.0,
@@ -311,7 +322,7 @@ mod tests {
     fn special_chars_roundtrip() {
         let e = new_submitted_event(
             "2026-04-17T14:30:00.000+02:00".to_string(),
-            "timer",
+            TriggerSource::Timer,
             "tea, coffee, or \"water\"".to_string(),
             "line1\nline2".to_string(),
             10.0,
@@ -387,14 +398,14 @@ mod tests {
 
             let e1 = new_submitted_event(
                 "2026-04-17T14:30:00.000+02:00".to_string(),
-                "timer",
+                TriggerSource::Timer,
                 "first".to_string(),
                 "no".to_string(),
                 10.0,
             );
             let e2 = new_submitted_event(
                 "2026-04-17T14:40:00.000+02:00".to_string(),
-                "manual",
+                TriggerSource::Manual,
                 "second".to_string(),
                 "maybe".to_string(),
                 5.0,
@@ -434,7 +445,7 @@ mod tests {
 
             let e = new_submitted_event(
                 "2026-04-17T14:30:00.000+02:00".to_string(),
-                "timer",
+                TriggerSource::Timer,
                 "пишу код 🚀".to_string(),
                 "нет".to_string(),
                 10.0,
@@ -454,7 +465,7 @@ mod tests {
 
             let e = new_submitted_event(
                 "2026-04-17T14:30:00.000+02:00".to_string(),
-                "timer",
+                TriggerSource::Timer,
                 "tea, coffee, or \"water\"".to_string(),
                 "line1\nline2".to_string(),
                 10.0,

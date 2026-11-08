@@ -26,8 +26,9 @@ pub enum Action {
 /// The full plan for closing the popup, computed in one place from the spec
 /// §4 truth table. `decide_close` returns this; the caller (`NudgeApp::
 /// hide_popup`) is a thin executor that performs exactly the I/O the plan
-/// dictates — write the journal iff `write_journal`, reset the timer iff
-/// `reset_timer` is `Some`, clear the text fields iff `clear_form`.
+/// dictates — write the journal iff `journal_minutes` is `Some`,
+/// reset the timer iff `reset_timer` is `Some`, clear the text fields iff
+/// `clear_form`.
 ///
 /// Folding the four old `should_*` predicates + interval parsing into one
 /// outcome makes spec §4 a single coherent decision instead of four
@@ -37,10 +38,10 @@ pub enum Action {
 /// the right test surface.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CloseOutcome {
-    /// Append a journal entry for this close. Only Submit with at least one
-    /// non-empty text field; the empty-Submit path is "change interval
-    /// without journaling".
-    pub write_journal: bool,
+    /// Append a journal entry for this close, recording this many minutes as
+    /// the next interval. Only Submit with at least one non-empty text field;
+    /// the empty-Submit path is "change interval without journaling".
+    pub journal_minutes: Option<f64>,
     /// Reset the timer to this interval, or `None` to leave it ticking.
     /// `Some` whenever the popup was timer-fired (its deadline is already in
     /// the past — not rescheduling would refire instantly) or the user hit
@@ -86,12 +87,13 @@ pub fn decide_close(
     // reschedule; otherwise Submit (user chose a new interval) resets too.
     let reset = matches!(source, TriggerSource::Timer) || matches!(action, Action::Submit);
 
-    // Submit writes only if at least one free-text field is non-empty.
+    // Submit writes only if at least one free-text field is non-empty, and
+    // what it records is the interval the timer is about to be reset to.
     let write_journal =
         action == Action::Submit && !(doing.trim().is_empty() && bullshit.trim().is_empty());
 
     Ok(CloseOutcome {
-        write_journal,
+        journal_minutes: write_journal.then(|| interval.as_secs_f64() / 60.0),
         reset_timer: reset.then_some(interval),
         // Only Submit clears the form; Esc and Switch preserve it.
         clear_form: matches!(action, Action::Submit),
@@ -208,7 +210,7 @@ mod tests {
         assert_eq!(
             o,
             CloseOutcome {
-                write_journal: true,
+                journal_minutes: Some(5.0),
                 reset_timer: Some(five_min()),
                 clear_form: true,
             }
@@ -227,7 +229,7 @@ mod tests {
             Some(five_min()),
             "timer-fired Esc must reset"
         );
-        assert!(!o.write_journal);
+        assert_eq!(o.journal_minutes, None);
         assert!(!o.clear_form);
     }
 
@@ -236,7 +238,7 @@ mod tests {
         // Same structural reason as the Dismiss case.
         let o = decide_close(TriggerSource::Timer, Action::SwitchAway, "", "", "5").unwrap();
         assert_eq!(o.reset_timer, Some(five_min()));
-        assert!(!o.write_journal);
+        assert_eq!(o.journal_minutes, None);
         assert!(!o.clear_form);
     }
 
@@ -247,7 +249,7 @@ mod tests {
         // form is preserved.
         let o = decide_close(TriggerSource::Manual, Action::Dismiss, "doing", "x", "5").unwrap();
         assert_eq!(o.reset_timer, None, "manual Esc must not reschedule");
-        assert!(!o.write_journal);
+        assert_eq!(o.journal_minutes, None);
         assert!(!o.clear_form);
     }
 
@@ -255,7 +257,7 @@ mod tests {
     fn manual_switch_away_leaves_timer_alone() {
         let o = decide_close(TriggerSource::Manual, Action::SwitchAway, "doing", "", "5").unwrap();
         assert_eq!(o.reset_timer, None);
-        assert!(!o.write_journal);
+        assert_eq!(o.journal_minutes, None);
         assert!(!o.clear_form);
     }
 
@@ -265,7 +267,7 @@ mod tests {
         // explicitly chose a new interval.
         let o = decide_close(TriggerSource::Manual, Action::Submit, "doing", "", "5").unwrap();
         assert_eq!(o.reset_timer, Some(five_min()));
-        assert!(o.write_journal);
+        assert!(o.journal_minutes.is_some());
         assert!(o.clear_form);
     }
 
@@ -277,7 +279,7 @@ mod tests {
         for (doing, bullshit) in [("", ""), ("   ", "\t\n")] {
             let o =
                 decide_close(TriggerSource::Manual, Action::Submit, doing, bullshit, "5").unwrap();
-            assert!(!o.write_journal, "empty Submit must not write");
+            assert_eq!(o.journal_minutes, None, "empty Submit must not write");
             assert_eq!(o.reset_timer, Some(five_min()), "but it still resets");
             assert!(o.clear_form);
         }
@@ -288,7 +290,10 @@ mod tests {
         for (doing, bullshit) in [("x", ""), ("", "y"), ("x", "y")] {
             let o =
                 decide_close(TriggerSource::Manual, Action::Submit, doing, bullshit, "5").unwrap();
-            assert!(o.write_journal, "Submit with content must write");
+            assert!(
+                o.journal_minutes.is_some(),
+                "Submit with content must write"
+            );
         }
     }
 
@@ -311,7 +316,7 @@ mod tests {
         // timer-fired source that means it resets to 10 minutes.
         let o = decide_close(TriggerSource::Timer, Action::Dismiss, "doing", "", "-5").unwrap();
         assert_eq!(o.reset_timer, Some(Duration::from_secs(10 * 60)));
-        assert!(!o.write_journal);
+        assert_eq!(o.journal_minutes, None);
     }
 
     #[test]
