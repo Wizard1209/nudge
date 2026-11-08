@@ -107,9 +107,19 @@ pub fn force_foreground(hwnd: HWND) {
 }
 
 /// A manual summons — the tray's left click, its "Show Nudge" item, the
-/// global hotkey: raise the edge `NudgeApp::ui` turns into a Manual open and
-/// bring the popup to the foreground so a frame runs to see it.
+/// global hotkey: mark the popup visible, raise the edge `NudgeApp::ui`
+/// turns into a Manual open, and bring the popup to the foreground so a
+/// frame runs to see it.
+///
+/// Marked visible here, not only by `show_popup` a frame later, for the
+/// reason macOS's `reveal` gives: these handlers run on the tray thread, and
+/// the loop's next pass would otherwise count down while `ui()` has not yet
+/// caught up. A deadline passing in that gap was disarmed and its edge
+/// dropped by the manual card, and a manual Esc does not re-arm, so the app
+/// stopped nudging. Now the loop parks, and an expiry that fell inside the
+/// manual open is still armed when the card closes, and fires then.
 pub fn request_manual_open() {
+    shared::set_popup_visible(true);
     shared::raise_tray_clicked();
     wake_eframe();
 }
