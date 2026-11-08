@@ -2,13 +2,14 @@
 //!
 //! The tray thread there owns the timer, the hotkey and the popup wakeup.
 //! What lives here is what the seam needs on top: adapters for the entry
-//! points whose signatures carried `HWND`, and the screen the popup is laid
-//! out on (spec §1), which `tray_bridge::force_foreground` picks at show time.
+//! points whose signatures carried `HWND`, the screen the popup is laid out
+//! on (spec §1), which `tray_bridge::force_foreground` picks at show time,
+//! and the settings window's single-instance guard.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicIsize, Ordering};
 
-use ::windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, TRUE, WPARAM};
+use ::windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, TRUE, WPARAM};
 use ::windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
 };
@@ -236,6 +237,44 @@ pub fn screen_geometry(ctx: &egui::Context, frame: &eframe::Frame) -> Option<Scr
         monitor: points(monitor),
         work: points(work),
     })
+}
+
+/// Permission to be the settings window: a named kernel mutex, held for the
+/// life of the process. Not released explicitly — Windows reclaims it when
+/// the process exits, which is exactly when the window is gone.
+pub struct SettingsLock {
+    _mutex: HANDLE,
+}
+
+/// Acquire the settings window's single-instance guard, or `None` when
+/// another settings process already holds it and this one should exit
+/// silently. A failure to create the mutex yields an unheld lock rather than
+/// `None`: "we could not tell" must not turn the Settings menu item into a
+/// no-op.
+pub fn acquire_settings_singleton() -> Option<SettingsLock> {
+    use ::windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+    use ::windows::Win32::System::Threading::CreateMutexW;
+    use ::windows::core::PCWSTR;
+
+    // Name lives in the kernel namespace global to the user session;
+    // `Global\` would require admin rights, so use a per-session name and
+    // accept that two users on the same machine each get one window.
+    let name: Vec<u16> = "Local\\NudgeSettings\0".encode_utf16().collect();
+    // SAFETY: `name` is a NUL-terminated UTF-16 string that outlives the call.
+    unsafe {
+        let mutex = match CreateMutexW(None, true, PCWSTR(name.as_ptr())) {
+            Ok(h) => h,
+            Err(_) => {
+                return Some(SettingsLock {
+                    _mutex: HANDLE::default(),
+                });
+            }
+        };
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            return None;
+        }
+        Some(SettingsLock { _mutex: mutex })
+    }
 }
 
 /// No-op on Windows: the shortcut vocabulary here is words (`Ctrl+Shift+A`),
