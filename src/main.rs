@@ -221,16 +221,10 @@ fn run_settings_ui() -> eframe::Result {
         None => return Ok(()),
     };
 
-    // Load config from the same path the main process uses: a saved change
+    // Load config from the same file the main process uses: a saved change
     // reaches the running app through its file watcher.
-    let cli_config_path = config::parse_config_arg(std::env::args().skip(1));
-    let config_path = cli_config_path
-        .clone()
-        .unwrap_or_else(config::resolve_default_config_path);
-    if cli_config_path.is_none() {
-        config::migrate_legacy_config(&config_path);
-    }
-    let (cfg, err) = config::load_or_default(&config_path);
+    let config_file = config::ConfigFile::from_args(std::env::args().skip(1));
+    let (cfg, err) = config_file.load();
     if let Some(e) = err {
         eprintln!("[nudge-settings] {e}");
     }
@@ -281,7 +275,7 @@ fn run_settings_ui() -> eframe::Result {
     // Persistence closure: write atomically to the same config path the
     // main process reads from on launch. Move-captures the path; the
     // closure is held by SettingsApp for the lifetime of the window.
-    let path_for_persist = config_path.clone();
+    let path_for_persist = config_file.path().to_path_buf();
     let persist: settings_app::PersistFn =
         Box::new(move |c: &config::Config| config::save(&path_for_persist, c));
     // §9: an enabled sprite must pass the §10 check or Save refuses it.
@@ -352,27 +346,14 @@ fn main() -> eframe::Result {
 
     // Load the user config (or use defaults). Bad / missing files are
     // logged but never fatal — the app must always come up.
-    //
-    // `--config <path>` overrides the default location. When the override is
-    // set we also skip first-run seeding: a caller pointing at a custom file
-    // (perf test, throwaway sandbox) doesn't want a default file silently
-    // materialized alongside it.
-    let cli_config_path = config::parse_config_arg(std::env::args().skip(1));
-    let config_path = cli_config_path
-        .clone()
-        .unwrap_or_else(config::resolve_default_config_path);
-    if cli_config_path.is_none() {
-        config::migrate_legacy_config(&config_path);
-    }
-    let (config, config_err) = config::load_or_default(&config_path);
+    let config_file = config::ConfigFile::from_args(std::env::args().skip(1));
+    let (config, config_err) = config_file.load();
     if let Some(err) = config_err {
         eprintln!("[nudge] {err}");
-    } else if cli_config_path.is_none() && !config_path.exists() {
-        // First run: seed the file so users have a template to edit.
-        if let Err(e) = config::ensure_default_written(&config_path) {
-            eprintln!("[nudge] failed to write default config: {e}");
-        }
+    } else if let Err(e) = config_file.seed_default_if_missing() {
+        eprintln!("[nudge] failed to write default config: {e}");
     }
+    let config_path = config_file.path().to_path_buf();
     let configured_hotkey = config.hotkey_or_unbound();
     let (default_minutes, interval_was_invalid) = config.resolved_interval_minutes();
     if interval_was_invalid {
