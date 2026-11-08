@@ -336,12 +336,10 @@ fn tray_thread_main(hotkey: Option<Hotkey>, config_path: PathBuf, initial_config
     // Hold these so they aren't dropped — menu only keeps weak refs.
     let _menu_items = (show_item, settings_item, quit_item);
 
-    // We dedupe identical icon updates so set_icon isn't called every loop.
-    // State key: (petals_remaining, drift_progress_x100, drift_active).
-    let mut last_state_key: (u8, u16, bool) = (255, 0, false);
-    // Dedupe tooltip updates the same way — only call set_tooltip when the
-    // rendered minute number changes (spec §5: "updated once per minute").
-    // `None` forces a refresh on the first loop iteration after a new timer.
+    // Dedupe keys, so `set_icon` / `set_tooltip` are only called when what
+    // they would display actually changes. `None` forces a refresh on the
+    // first pass after a new timer.
+    let mut last_icon_key: Option<shared::IconKey> = None;
     let mut last_tooltip_minutes: Option<u64> = None;
     loop {
         drain_messages();
@@ -370,51 +368,31 @@ fn tray_thread_main(hotkey: Option<Hotkey>, config_path: PathBuf, initial_config
             }
         };
 
-        let now = Instant::now();
-        // Let elapsed keep growing past `duration` so the final drift
-        // animation can finish before we settle on the bare-center frame.
-        let elapsed = if now >= timer.deadline {
-            timer.duration + now.duration_since(timer.deadline)
-        } else {
-            timer
-                .duration
-                .saturating_sub(timer.deadline.duration_since(now))
-        };
+        // The timeline is `shared`'s; what is this thread's is the Win32 I/O.
+        let countdown = timer.observe(Instant::now());
 
-        // Spec §5 timeline math lives in `daisy::frame_at` (pure + tested);
-        // the tray thread keeps only the wall-clock measurement above and the
-        // Win32 I/O below.
-        let frame = daisy::frame_at(timer.duration, elapsed);
-        let petals_remaining = frame.petals_remaining;
-        let drift = frame.drift;
-
-        let drift_scaled = drift.map(|d| (d.progress * 100.0) as u16).unwrap_or(0);
-        let key = (petals_remaining, drift_scaled, drift.is_some());
-        if key != last_state_key {
-            if let Ok(icon) = tray_icon_frame(petals_remaining, drift) {
+        let icon_key = countdown.icon_key();
+        if last_icon_key != Some(icon_key) {
+            let frame = &countdown.frame;
+            if let Ok(icon) = tray_icon_frame(frame.petals_remaining, frame.drift) {
                 let _ = tray.set_icon(Some(icon));
             }
-            last_state_key = key;
+            last_icon_key = Some(icon_key);
         }
 
-        // Tooltip — refresh only when the displayed minute number changes.
-        // `remaining` saturates at zero past the deadline, so `tooltip_for_remaining`
-        // produces "now" during the drift-to-fire window.
-        let remaining = timer.deadline.saturating_duration_since(now);
-        let mins_now = nudge_state::displayed_minutes(remaining);
-        if last_tooltip_minutes != Some(mins_now) {
-            let text = nudge_state::tooltip_for_remaining(remaining);
-            let _ = tray.set_tooltip(Some(&text));
-            last_tooltip_minutes = Some(mins_now);
+        let minutes = countdown.tooltip_minutes();
+        if last_tooltip_minutes != Some(minutes) {
+            let _ = tray.set_tooltip(Some(&countdown.tooltip()));
+            last_tooltip_minutes = Some(minutes);
         }
 
-        // Time to fire the popup? `frame.should_fire` waits for the very last
+        // Time to fire the popup? `should_fire` waits for the very last
         // drift to finish so the user actually sees the final petal fall
         // before the popup takes focus.
-        if frame.should_fire {
+        if countdown.frame.should_fire {
             // Disarm so one deadline fires once; the close that follows
             // re-arms through `set_timer_state`.
-            shared::disarm_timer();
+            shared::disarm_timer(timer);
             shared::raise_timer_fired();
             if let Some(hwnd_val) = load_hwnd() {
                 force_foreground(HWND(hwnd_val as *mut _));
@@ -424,19 +402,7 @@ fn tray_thread_main(hotkey: Option<Hotkey>, config_path: PathBuf, initial_config
             continue;
         }
 
-        let next_wake_ms: u32 = if drift.is_some() {
-            33 // ~30 Hz during drift
-        } else if elapsed >= timer.duration {
-            // Past expiry but pre-fire — re-check soon.
-            10
-        } else {
-            // Until the next petal drop, clamped to a minute as a sanity
-            // backstop in case the system clock jumps.
-            let to_next = frame.petal_duration.saturating_sub(frame.time_since_drop);
-            (to_next.as_millis() as u32).min(60_000)
-        };
-
-        wait_for_message(next_wake_ms);
+        wait_for_message(countdown.next_wake().as_millis() as u32);
     }
 }
 
