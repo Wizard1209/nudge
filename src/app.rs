@@ -445,18 +445,11 @@ impl NudgeApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(geometry.work.size()));
         ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(geometry.work.min));
 
-        let (card_width, placement) = match &self.sprite {
-            Some(s) => (
-                s.cfg.card_width,
-                sprite::placement_of(&s.cfg, Some(s.px), now.ppp),
-            ),
-            None => (crate::config::DEFAULT_CARD_WIDTH, None),
-        };
-        self.layout = Some(sprite::shield_layout(
-            &geometry,
-            card_width as f32,
-            placement,
-        ));
+        let placement = self
+            .sprite
+            .as_ref()
+            .map(|s| sprite::placement_of(&s.cfg, s.px, now.ppp));
+        self.layout = Some(sprite::shield_layout(&geometry, placement));
         self.placed = Some(now);
     }
 

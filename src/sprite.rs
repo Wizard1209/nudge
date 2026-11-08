@@ -7,13 +7,38 @@ use crate::config::SpriteConfig;
 
 /// The card's height: the whole number of points that holds its three rows
 /// and two separators (§2). A sprite changes only the width.
-pub const CARD_HEIGHT: f32 = 130.0;
+const CARD_HEIGHT: f32 = 130.0;
 /// Where the card's top edge goes (§1): this fraction of the monitor's
 /// height, plus the offset.
-pub const CARD_TOP_FRACTION: f32 = 0.25;
-pub const CARD_TOP_OFFSET: f32 = 80.0;
+const CARD_TOP_FRACTION: f32 = 0.25;
+/// The offset is where the card sat inside the legacy box: a quarter of the
+/// box's height. So a card anchored on the monitor lands exactly where
+/// `card_in_box` draws it in a box born at `window_position` — the two
+/// paths describe one card.
+const CARD_TOP_OFFSET: f32 = POPUP_SIZE.1 as f32 * CARD_TOP_FRACTION;
 /// What a narrow window keeps free beside the card.
-pub const CARD_SIDE_MARGIN: f32 = 48.0;
+const CARD_SIDE_MARGIN: f32 = 48.0;
+
+/// The spotlight window's size at creation, in points — the `(width, height)`
+/// [`window_position`] centres. The visible size is the work area of the
+/// monitor the popup is on ([`shield_layout`], spec §1); this box is only
+/// what the window is born as, and on Windows, where the shield is still
+/// pending, what it stays.
+pub const POPUP_SIZE: (u32, u32) = (520, 320);
+
+/// Screen position for the spotlight window: horizontally centered; the top
+/// of the window sits at a quarter of the screen height (spec §1 — upper
+/// third, at natural eye level). Window height is irrelevant to the y anchor.
+// Only Windows still positions a box at creation; the macOS window is the
+// work area (`shield_layout`), and the tests tie the two paths together.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub fn window_position(screen: (u32, u32), window: (u32, u32)) -> (i32, i32) {
+    let (sw, sh) = (screen.0 as i32, screen.1 as i32);
+    let ww = window.0 as i32;
+    let x = (sw - ww) / 2;
+    let y = (sh as f32 * CARD_TOP_FRACTION).floor() as i32;
+    (x, y)
+}
 
 /// The monitor the popup is on, in screen space: its full frame, and the
 /// part free of the menu bar, Dock and taskbar. The work area is the window.
@@ -24,11 +49,13 @@ pub struct ScreenGeometry {
 }
 
 /// A sprite ready to place: its `x`/`y` from config, relative to the card's
-/// top-left corner, and its size in points (`sprite_points`).
+/// top-left corner, its size in points (`sprite_points`), and the width the
+/// card takes while it is on (§10).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SpritePlacement {
     pub xy: (i32, i32),
     pub size: Vec2,
+    pub card_width: f32,
 }
 
 /// Where to draw, in window coordinates.
@@ -44,22 +71,18 @@ pub fn sprite_points(px: [u32; 2], pixels_per_point: f32) -> Vec2 {
     vec2(px[0] as f32, px[1] as f32) / pixels_per_point
 }
 
-/// The sprite as the config places it, at this display's scale. `None`
-/// without a decoded picture: the sprite is off, or its PNG failed the check.
-pub fn placement_of(
-    cfg: &SpriteConfig,
-    px: Option<[u32; 2]>,
-    pixels_per_point: f32,
-) -> Option<SpritePlacement> {
-    px.map(|px| SpritePlacement {
+/// A decoded sprite as the config places it, at this display's scale.
+pub fn placement_of(cfg: &SpriteConfig, px: [u32; 2], pixels_per_point: f32) -> SpritePlacement {
+    SpritePlacement {
         xy: (cfg.x, cfg.y),
         size: sprite_points(px, pixels_per_point),
-    })
+        card_width: cfg.card_width as f32,
+    }
 }
 
 /// The card's top edge on a monitor of this height (§1). Floored so it
-/// agrees with `nudge_state::window_position`'s integer `h * 25 / 100`.
-pub fn anchor_top(monitor_height: f32) -> f32 {
+/// agrees with [`window_position`]'s integer arithmetic.
+fn anchor_top(monitor_height: f32) -> f32 {
     (monitor_height * CARD_TOP_FRACTION).floor() + CARD_TOP_OFFSET
 }
 
@@ -78,14 +101,12 @@ pub fn card_in_box(content: Rect) -> Rect {
 
 /// The card at its §1 anchor on the monitor — centred, top at a quarter of
 /// the height plus 80 pt — and the sprite relative to it, both in the
-/// coordinates of a window that covers the work area. A sprite that would
-/// rise above the work area moves the card down by the overhang (§10);
-/// nothing is pinned at the bottom.
-pub fn shield_layout(
-    geo: &ScreenGeometry,
-    card_width: f32,
-    sprite: Option<SpritePlacement>,
-) -> PopupLayout {
+/// coordinates of a window that covers the work area. The card is its
+/// default width, or the width the sprite's config asks for while the sprite
+/// is on. A sprite that would rise above the work area moves the card down
+/// by the overhang (§10); nothing is pinned at the bottom.
+pub fn shield_layout(geo: &ScreenGeometry, sprite: Option<SpritePlacement>) -> PopupLayout {
+    let card_width = sprite.map_or(crate::config::DEFAULT_CARD_WIDTH as f32, |s| s.card_width);
     let width = card_width.min(geo.work.width() - CARD_SIDE_MARGIN);
     let mut card_min = pos2(
         geo.monitor.min.x + ((geo.monitor.width() - width) / 2.0).floor(),
@@ -105,7 +126,6 @@ pub fn shield_layout(
 mod tests {
     use super::*;
     use crate::config::SpriteConfig;
-    use crate::nudge_state::{POPUP_SIZE, window_position};
     use eframe::egui::{Rect, pos2, vec2};
 
     fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect {
@@ -134,13 +154,16 @@ mod tests {
         SpritePlacement {
             xy: (-41, -277),
             size: vec2(360.0, 215.0),
+            card_width: 679.0,
         }
     }
 
+    /// A sprite beside a default-width card.
     fn placed(x: i32, y: i32, w: f32, h: f32) -> SpritePlacement {
         SpritePlacement {
             xy: (x, y),
             size: vec2(w, h),
+            card_width: 480.0,
         }
     }
 
@@ -162,21 +185,19 @@ mod tests {
             y: -277,
             card_width: 679,
         };
+        assert_eq!(placement_of(&cfg, [720, 430], 2.0), our_sprite());
         assert_eq!(
-            placement_of(&cfg, Some([720, 430]), 2.0),
-            Some(placed(-41, -277, 360.0, 215.0))
+            placement_of(&cfg, [720, 430], 1.0),
+            SpritePlacement {
+                size: vec2(720.0, 430.0),
+                ..our_sprite()
+            }
         );
-        assert_eq!(
-            placement_of(&cfg, Some([720, 430]), 1.0),
-            Some(placed(-41, -277, 720.0, 430.0))
-        );
-        // No picture, no placement: the sprite is off or failed its check.
-        assert_eq!(placement_of(&cfg, None, 2.0), None);
     }
 
     #[test]
     fn anchor_top() {
-        // floor(h / 4) + 80 — integer parity with `window_position`'s h*25/100.
+        // floor(h / 4) + 80 — integer parity with `window_position`.
         assert_eq!(super::anchor_top(956.0), 319.0);
         assert_eq!(super::anchor_top(957.0), 319.0);
         assert_eq!(super::anchor_top(1080.0), 350.0);
@@ -187,7 +208,7 @@ mod tests {
     fn plain_card_is_centred_on_the_monitor_at_the_anchor() {
         // 495 = floor((1470 − 480) / 2); 286 = 319 − 33 (the window starts
         // where the work area does).
-        let layout = shield_layout(&g1(), 480.0, None);
+        let layout = shield_layout(&g1(), None);
         assert_eq!(layout.card, rect(495.0, 286.0, 480.0, 130.0));
         assert_eq!(layout.sprite, None);
     }
@@ -200,7 +221,7 @@ mod tests {
             work: g1().work.translate(vec2(1470.0, 0.0)),
         };
         assert_eq!(
-            shield_layout(&shifted, 480.0, None).card,
+            shield_layout(&shifted, None).card,
             rect(495.0, 286.0, 480.0, 130.0)
         );
     }
@@ -211,14 +232,14 @@ mod tests {
             monitor: rect(0.0, 0.0, 500.0, 956.0),
             work: rect(0.0, 33.0, 500.0, 833.0),
         };
-        assert_eq!(shield_layout(&narrow, 480.0, None).card.width(), 452.0);
+        assert_eq!(shield_layout(&narrow, None).card.width(), 452.0);
     }
 
     #[test]
     fn sprite_above_the_card_within_the_work_area_is_not_pinned() {
         // The sprite's top lands at 319 − 277 = 42 on the monitor, below the
         // 33 pt menu bar: the card stays at its anchor.
-        let layout = shield_layout(&g1(), 679.0, Some(our_sprite()));
+        let layout = shield_layout(&g1(), Some(our_sprite()));
         assert_eq!(layout.card, rect(395.0, 286.0, 679.0, 130.0));
         assert_eq!(layout.sprite, Some(rect(354.0, 9.0, 360.0, 215.0)));
     }
@@ -228,18 +249,18 @@ mod tests {
         // Anchor 260; sprite top 260 − 277 = −17, above the 25 pt work-area
         // top by 42: the card moves down by that overhang and the sprite
         // starts at the window's top edge.
-        let layout = shield_layout(&g2(), 679.0, Some(our_sprite()));
+        let layout = shield_layout(&g2(), Some(our_sprite()));
         assert_eq!(layout.card, rect(300.0, 277.0, 679.0, 130.0));
         assert_eq!(layout.sprite, Some(rect(259.0, 0.0, 360.0, 215.0)));
     }
 
     #[test]
     fn sprite_below_or_beside_the_card_never_moves_it() {
-        let below = shield_layout(&g1(), 480.0, Some(placed(100, 200, 50.0, 40.0)));
+        let below = shield_layout(&g1(), Some(placed(100, 200, 50.0, 40.0)));
         assert_eq!(below.card.min, pos2(495.0, 286.0));
         assert_eq!(below.sprite, Some(rect(595.0, 486.0, 50.0, 40.0)));
 
-        let beside = shield_layout(&g1(), 480.0, Some(placed(500, -10, 60.0, 50.0)));
+        let beside = shield_layout(&g1(), Some(placed(500, -10, 60.0, 50.0)));
         assert_eq!(beside.card.min, pos2(495.0, 286.0));
         assert_eq!(beside.sprite, Some(rect(995.0, 276.0, 60.0, 50.0)));
     }
@@ -248,14 +269,14 @@ mod tests {
     fn nothing_is_pinned_at_the_bottom() {
         // A sprite hanging far below the work area leaves the card alone and
         // simply runs off the window.
-        let layout = shield_layout(&g2(), 480.0, Some(placed(0, 400, 100.0, 900.0)));
+        let layout = shield_layout(&g2(), Some(placed(0, 400, 100.0, 900.0)));
         assert_eq!(layout.card, rect(400.0, 235.0, 480.0, 130.0));
         assert_eq!(layout.sprite, Some(rect(400.0, 635.0, 100.0, 900.0)));
     }
 
     #[test]
     fn sprite_size_stays_fractional() {
-        let layout = shield_layout(&g1(), 480.0, Some(placed(0, 130, 360.5, 215.5)));
+        let layout = shield_layout(&g1(), Some(placed(0, 130, 360.5, 215.5)));
         assert_eq!(layout.sprite.unwrap().size(), vec2(360.5, 215.5));
     }
 
@@ -264,14 +285,20 @@ mod tests {
         // The overhang case lands the sprite on y = 0; a monitor whose frame
         // was flipped from AppKit may carry a −0.0 origin. Neither may leak
         // a negative zero into the layout.
-        let layout = shield_layout(&g2(), 679.0, Some(our_sprite()));
+        let layout = shield_layout(&g2(), Some(our_sprite()));
         assert!(layout.sprite.unwrap().min.y.is_sign_positive());
 
         let flipped = ScreenGeometry {
             monitor: rect(-0.0, -0.0, 1280.0, 720.0),
             work: rect(-0.0, -0.0, 1280.0, 720.0),
         };
-        let layout = shield_layout(&flipped, 679.0, Some(placed(-300, -260, 10.0, 10.0)));
+        let layout = shield_layout(
+            &flipped,
+            Some(SpritePlacement {
+                card_width: 679.0,
+                ..placed(-300, -260, 10.0, 10.0)
+            }),
+        );
         assert_eq!(layout.sprite.unwrap().min, pos2(0.0, 0.0));
         assert!(layout.sprite.unwrap().min.x.is_sign_positive());
         assert!(layout.sprite.unwrap().min.y.is_sign_positive());
@@ -290,7 +317,7 @@ mod tests {
                     work: rect(x as f32, y as f32, POPUP_SIZE.0 as f32, POPUP_SIZE.1 as f32),
                 };
                 let want = rect(24.0, 80.0, 472.0, 130.0);
-                assert_eq!(shield_layout(&geo, 480.0, None).card, want, "{w}x{h}");
+                assert_eq!(shield_layout(&geo, None).card, want, "{w}x{h}");
                 assert_eq!(card_in_box(rect(0.0, 0.0, 520.0, 320.0)), want);
             }
         }
@@ -304,6 +331,20 @@ mod tests {
             assert_eq!(card_in_box(rect(0.0, 0.0, w, 600.0)).top(), 150.0);
         }
         assert_eq!(card_in_box(rect(0.0, 0.0, 600.0, 600.0)).width(), 480.0);
+    }
+
+    #[test]
+    fn window_position_top_at_25pct_full_hd() {
+        // 1920×1080, window 520×320 → x centered = (1920-520)/2 = 700;
+        // top of window at 25% of 1080 = 270.
+        assert_eq!(window_position((1920, 1080), (520, 320)), (700, 270));
+    }
+
+    #[test]
+    fn window_position_top_at_25pct_small_screen() {
+        // 1366×768, window 480×280 → x centered = (1366-480)/2 = 443;
+        // top of window at 25% of 768 = 192.
+        assert_eq!(window_position((1366, 768), (480, 280)), (443, 192));
     }
 
     #[test]
