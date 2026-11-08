@@ -19,7 +19,7 @@
 //! direct.
 
 use crate::autostart::{AutostartError, AutostartProvider, apply_autostart};
-use crate::config::{Config, ConfigError, SpriteConfig};
+use crate::config::{self, Config, ConfigError, IntervalError, SpriteConfig};
 use crate::hotkey::{self, Hotkey};
 use crate::recorder::{self, EdgeSource, Effect, Input, Recorder, Verdict};
 use eframe::egui;
@@ -99,9 +99,9 @@ impl SettingsForm {
         }
     }
 
-    /// Parse `interval_text` into a finite-positive f64, with the same
-    /// forgiveness as [`Config::resolved_interval_minutes`].
-    pub fn parsed_interval(&self) -> Result<f64, IntervalParseError> {
+    /// Parse `interval_text` into a valid interval, see
+    /// [`parse_interval_minutes`].
+    pub fn parsed_interval(&self) -> Result<f64, IntervalError> {
         parse_interval_minutes(&self.interval_text)
     }
 
@@ -216,7 +216,7 @@ impl SettingsForm {
 /// input verbatim.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SettingsValidationError {
-    Interval(IntervalParseError),
+    Interval(IntervalError),
     Hotkey(hotkey::ParseError),
     /// The sprite row's numbers; each carries the trimmed input.
     SpriteX(String),
@@ -247,37 +247,17 @@ impl std::fmt::Display for SettingsValidationError {
 
 impl std::error::Error for SettingsValidationError {}
 
-/// Parse error for the default-interval field — mirrors the spec rule from
-/// [`Config::resolved_interval_minutes`]: must be a finite, strictly positive
-/// number. Whitespace tolerated.
-#[derive(Debug, Clone, PartialEq)]
-pub struct IntervalParseError {
-    pub input: String,
-}
-
-impl std::fmt::Display for IntervalParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Interval must be a positive number of minutes (got: \"{}\")",
-            hotkey::echoed(&self.input)
-        )
-    }
-}
-
-impl std::error::Error for IntervalParseError {}
-
-/// Parse the literal interval text exactly the way the main app's
-/// `Config::resolved_interval_minutes` does: finite, > 0. Unlike the
-/// popup's interval parser, we DON'T fall back silently on empty / unparseable —
-/// the settings UI is the place to surface the error, not to paper over it.
-pub fn parse_interval_minutes(text: &str) -> Result<f64, IntervalParseError> {
+/// Parse the literal interval text against [`config::valid_interval_minutes`].
+/// Whitespace tolerated. Unlike the popup's interval parser, we DON'T fall
+/// back silently on empty / unparseable — the settings UI is the place to
+/// surface the error, not to paper over it.
+pub fn parse_interval_minutes(text: &str) -> Result<f64, IntervalError> {
     let trimmed = text.trim();
-    let n: f64 = trimmed.parse().map_err(|_| IntervalParseError {
+    let n: f64 = trimmed.parse().map_err(|_| IntervalError {
         input: trimmed.to_string(),
     })?;
-    if !n.is_finite() || n <= 0.0 {
-        return Err(IntervalParseError {
+    if !config::valid_interval_minutes(n) {
+        return Err(IntervalError {
             input: trimmed.to_string(),
         });
     }
@@ -392,7 +372,11 @@ impl HotkeyRecorder {
         // is bindable is decided outside the table and handed in already
         // answered.
         let verdicts: Vec<Verdict> = match self.source.as_mut() {
-            Some(source) => source.drain().into_iter().map(|e| source.classify(e)).collect(),
+            Some(source) => source
+                .drain()
+                .into_iter()
+                .map(|e| source.classify(e))
+                .collect(),
             None => return effects,
         };
         for verdict in verdicts {

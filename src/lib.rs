@@ -80,9 +80,13 @@ mod wasm_entry {
                     canvas,
                     web_options,
                     // WASM has no on-disk config; the popup's minutes field
-                    // is initialised to the same 10-minute default the
-                    // native build's config defaults to.
-                    Box::new(|cc| Ok(Box::new(NudgeApp::new(cc, 10.0)))),
+                    // starts at the product default.
+                    Box::new(|cc| {
+                        Ok(Box::new(NudgeApp::new(
+                            cc,
+                            config::DEFAULT_INTERVAL_MINUTES,
+                        )))
+                    }),
                 )
                 .await
                 .expect("failed to start eframe");

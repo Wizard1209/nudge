@@ -59,7 +59,7 @@ fn validate_event(event: &JournalEvent) -> Result<(), JournalError> {
             event.trigger_source
         ));
     }
-    if !event.next_interval_minutes.is_finite() || event.next_interval_minutes <= 0.0 {
+    if !crate::config::valid_interval_minutes(event.next_interval_minutes) {
         return invalid(format!(
             "next_interval_minutes must be > 0, got {}",
             event.next_interval_minutes

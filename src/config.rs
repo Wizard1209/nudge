@@ -138,8 +138,39 @@ fn default_hotkey_label() -> String {
     hotkey::format(&hotkey::default_hotkey())
 }
 
+/// The interval the product ships with, in minutes (spec §4): the file's
+/// default, what the popup's field falls back to when it holds no number,
+/// and what the browser build starts with.
+pub const DEFAULT_INTERVAL_MINUTES: f64 = 10.0;
+
+/// Whether `minutes` is an interval at all: finite and strictly positive.
+/// The one rule behind the file's fallback, the popup's field, the settings
+/// window's field and the journal's `next_interval_minutes`.
+pub fn valid_interval_minutes(minutes: f64) -> bool {
+    minutes.is_finite() && minutes > 0.0
+}
+
+/// A typed interval that is a number but not a valid one — what both the
+/// popup and the settings window show for it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IntervalError {
+    pub input: String,
+}
+
+impl std::fmt::Display for IntervalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Interval must be a positive number of minutes (got: \"{}\")",
+            hotkey::echoed(&self.input)
+        )
+    }
+}
+
+impl std::error::Error for IntervalError {}
+
 fn default_interval_minutes_value() -> f64 {
-    10.0
+    DEFAULT_INTERVAL_MINUTES
 }
 
 impl Default for Config {
@@ -171,10 +202,10 @@ impl Config {
     /// `resolved_hotkey` — a garbage value in the file must never refuse
     /// the whole config.
     pub fn resolved_interval_minutes(&self) -> (f64, bool) {
-        if self.default_interval_minutes.is_finite() && self.default_interval_minutes > 0.0 {
+        if valid_interval_minutes(self.default_interval_minutes) {
             (self.default_interval_minutes, false)
         } else {
-            (default_interval_minutes_value(), true)
+            (DEFAULT_INTERVAL_MINUTES, true)
         }
     }
 }

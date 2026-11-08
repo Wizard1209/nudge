@@ -1,5 +1,12 @@
 use std::time::Duration;
 
+use crate::config::{self, IntervalError};
+
+/// [`config::DEFAULT_INTERVAL_MINUTES`] as the popup's timer sees it.
+fn default_interval() -> Duration {
+    Duration::from_secs_f64(config::DEFAULT_INTERVAL_MINUTES * 60.0)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TriggerSource {
     Timer,
@@ -71,7 +78,7 @@ pub fn decide_close(
             if action == Action::Submit {
                 return Err(e);
             }
-            Duration::from_secs(10 * 60)
+            default_interval()
         }
     };
 
@@ -91,26 +98,9 @@ pub fn decide_close(
     })
 }
 
-/// Error returned by `parse_interval` when the user typed a number that is
-/// invalid per spec (`next_interval_minutes` must be finite and > 0).
-#[derive(Debug, Clone, PartialEq)]
-pub struct IntervalError {
-    pub input: String,
-}
-
-impl std::fmt::Display for IntervalError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Interval must be a positive number of minutes (got \"{}\")",
-            self.input
-        )
-    }
-}
-
 /// Parse the minutes field into a Duration.
 ///
-/// - Empty / whitespace / unparseable text → default of 10 minutes (user
+/// - Empty / whitespace / unparseable text → the default interval (user
 ///   didn't provide an explicit number, so we fall back silently).
 /// - Parsed number ≤ 0 or non-finite → `Err(IntervalError)` — the user
 ///   explicitly typed something invalid and should be told, not silently
@@ -119,9 +109,9 @@ impl std::fmt::Display for IntervalError {
 pub fn parse_interval(text: &str) -> Result<Duration, IntervalError> {
     let trimmed = text.trim();
     let Ok(minutes) = trimmed.parse::<f64>() else {
-        return Ok(Duration::from_secs(10 * 60));
+        return Ok(default_interval());
     };
-    if !minutes.is_finite() || minutes <= 0.0 {
+    if !config::valid_interval_minutes(minutes) {
         return Err(IntervalError {
             input: trimmed.to_string(),
         });

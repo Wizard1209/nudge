@@ -398,8 +398,9 @@ fn main() -> eframe::Result {
     let (default_minutes, interval_was_invalid) = config.resolved_interval_minutes();
     if interval_was_invalid {
         eprintln!(
-            "[nudge] config default_interval_minutes {} is not a positive finite number, falling back to 10",
-            config.default_interval_minutes
+            "[nudge] config default_interval_minutes {} is not a positive finite number, falling back to {}",
+            config.default_interval_minutes,
+            config::DEFAULT_INTERVAL_MINUTES
         );
     }
     // A PNG that fails the check is not a sprite (spec §10): say why, show
