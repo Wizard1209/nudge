@@ -125,33 +125,19 @@ fn run_settings_ui() -> eframe::Result {
         eprintln!("[nudge-settings] {e}");
     }
 
-    // The window is refused rather than opened over a substitute when the
-    // real provider cannot be constructed: a fake would flip the checkbox and
-    // persist `autostart: true` while the OS never learns about the app.
-    let provider = match autostart::provider_for_current_exe(cfg.autostart) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("[nudge-settings] cannot construct autostart provider: {e}");
-            return Err(eframe::Error::AppCreation(
-                format!("cannot construct autostart provider: {e}").into(),
-            ));
-        }
-    };
-
-    // Persistence closure: write atomically to the same config path the
-    // main process reads from on launch. Move-captures the path; the
-    // closure is held by SettingsApp for the lifetime of the window.
-    let path_for_persist = config_file.path().to_path_buf();
-    let persist: settings_app::PersistFn =
-        Box::new(move |c: &config::Config| config::save(&path_for_persist, c));
-    // §9: an enabled sprite must pass the §10 check or Save refuses it.
-    let sprite_check: settings_app::SpriteCheckFn = Box::new(|path: &std::path::Path| {
-        sprite_png::check_sprite_file(path).map_err(|e| e.to_string())
-    });
-    // §5: a saved combination someone else holds is warned about, not
-    // refused. Windows answers nothing here: its arbitration is documented
-    // but unmeasured.
-    let conflict: settings_app::ConflictFn = Box::new(platform::hotkey_conflict);
+    // Everything the window needs from the OS and the disk, in one place:
+    // refused rather than opened over a fake when the autostart provider
+    // cannot be constructed.
+    let host =
+        match settings_app::SettingsHost::native(config_file.path().to_path_buf(), cfg.autostart) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("[nudge-settings] cannot construct autostart provider: {e}");
+                return Err(eframe::Error::AppCreation(
+                    format!("cannot construct autostart provider: {e}").into(),
+                ));
+            }
+        };
 
     // §9: sized to the form and not resizable — the form's height at this
     // width, its margins and the reserved message line included, so the
@@ -169,16 +155,7 @@ fn run_settings_ui() -> eframe::Result {
     eframe::run_native(
         "Nudge — Settings",
         options,
-        Box::new(move |cc| {
-            Ok(Box::new(SettingsApp::new(
-                cc,
-                cfg,
-                provider,
-                persist,
-                sprite_check,
-                conflict,
-            )))
-        }),
+        Box::new(move |cc| Ok(Box::new(SettingsApp::new(cc, cfg, host)))),
     )
 }
 

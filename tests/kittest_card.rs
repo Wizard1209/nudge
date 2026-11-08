@@ -28,7 +28,7 @@ use nudge_web::config::Config;
 use nudge_web::journal::JournalEvent;
 use nudge_web::recorder::{self, EdgeSource, PhysicalKey, PressEdge, Verdict};
 use nudge_web::settings_app::{
-    ConflictFn, MARGIN, PersistFn, SettingsApp, SettingsForm, SpriteCheckFn, WINDOW_SIZE,
+    MARGIN, PersistFn, SettingsApp, SettingsForm, SettingsHost, SpriteCheckFn, WINDOW_SIZE,
 };
 
 // =============================================================================
@@ -253,22 +253,6 @@ fn cfg(hotkey: &str, minutes: f64, autostart: bool) -> Config {
     }
 }
 
-fn no_op_persist() -> PersistFn {
-    Box::new(|_cfg: &Config| Ok(()))
-}
-
-/// A conflict check that knows of no one: a save here must not ask the OS,
-/// which would register a real hotkey on the machine running the tests — and
-/// from every test thread at once.
-fn no_conflict() -> ConflictFn {
-    Box::new(|_hk| None)
-}
-
-/// A PNG check that passes everything: no test here reads a file.
-fn accept_any_sprite() -> SpriteCheckFn {
-    Box::new(|_path: &std::path::Path| Ok(()))
-}
-
 /// The autostart checkbox, by its platform label — there are two checkboxes
 /// in the window now, and the sprite's is the other one.
 #[cfg(target_os = "macos")]
@@ -283,10 +267,7 @@ fn settings_form_populates_from_a_config() {
         SettingsApp::new(
             cc,
             cfg("Alt+J", 7.0, true),
-            provider,
-            no_op_persist(),
-            accept_any_sprite(),
-            no_conflict(),
+            SettingsHost::headless(provider),
         )
     });
     harness.run();
@@ -344,10 +325,7 @@ fn settings_app_editing_a_field_round_trips_through_the_ui() {
         SettingsApp::new(
             cc,
             cfg("Alt+J", 7.0, false),
-            provider,
-            no_op_persist(),
-            accept_any_sprite(),
-            no_conflict(),
+            SettingsHost::headless(provider),
         )
     });
     harness.run();
@@ -392,10 +370,10 @@ fn toggling_autostart_goes_through_the_injected_provider_not_the_os() {
         SettingsApp::new(
             cc,
             cfg("Alt+J", 7.0, false),
-            boxed_provider,
-            persist,
-            accept_any_sprite(),
-            no_conflict(),
+            SettingsHost {
+                persist,
+                ..SettingsHost::headless(boxed_provider)
+            },
         )
     });
     harness.run();
@@ -442,10 +420,11 @@ fn settings_save_with_a_bad_sprite_shows_the_reason_and_persists_nothing() {
         SettingsApp::new(
             cc,
             cfg("Alt+J", 7.0, false),
-            provider,
-            persist,
-            refuse,
-            no_conflict(),
+            SettingsHost {
+                persist,
+                sprite_check: refuse,
+                ..SettingsHost::headless(provider)
+            },
         )
     });
     harness.run();
@@ -512,10 +491,10 @@ fn settings_harness<'a>(
             SettingsApp::new(
                 cc,
                 config,
-                provider,
-                persist,
-                accept_any_sprite(),
-                no_conflict(),
+                SettingsHost {
+                    persist,
+                    ..SettingsHost::headless(provider)
+                },
             )
         });
     harness.run();
@@ -565,10 +544,10 @@ fn settings_harness_with_source<'a>(
         .build_eframe(move |_cc| {
             SettingsApp::with_source(
                 config,
-                provider,
-                persist,
-                accept_any_sprite(),
-                no_conflict(),
+                SettingsHost {
+                    persist,
+                    ..SettingsHost::headless(provider)
+                },
                 Some(Box::new(source)),
             )
         });
