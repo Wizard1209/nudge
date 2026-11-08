@@ -21,7 +21,7 @@
 use crate::autostart::{AutostartError, AutostartProvider, apply_autostart};
 use crate::config::{Config, ConfigError, SpriteConfig};
 use crate::hotkey::{self, Hotkey};
-use crate::recorder::{self, EdgeSource, Effect, Input, Recorder};
+use crate::recorder::{self, EdgeSource, Effect, Input, Recorder, Verdict};
 use eframe::egui;
 use std::path::Path;
 
@@ -388,17 +388,14 @@ impl HotkeyRecorder {
         }
         self.was_focused = focused;
 
-        let edges = match self.source.as_mut() {
-            Some(source) => source.drain(),
+        // Classified by the source, before the table sees it: whether a key
+        // is bindable is decided outside the table and handed in already
+        // answered.
+        let verdicts: Vec<Verdict> = match self.source.as_mut() {
+            Some(source) => source.drain().into_iter().map(|e| source.classify(e)).collect(),
             None => return effects,
         };
-        for edge in edges {
-            // Classified by the source, before the table sees it: whether a
-            // key is bindable is decided outside the table and handed in
-            // already answered.
-            let Some(verdict) = self.source.as_ref().map(|s| s.classify(edge)) else {
-                break;
-            };
+        for verdict in verdicts {
             effects.push(self.feed(&Input::Press(verdict)));
         }
         effects
@@ -575,10 +572,15 @@ impl SettingsApp {
     /// Apply everything the recorder produced this frame.
     fn apply_recorder_effects(&mut self, focused: bool) {
         for effect in self.recorder.pump(focused) {
-            if apply_effect(&effect, &mut self.form) {
-                // A capture answers whatever the banner was complaining about.
-                self.banner = None;
-            }
+            self.apply_recorder_effect(&effect);
+        }
+    }
+
+    /// The one place a recorder effect reaches the window: the field through
+    /// [`apply_effect`], and the banner, which a capture answers.
+    fn apply_recorder_effect(&mut self, effect: &Effect) {
+        if apply_effect(effect, &mut self.form) {
+            self.banner = None;
         }
     }
 
@@ -877,9 +879,7 @@ impl eframe::App for SettingsApp {
                             if ui.button(label).clicked() {
                                 let input = if armed { Input::Cancel } else { Input::Record };
                                 let effect = self.recorder.feed(&input);
-                                if effect == Effect::Restore {
-                                    self.form.hotkey = self.form.saved_hotkey().to_string();
-                                }
+                                self.apply_recorder_effect(&effect);
                             }
                         }
                     });
