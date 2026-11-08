@@ -375,26 +375,7 @@ fn main() -> eframe::Result {
             eprintln!("[nudge] failed to write default config: {e}");
         }
     }
-    // An unreadable hotkey leaves the app unbound rather than silently
-    // binding something else (design-spec §5). Substituting the default here
-    // would take over a combination the user never asked for, and — because
-    // the tray and the timer work regardless — they would have no way to tell
-    // that their own combination is the one that failed.
-    //
-    // This is also what the live-reload path does when a hand-edit turns the
-    // hotkey into garbage, and the two must agree: the same file content
-    // cannot mean "default" at launch and "unbound" a second later.
-    let configured_hotkey = match hotkey::parse(&config.hotkey) {
-        Ok(hk) => Some(hk),
-        Err(e) => {
-            eprintln!(
-                "[nudge] config hotkey \"{}\" is unusable ({e}), starting without one. {}",
-                config.hotkey,
-                hotkey::VOCABULARY
-            );
-            None
-        }
-    };
+    let configured_hotkey = config.hotkey_or_unbound();
     let (default_minutes, interval_was_invalid) = config.resolved_interval_minutes();
     if interval_was_invalid {
         eprintln!(
