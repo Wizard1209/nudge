@@ -2,11 +2,10 @@
 //!
 //! The settings process writes the file atomically (`config::save` →
 //! tmp + rename). The main process needs to notice and apply edits
-//! without restart. This module owns both halves of that loop:
+//! without restart. This module owns that loop up to the OS calls:
 //!
 //! - **Pure diff** (`diff`, `ConfigChange`) — given the old and new
-//!   `Config`, what changed? Always-compiled, fully unit-testable, the
-//!   only piece with non-trivial logic.
+//!   `Config`, what changed? Always-compiled, fully unit-testable.
 //! - **Filesystem watcher** (`spawn`, native only) — wraps a `notify`
 //!   `RecommendedWatcher` around the *parent directory* of the config
 //!   file and calls a callback whenever an event references the target
@@ -14,22 +13,15 @@
 //!   `config.json`) changes the inode, so a watch attached to the file
 //!   itself would die after one save on Linux; watching the directory
 //!   and filtering by name is the standard fix.
-//!
-//! The actual `UnregisterHotKey` + `RegisterHotKey` syscalls aren't
-//! here — they're queue-scoped to the tray thread (see
-//! `tray_bridge::tray_thread_main`). The watcher's only job is to set a
-//! "reload requested" atomic and wake the tray thread; that thread then
-//! reads the new config, diffs it, and acts on each `ConfigChange`.
-//!
-//! Live-meaningful fields (after Tasks 1–4):
-//!
-//! - `hotkey` — re-register on the tray thread.
-//! - `default_interval_minutes` — record-keeping only. The popup
-//!   captured it at startup and the user owns the field afterwards;
-//!   reloading mid-run would clobber their typing for no benefit.
-//! - `autostart` — settings process owns the registry write
-//!   transactionally; the main process never touches autostart on its
-//!   own. Record-keeping only.
+//! - **The reload** (`LiveConfig`, native only) — the baseline a running
+//!   app holds, re-read on the backend's thread when the watcher's
+//!   callback has raised its flag. It logs every field that changed and
+//!   returns the two a backend has to act on as `LiveChange`s: the hotkey,
+//!   which the backend re-registers its own way, and the sprite block,
+//!   which it parks for the popup to apply while hidden (§10). The other
+//!   two fields are recorded only — the popup captured the interval at
+//!   launch and the user owns the field afterwards, and the settings
+//!   process owns the autostart registration transactionally.
 
 use crate::config::{Config, SpriteConfig};
 
@@ -90,7 +82,7 @@ pub fn diff(old: &Config, new: &Config) -> Vec<ConfigChange> {
 // via type inference (`Option<WatcherHandle>`) — the
 // bin never names the type, but it must stay public
 // for tests and downstream consumers of the lib.
-pub use native::{WatcherHandle, spawn};
+pub use native::{LiveChange, LiveConfig, WatcherHandle, spawn};
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
@@ -98,6 +90,82 @@ mod native {
     use std::sync::Arc;
 
     use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
+
+    use super::{ConfigChange, diff};
+    use crate::config::{self, Config, SpriteConfig};
+    use crate::hotkey::Hotkey;
+
+    /// A change a running app has to act on; everything else the file can
+    /// change is logged by [`LiveConfig::reload`] and has no live effect.
+    #[derive(Debug, Clone, PartialEq)]
+    pub enum LiveChange {
+        /// Bind this combination in place of the current one — or none,
+        /// when the new label does not parse: unbound, not a fallback (§5).
+        Hotkey(Option<Hotkey>),
+        /// The sprite block changed; the popup applies it while hidden (§10).
+        Sprite(SpriteConfig),
+    }
+
+    /// The config as the running app has it: where the file is, and what is
+    /// currently in effect — the baseline every reload diffs against.
+    pub struct LiveConfig {
+        path: PathBuf,
+        current: Config,
+    }
+
+    impl LiveConfig {
+        pub fn new(path: PathBuf, current: Config) -> Self {
+            Self { path, current }
+        }
+
+        /// What is currently in effect. Read by the backends' tests to check
+        /// the baseline a reload left behind; the binary's copy of this module
+        /// has no caller.
+        #[allow(dead_code)]
+        pub fn current(&self) -> &Config {
+            &self.current
+        }
+
+        /// Re-read the file, log every field that changed and return the
+        /// changes the backend has to act on, in field order.
+        ///
+        /// A malformed file is tolerated the way `load_or_default` does it:
+        /// log, keep the previous config, return nothing. The watcher must
+        /// not be the thing that kills the app over a typo.
+        pub fn reload(&mut self) -> Vec<LiveChange> {
+            let (new_cfg, err) = config::load_or_default(&self.path);
+            if let Some(e) = err {
+                eprintln!("[nudge] config reload: {e} — keeping previous in-memory config");
+                return Vec::new();
+            }
+
+            let mut live = Vec::new();
+            for change in diff(&self.current, &new_cfg) {
+                match change {
+                    ConfigChange::Hotkey { from, to } => {
+                        eprintln!("[nudge] config reload: hotkey \"{from}\" → \"{to}\"");
+                        live.push(LiveChange::Hotkey(new_cfg.hotkey_or_unbound()));
+                    }
+                    ConfigChange::Interval => eprintln!(
+                        "[nudge] config reload: default_interval_minutes {} → {} \
+                         (no live effect; applies at next startup)",
+                        self.current.default_interval_minutes, new_cfg.default_interval_minutes
+                    ),
+                    ConfigChange::Autostart => eprintln!(
+                        "[nudge] config reload: autostart {} → {} \
+                         (the settings process owns the OS registration)",
+                        self.current.autostart, new_cfg.autostart
+                    ),
+                    ConfigChange::Sprite { to } => {
+                        eprintln!("[nudge] config reload: sprite → {to:?} (applied while hidden)");
+                        live.push(LiveChange::Sprite(to));
+                    }
+                }
+            }
+            self.current = new_cfg;
+            live
+        }
+    }
 
     /// Opaque handle to a running watcher. Dropping it stops the
     /// background thread and releases the OS handle (inotify watch /
