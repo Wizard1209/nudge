@@ -28,7 +28,14 @@ pub fn start(_hotkey: Option<Hotkey>, _config_path: std::path::PathBuf, _initial
 
 pub fn start_on_event_loop(_ctx: &egui::Context) {}
 
-pub fn note_window_handle(_handle: isize) {}
+pub fn adopt_window(_frame: &eframe::Frame) {}
+
+/// Never: this host has no OS integration at all — it never nudges, nothing
+/// activates the window, and a focus-loss close would be the only spec §4
+/// behaviour present on a platform that has none of the rest.
+pub fn popup_is_foreground(_ctx: &egui::Context) -> bool {
+    false
+}
 
 /// Nothing summons the popup manually here, so this raises nothing.
 pub fn request_manual_open() {}

@@ -7,10 +7,9 @@
 //! any one OS's mechanism, so the two backends can be as different as they
 //! actually are:
 //!
-//! * **`windows`** — a pure re-export of [`crate::tray_bridge`]. The tray
-//!   thread there owns the timer, the icon animation and the popup wakeup, so
-//!   the seam adds nothing: it only renames the two entry points whose
-//!   signatures carried Win32 types across the boundary.
+//! * **`windows`** — a tray thread ([`crate::tray_bridge`]) that owns the
+//!   countdown, the icon animation and the popup wakeup, plus the Win32
+//!   calls on the popup's own window, so `HWND` never crosses the seam.
 //! * **`macos`** — the interval timer, the menu-bar status item and the global
 //!   hotkey, all polled from `App::logic` on the main thread, because AppKit
 //!   and Carbon both insist on that thread.

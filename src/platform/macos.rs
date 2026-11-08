@@ -302,15 +302,27 @@ pub(super) fn wake() {
 /// No-op: nothing on this side needs the window handle. The reveal path goes
 /// through `NSApplication` and egui's viewport commands, both of which
 /// address the app's own main window without one.
-///
-/// Unreachable in the macOS *binary* — `app.rs` only captures a handle under
-/// `cfg(windows)` — but the facade is a set, and the alternative to keeping the
-/// odd one out is a cfg in the caller.
-//
-// `allow`, not `expect`: in the library half of the same build this is
-// reachable public API, so an `expect` would be unfulfilled there.
-#[allow(dead_code)]
-pub fn note_window_handle(_handle: isize) {}
+pub fn adopt_window(_frame: &eframe::Frame) {}
+
+/// Whether the popup is the key window right now. Read from eframe's
+/// `viewport().focused`, which on macOS is current, not a frame behind:
+/// egui-winit 0.34 refreshes it from `Window::has_focus()` in
+/// `update_viewport_info`, called at the top of every frame immediately
+/// before `take_egui_input` (`egui-winit/src/lib.rs`:1278,
+/// `eframe/src/native/glow_integration.rs`:557), and on macOS
+/// `Window::has_focus()` is `NSWindow::isKeyWindow` — a live AppKit read,
+/// not a cached event. So this is exactly as current as an
+/// `NSApplication::isActive` call made from here, and it answers the sharper
+/// question: whether *this window* is the one Esc and Enter will reach,
+/// which is the condition spec §4 is actually about. It also needs no
+/// `MainThreadMarker`, so the arming logic stays reachable from the headless
+/// kittest tier.
+pub fn popup_is_foreground(ctx: &egui::Context) -> bool {
+    // `None` = winit has not reported on the window yet (first frames, and
+    // every kittest harness). Not focused is the safe reading: it delays
+    // arming, it cannot cause a close.
+    ctx.input(|i| i.viewport().focused) == Some(true)
+}
 
 /// The shared flag, plus what only this backend has to do when the popup
 /// goes away. The wake the shared write issues matters here: a new deadline
