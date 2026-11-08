@@ -25,6 +25,7 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use nudge_web::app::NudgeApp;
 use nudge_web::autostart::AutostartProvider;
 use nudge_web::config::Config;
+use nudge_web::journal::JournalEvent;
 use nudge_web::recorder::{self, EdgeSource, PhysicalKey, PressEdge, Verdict};
 use nudge_web::settings_app::{
     ConflictFn, MARGIN, PersistFn, SettingsApp, SettingsForm, SpriteCheckFn, WINDOW_SIZE,
@@ -155,16 +156,39 @@ fn typing_round_trips_including_cyrillic() {
     );
 }
 
-/// Escape runs the real Dismiss path. Enter (Submit) is deliberately never
-/// exercised here: `hide_popup`'s submit branch calls
-/// `journal::resolve_default_journal_path()` (src/journal.rs:93-96), which
-/// has no injection point and writes straight into the developer's real
-/// `~/Documents/Nudge/journal-rust.ndjson`.
-///
-/// TODO: covering Submit needs `journal::resolve_default_journal_path` (or
-/// whatever writes the NDJSON line) to accept an injected path/writer the
-/// way `SettingsApp` already accepts an injected `AutostartProvider` and
-/// persist closure — that seam does not exist yet.
+/// Enter runs the real Submit path against a recording journal sink — the
+/// same seam `SettingsApp` has for persistence — so the write never reaches
+/// the developer's own `~/Documents`. One event, carrying the typed text and
+/// the interval field's value.
+#[test]
+fn enter_submits_one_journal_event() {
+    let events: std::rc::Rc<std::cell::RefCell<Vec<JournalEvent>>> = Default::default();
+    let recorder = std::rc::Rc::clone(&events);
+    let mut harness = Harness::new_eframe(move |cc| {
+        NudgeApp::new(cc, 10.0).with_journal_sink(Box::new(move |event| {
+            recorder.borrow_mut().push(event.clone());
+            Ok(())
+        }))
+    });
+    harness.run();
+
+    harness
+        .get_all_by_role(Role::TextInput)
+        .next()
+        .unwrap()
+        .type_text("писать отчёт");
+    harness.run();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+
+    let events = events.borrow();
+    assert_eq!(events.len(), 1, "one Submit, one line");
+    assert_eq!(events[0].doing, "писать отчёт");
+    assert_eq!(events[0].trigger_source, "timer");
+    assert_eq!(events[0].next_interval_minutes, 10.0);
+}
+
+/// Escape runs the real Dismiss path.
 #[test]
 fn escape_dismisses_the_card() {
     let mut harness = nudge_harness(10.0);

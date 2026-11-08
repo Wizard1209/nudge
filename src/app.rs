@@ -1,6 +1,7 @@
 use eframe::egui;
 
 use crate::config::SpriteConfig;
+use crate::journal::{self, JournalSink};
 use crate::nudge_state::{self, Action, TriggerSource};
 use crate::sprite::{self, PopupLayout, ScreenGeometry};
 use crate::timer::Timer;
@@ -187,6 +188,9 @@ pub struct NudgeApp {
 
     // Shared state
     timer: Timer,
+    /// Where a Submit's event goes. The real store for this build unless the
+    /// kittest tier hands in a recorder (`with_journal_sink`).
+    journal: JournalSink,
     trigger_source: TriggerSource,
     popup_visible: bool,
     error_message: Option<String>,
@@ -297,6 +301,7 @@ impl NudgeApp {
             // the first time (Submit / Esc / Switch). hide_popup → reset()
             // unfreezes it with the interval the user chose.
             timer: Timer::frozen(),
+            journal: journal::default_sink(),
             trigger_source: TriggerSource::Timer,
             // Born hidden. The launch popup is NOT a special constructor
             // state: the first frame performs a regular show_popup
@@ -325,6 +330,15 @@ impl NudgeApp {
             #[cfg(target_os = "windows")]
             hwnd: None,
         }
+    }
+
+    /// Send submissions to `sink` instead of this build's journal. The
+    /// kittest tier's hook, so a Submit can be driven without writing into
+    /// the developer's own Documents folder.
+    #[allow(dead_code)]
+    pub fn with_journal_sink(mut self, sink: JournalSink) -> Self {
+        self.journal = sink;
+        self
     }
 
     /// Paint the sprite `cfg` asks for over the card, if it asks for one and
@@ -690,29 +704,16 @@ impl NudgeApp {
         };
 
         if let Some(minutes) = outcome.journal_minutes {
-            let event = crate::journal::new_submitted_event(
+            let event = journal::new_submitted_event(
                 Self::now_timestamp(),
                 self.trigger_source,
                 self.doing.clone(),
                 self.bullshit.clone(),
                 minutes,
             );
-
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                let path = crate::journal::resolve_default_journal_path();
-                if let Err(e) = crate::journal::write_event(&path, &event) {
-                    self.error_message = Some(e.to_string());
-                    return; // keep popup open, don't reset timer
-                }
-            }
-
-            #[cfg(target_arch = "wasm32")]
-            {
-                if let Err(e) = crate::journal::write_event_to_localstorage(&event) {
-                    self.error_message = Some(e.to_string());
-                    return;
-                }
+            if let Err(e) = (self.journal)(&event) {
+                self.error_message = Some(e.to_string());
+                return; // keep popup open, don't reset timer
             }
         }
 
