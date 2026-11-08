@@ -1,7 +1,8 @@
-//! Global hotkey: parsing user-readable strings ("Ctrl+Shift+Space") into a
-//! modifier mask + key. The Win32 registration itself lives in
-//! `tray_bridge`; everything in this module is platform-agnostic so it can
-//! be unit-tested without pulling in `windows`.
+//! Global hotkey: the grammar of user-readable strings ("Ctrl+Shift+Space",
+//! "⌥⌘J") — parsing them into a modifier mask + key and formatting them
+//! back. Registration with the OS lives in the platform backends
+//! (`tray_bridge` on Windows, `platform/macos/hotkey_carbon.rs` on macOS);
+//! everything here is platform-agnostic so it is unit-tested on any host.
 
 use std::fmt;
 
@@ -222,8 +223,8 @@ pub fn all_key_tokens() -> Vec<String> {
     for n in 1..=24u8 {
         out.push(format!("F{n}"));
     }
-    for (token, ..) in NAMED_KEYS {
-        out.push((*token).to_string());
+    for key in NAMED_KEYS {
+        out.push(key.token.to_string());
     }
     for ch in SYMBOL_KEYS.chars() {
         out.push(ch.to_string());
@@ -253,8 +254,36 @@ fn is_function_key(key: &str) -> bool {
 /// separator besides.
 const SYMBOL_KEYS: &str = "-=[]\\;',./`";
 
+/// A key that is not a letter, a digit or `F1`–`F24`.
+struct NamedKey {
+    /// The canonical token, uppercased: what [`HotkeyKey`] stores.
+    token: &'static str,
+    /// Every spelling [`parse`] accepts for it (already uppercased).
+    spellings: &'static [&'static str],
+    /// What [`format`] emits.
+    label: &'static str,
+    /// What [`format_native`] shows on macOS; empty where the cap carries a
+    /// word or has no cap there. Only macOS renders glyphs.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    glyph: &'static str,
+}
+
+const fn named(
+    token: &'static str,
+    spellings: &'static [&'static str],
+    label: &'static str,
+    glyph: &'static str,
+) -> NamedKey {
+    NamedKey {
+        token,
+        spellings,
+        label,
+        glyph,
+    }
+}
+
 /// Every key that is not a letter, a digit or `F1`–`F24`, as
-/// `(canonical token, accepted spellings, label, macOS glyph)`.
+/// `named(token, spellings, label, glyph)`.
 ///
 /// One row per physical key. The spellings are what §5 lists — including the
 /// Mac symbols, so a shortcut written the way a Mac writes it round-trips.
@@ -262,28 +291,26 @@ const SYMBOL_KEYS: &str = "-=[]\\;',./`";
 /// shows on macOS, empty where the cap carries a word (`Space`) or has no cap
 /// there at all (`Insert`).
 #[rustfmt::skip]
-const NAMED_KEYS: &[(&str, &[&str], &str, &str)] = &[
-    ("SPACE",     &["SPACE", "␣"],                    "Space",     ""),
-    ("ENTER",     &["ENTER", "RETURN", "↩", "⏎", "⌤"], "Enter",     "↩"),
-    ("TAB",       &["TAB", "⇥"],                      "Tab",       "⇥"),
-    ("ESCAPE",    &["ESCAPE", "ESC", "⎋"],            "Escape",    "⎋"),
-    ("BACKSPACE", &["BACKSPACE", "⌫"],                "Backspace", "⌫"),
-    ("LEFT",      &["LEFT", "←"],                     "Left",      "←"),
-    ("RIGHT",     &["RIGHT", "→"],                    "Right",     "→"),
-    ("UP",        &["UP", "↑"],                       "Up",        "↑"),
-    ("DOWN",      &["DOWN", "↓"],                     "Down",      "↓"),
-    ("HOME",      &["HOME", "↖"],                     "Home",      "↖"),
-    ("END",       &["END", "↘"],                      "End",       "↘"),
-    ("PAGEUP",    &["PAGEUP", "PGUP", "⇞"],           "PageUp",    "⇞"),
-    ("PAGEDOWN",  &["PAGEDOWN", "PGDN", "⇟"],         "PageDown",  "⇟"),
-    ("INSERT",    &["INSERT", "INS"],                 "Insert",    ""),
-    ("DELETE",    &["DELETE", "DEL", "⌦"],            "Delete",    "⌦"),
+const NAMED_KEYS: &[NamedKey] = &[
+    named("SPACE",     &["SPACE", "␣"],                    "Space",     ""),
+    named("ENTER",     &["ENTER", "RETURN", "↩", "⏎", "⌤"], "Enter",     "↩"),
+    named("TAB",       &["TAB", "⇥"],                      "Tab",       "⇥"),
+    named("ESCAPE",    &["ESCAPE", "ESC", "⎋"],            "Escape",    "⎋"),
+    named("BACKSPACE", &["BACKSPACE", "⌫"],                "Backspace", "⌫"),
+    named("LEFT",      &["LEFT", "←"],                     "Left",      "←"),
+    named("RIGHT",     &["RIGHT", "→"],                    "Right",     "→"),
+    named("UP",        &["UP", "↑"],                       "Up",        "↑"),
+    named("DOWN",      &["DOWN", "↓"],                     "Down",      "↓"),
+    named("HOME",      &["HOME", "↖"],                     "Home",      "↖"),
+    named("END",       &["END", "↘"],                      "End",       "↘"),
+    named("PAGEUP",    &["PAGEUP", "PGUP", "⇞"],           "PageUp",    "⇞"),
+    named("PAGEDOWN",  &["PAGEDOWN", "PGDN", "⇟"],         "PageDown",  "⇟"),
+    named("INSERT",    &["INSERT", "INS"],                 "Insert",    ""),
+    named("DELETE",    &["DELETE", "DEL", "⌦"],            "Delete",    "⌦"),
 ];
 
 /// The canonical form of a key token (already uppercased) if we recognise
-/// it. `None` means "not a key we know how to register". Kept separate from
-/// [`parse`] so the platform layer can also use it for VK-mapping without
-/// re-parsing the whole string.
+/// it. `None` means "not a key we know how to register".
 fn canonicalize_key(upper: &str) -> Option<String> {
     if let Some(ch) = one_char(upper)
         && (ch.is_ascii_alphanumeric() || SYMBOL_KEYS.contains(ch))
@@ -295,8 +322,8 @@ fn canonicalize_key(upper: &str) -> Option<String> {
     }
     NAMED_KEYS
         .iter()
-        .find(|(_, spellings, _, _)| spellings.contains(&upper))
-        .map(|(token, ..)| token.to_string())
+        .find(|key| key.spellings.contains(&upper))
+        .map(|key| key.token.to_string())
 }
 
 /// The single character of `s`, or `None` if it is not exactly one — by
@@ -332,7 +359,7 @@ pub fn format(hk: &Hotkey) -> String {
     if hk.modifiers & MOD_WIN != 0 {
         parts.push(MOD_WIN_LABEL);
     }
-    let key_label = title_case_key(&hk.key.0);
+    let key_label = key_label(&hk.key.0);
     let mut out = parts.join("+");
     if !out.is_empty() {
         out.push('+');
@@ -404,11 +431,11 @@ pub fn format_native(hk: &Hotkey) -> String {
         }
         let key_label = NAMED_KEYS
             .iter()
-            .find(|(token, ..)| *token == hk.key.as_str())
-            .map(|(_, _, _, glyph)| *glyph)
+            .find(|key| key.token == hk.key.as_str())
+            .map(|key| key.glyph)
             .filter(|glyph| !glyph.is_empty())
             .map(str::to_string)
-            .unwrap_or_else(|| title_case_key(hk.key.as_str()));
+            .unwrap_or_else(|| key_label(hk.key.as_str()));
         out.push_str(&key_label);
         out
     }
@@ -418,22 +445,17 @@ pub fn format_native(hk: &Hotkey) -> String {
 ///
 /// The platform layer needs this to refuse a key by name ("J cannot be part of
 /// a hotkey"), and the name has to be the one the rest of the app prints or
-/// the refusal teaches the wrong spelling.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // only the macOS edge source refuses keys by name
+/// the refusal teaches the wrong spelling. `token` is canonical (uppercased).
 pub fn key_label(token: &str) -> String {
-    title_case_key(token)
-}
-
-fn title_case_key(upper: &str) -> String {
     // Letters, digits and symbol caps are one character and already read the
     // way they are written; F-keys stay uppercase. Everything else is a named
     // key, and [`NAMED_KEYS`] carries the spelling to show — `PageUp`, not the
     // `Pageup` a mechanical title-casing would produce.
     NAMED_KEYS
         .iter()
-        .find(|(token, ..)| *token == upper)
-        .map(|(_, _, label, _)| (*label).to_string())
-        .unwrap_or_else(|| upper.to_string())
+        .find(|key| key.token == token)
+        .map(|key| key.label.to_string())
+        .unwrap_or_else(|| token.to_string())
 }
 
 /// Default hotkey used when no config file exists yet. Ctrl+Shift+Space is

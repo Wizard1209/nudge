@@ -121,10 +121,11 @@ pub fn parse_interval(text: &str) -> Result<Duration, IntervalError> {
     Ok(Duration::from_secs_f64(minutes * 60.0))
 }
 
-/// Remaining whole minutes, rounded UP. Zero seconds stays 0 (the "now"
-/// state); any positive remainder rounds to the next whole minute. Shared
-/// by the tooltip text and its dedup key so the two never disagree.
-fn ceil_minutes(d: Duration) -> u64 {
+/// The minute number the tray tooltip shows for this much time remaining:
+/// whole minutes rounded UP, 0 for the "now" state. Also the tooltip's dedup
+/// key, so it is refreshed only when the number changes (spec §5: "updated
+/// once per minute") and the two never disagree.
+pub fn displayed_minutes(d: Duration) -> u64 {
     let secs = d.as_secs();
     if secs == 0 { 0 } else { secs.div_ceil(60) }
 }
@@ -134,29 +135,21 @@ fn ceil_minutes(d: Duration) -> u64 {
 /// timer has expired (showing `~0 min` would read as a bug rather than
 /// "popup is about to appear").
 pub fn tooltip_for_remaining(d: Duration) -> String {
-    match ceil_minutes(d) {
+    match displayed_minutes(d) {
         0 => "now".to_string(),
         mins => format!("~{} min", mins),
     }
-}
-
-/// Minute number that `tooltip_for_remaining` would render for this
-/// duration. The tray loop uses this to dedupe `set_tooltip` calls so the
-/// tooltip is only refreshed when the displayed number changes (spec §5:
-/// "updated once per minute"). The "now" state maps to 0.
-pub fn displayed_minutes(d: Duration) -> u64 {
-    ceil_minutes(d)
 }
 
 /// Labels for the tray context menu, in order. Spec §5: tray language is
 /// English. "Settings" sits between "Show Nudge" and "Quit" — visit-then-bye.
 pub const TRAY_MENU_LABELS: [&str; 3] = ["Show Nudge", "Settings", "Quit"];
 
-/// How often `update()` should re-run. `None` when the popup is hidden:
-/// tray clicks and the timer-expiry thread wake the event loop via
-/// `ShowWindow`, so no periodic wakeup is required. Returning `Some` in
-/// the hidden state is expensive because the transparent always-on-top
-/// window composites through DWM on every swap.
+/// How often a native `ui()` should re-run. `None` when the popup is
+/// hidden: whatever reveals it — the tray thread on Windows, `tick` on
+/// macOS — wakes the event loop itself, so no periodic wakeup is required,
+/// and a standing one would keep compositing the transparent always-on-top
+/// window for nothing.
 pub fn repaint_interval(popup_visible: bool) -> Option<Duration> {
     if popup_visible {
         Some(Duration::from_secs(1))
