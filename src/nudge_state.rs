@@ -165,27 +165,6 @@ pub fn repaint_interval(popup_visible: bool) -> Option<Duration> {
     }
 }
 
-/// The spotlight window's size at creation, in points — the `(width, height)`
-/// [`window_position`] centres. The visible size is the work area of the
-/// monitor the popup is on (`sprite::shield_layout`, spec §1); this box is
-/// only what the window is born as, and on Windows, where the shield is
-/// still pending, what it stays.
-pub const POPUP_SIZE: (u32, u32) = (520, 320);
-
-/// Screen position for the spotlight window: horizontally centered; the top
-/// of the window sits at 25% of screen height (spec §1 — upper third, at
-/// natural eye level). Window height is irrelevant to the y anchor.
-// Only Windows still positions a box at creation; the macOS window is the
-// work area (`sprite::shield_layout`), and the tests tie the two paths together.
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-pub fn window_position(screen: (u32, u32), window: (u32, u32)) -> (i32, i32) {
-    let (sw, sh) = (screen.0 as i32, screen.1 as i32);
-    let (ww, _wh) = (window.0 as i32, window.1 as i32);
-    let x = (sw - ww) / 2;
-    let y = sh * 25 / 100;
-    (x, y)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -434,19 +413,5 @@ mod tests {
         // ShowWindow — a 1 Hz wakeup would just burn CPU redrawing a
         // transparent layered window through DWM.
         assert_eq!(repaint_interval(false), None);
-    }
-
-    #[test]
-    fn window_position_top_at_25pct_full_hd() {
-        // 1920×1080, window 520×320 → x centered = (1920-520)/2 = 700;
-        // top of window at 25% of 1080 = 270.
-        assert_eq!(window_position((1920, 1080), (520, 320)), (700, 270));
-    }
-
-    #[test]
-    fn window_position_top_at_25pct_small_screen() {
-        // 1366×768, window 480×280 → x centered = (1366-480)/2 = 443;
-        // top of window at 25% of 768 = 192.
-        assert_eq!(window_position((1366, 768), (480, 280)), (443, 192));
     }
 }

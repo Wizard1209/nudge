@@ -14,6 +14,8 @@ mod hotkey;
 #[cfg(not(target_arch = "wasm32"))]
 mod journal;
 #[cfg(not(target_arch = "wasm32"))]
+mod layout;
+#[cfg(not(target_arch = "wasm32"))]
 mod nudge_state;
 #[cfg(not(target_arch = "wasm32"))]
 mod platform;
@@ -23,8 +25,6 @@ mod screen_pick;
 #[cfg(not(target_arch = "wasm32"))]
 mod settings_app;
 #[cfg(not(target_arch = "wasm32"))]
-mod sprite;
-#[cfg(not(target_arch = "wasm32"))]
 mod sprite_png;
 #[cfg(not(target_arch = "wasm32"))]
 mod timer;
@@ -33,24 +33,26 @@ mod tray_bridge;
 #[cfg(not(target_arch = "wasm32"))]
 mod word_jump;
 
-/// Exercise the real autostart provider against the live registry and report
-/// PASS/FAIL, restoring whatever state we found. A manual QA tool — the
-/// registry can't be unit-tested in CI/WSL — invoked via
-/// `nudge --autostart-selftest`. Cross-check independently with
-/// `scripts/autostart-check.ps1`.
-#[cfg(target_os = "windows")]
+/// Exercise the real autostart provider against the live OS — the registry on
+/// Windows, `~/Library/LaunchAgents` plus the launchd domain on macOS — and
+/// report PASS/FAIL, restoring whatever state we found. A manual QA tool,
+/// invoked via `nudge --autostart-selftest`: the registry cannot be unit-tested
+/// in CI/WSL (cross-check with `scripts/autostart-check.ps1`), and on macOS
+/// everything in `tests/macos_autostart.rs` that shells out to `launchctl` is
+/// `#[ignore]`d because `HOME` cannot redirect launchd's per-user domain — so
+/// the launchctl path has no tier that runs unattended, and this command is
+/// how it gets exercised, by hand, before shipping.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn run_autostart_selftest() -> ! {
-    use autostart::{AutostartProvider, RUN_SUBKEY, RUN_VALUE_NAME, WindowsRegistryProvider};
-
     macro_rules! fail {
         ($($a:tt)*) => {{ eprintln!("[selftest] FAIL: {}", format!($($a)*)); std::process::exit(1); }};
     }
 
-    let provider = match WindowsRegistryProvider::for_current_exe() {
+    let provider = match autostart::provider_for_current_exe(false) {
         Ok(p) => p,
         Err(e) => fail!("{e}"),
     };
-    println!("[selftest] HKCU\\{RUN_SUBKEY} value \"{RUN_VALUE_NAME}\"");
+    println!("[selftest] {}", provider.location());
 
     let initial = match provider.is_enabled() {
         Ok(v) => v,
@@ -64,72 +66,8 @@ fn run_autostart_selftest() -> ! {
     let after_enable = provider.is_enabled().unwrap_or(false);
     println!("[selftest] after enable  -> is_enabled = {after_enable} (want true)");
 
-    if let Err(e) = provider.disable() {
-        fail!("disable: {e}");
-    }
-    let after_disable = provider.is_enabled().unwrap_or(true);
-    println!("[selftest] after disable -> is_enabled = {after_disable} (want false)");
-
-    // Leave the registry exactly as we found it.
-    let restore = if initial {
-        provider.enable()
-    } else {
-        provider.disable()
-    };
-    if let Err(e) = restore {
-        fail!("restore to {initial}: {e}");
-    }
-    println!("[selftest] restored is_enabled = {initial}");
-
-    if after_enable && !after_disable {
-        println!("[selftest] PASS");
-        std::process::exit(0);
-    }
-    fail!("enable/disable cycle did not flip the value as expected");
-}
-
-/// The macOS counterpart: exercise the real LaunchAgent provider against the
-/// live `~/Library/LaunchAgents` + launchd domain and report PASS/FAIL,
-/// restoring whatever state we found.
-///
-/// This is not redundant with `tests/macos_autostart.rs`. Everything there
-/// that shells out to `launchctl` is `#[ignore]`d, because `HOME` cannot
-/// redirect launchd's per-user domain (it is keyed by uid): `enable` would
-/// bootstrap into the developer's live login session and `RunAtLoad` would
-/// make launchd exec the test binary, while `disable` would boot out — and
-/// kill — a Nudge they actually have running. So the launchctl path has no
-/// tier that runs unattended. This command is how it gets exercised, by hand,
-/// before shipping.
-#[cfg(target_os = "macos")]
-fn run_autostart_selftest() -> ! {
-    use autostart::{AutostartProvider, LAUNCH_AGENT_LABEL, MacLaunchAgentProvider};
-
-    macro_rules! fail {
-        ($($a:tt)*) => {{ eprintln!("[selftest] FAIL: {}", format!($($a)*)); std::process::exit(1); }};
-    }
-
-    let provider = match MacLaunchAgentProvider::for_current_exe() {
-        Ok(p) => p,
-        Err(e) => fail!("{e}"),
-    };
-    println!("[selftest] label   {LAUNCH_AGENT_LABEL}");
-    println!("[selftest] plist   {}", provider.plist_path().display());
-    println!("[selftest] program {}", provider.program().display());
-
-    let initial = match provider.is_enabled() {
-        Ok(v) => v,
-        Err(e) => fail!("is_enabled (initial): {e}"),
-    };
-    println!("[selftest] initial is_enabled = {initial}");
-
-    if let Err(e) = provider.enable() {
-        fail!("enable: {e}");
-    }
-    let after_enable = provider.is_enabled().unwrap_or(false);
-    println!("[selftest] after enable  -> is_enabled = {after_enable} (want true)");
-
-    // Idempotence is a real requirement here, not a nicety — the settings
-    // checkbox can be re-affirmed at any time. It is also the step that would
+    // Idempotence is a real requirement, not a nicety — the settings checkbox
+    // can be re-affirmed at any time. On macOS it is also the step that would
     // catch a regression in `register`'s bootout-first ordering: without it,
     // launchd rejects the second bootstrap with an unclassifiable exit 5.
     if let Err(e) = provider.enable() {
@@ -160,37 +98,6 @@ fn run_autostart_selftest() -> ! {
     fail!("enable/disable cycle did not flip the state as expected");
 }
 
-/// Acquire a process-wide named mutex so only one settings window exists at
-/// a time. The tray menu may be clicked multiple times in a row; without
-/// this guard each click would spawn a fresh window. We don't release the
-/// mutex explicitly — Windows reclaims it when the process exits.
-///
-/// Returns `Some(handle)` to be held for the process lifetime when we are
-/// the first owner. Returns `None` if the mutex already exists — caller
-/// should exit silently in that case.
-#[cfg(target_os = "windows")]
-fn acquire_settings_singleton() -> Option<windows::Win32::Foundation::HANDLE> {
-    use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
-    use windows::Win32::System::Threading::CreateMutexW;
-    use windows::core::PCWSTR;
-
-    // Name lives in the kernel namespace global to the user session;
-    // `Global\` would require admin rights, so use a per-session name and
-    // accept that two users on the same machine each get one window.
-    let name: Vec<u16> = "Local\\NudgeSettings\0".encode_utf16().collect();
-    unsafe {
-        let handle = match CreateMutexW(None, true, PCWSTR(name.as_ptr())) {
-            Ok(h) => h,
-            Err(_) => return Some(windows::Win32::Foundation::HANDLE::default()),
-        };
-        if GetLastError() == ERROR_ALREADY_EXISTS {
-            // Another settings window owns the mutex — back out silently.
-            return None;
-        }
-        Some(handle)
-    }
-}
-
 /// Render the settings window. Loads the config from the same source as the
 /// main app, constructs the autostart provider, and hands both to
 /// `SettingsApp`. The window is opaque, has decorations + taskbar entry,
@@ -203,95 +110,34 @@ fn run_settings_ui() -> eframe::Result {
 
     // Single-instance guard: the status-item menu spawns one process per
     // "Settings" click, and without this each click would stack another
-    // window with its own unsynchronised copy of config.json.
-    //
-    // Both guards are held for the lifetime of the window — a named kernel
-    // mutex on Windows, a `flock`ed file under Application Support on macOS —
-    // and both mean the same thing when they refuse: someone else is already
-    // showing this window, so exit silently. The linux dev host has neither
-    // and needs neither; it has no menu to launch the settings UI from.
-    #[cfg(target_os = "windows")]
-    let _mutex_handle = match acquire_settings_singleton() {
-        Some(h) => h,
-        None => return Ok(()),
-    };
-    #[cfg(target_os = "macos")]
-    let _settings_lock = match platform::acquire_settings_singleton() {
-        Some(l) => l,
-        None => return Ok(()),
+    // window with its own unsynchronised copy of config.json. The guard is
+    // held for the lifetime of the window, and a refusal means someone else
+    // is already showing it — exit silently.
+    let Some(_settings_lock) = platform::acquire_settings_singleton() else {
+        return Ok(());
     };
 
-    // Load config from the same path the main process uses: a saved change
+    // Load config from the same file the main process uses: a saved change
     // reaches the running app through its file watcher.
-    let cli_config_path = config::parse_config_arg(std::env::args().skip(1));
-    let config_path = cli_config_path
-        .clone()
-        .unwrap_or_else(config::resolve_default_config_path);
-    if cli_config_path.is_none() {
-        config::migrate_legacy_config(&config_path);
-    }
-    let (cfg, err) = config::load_or_default(&config_path);
+    let config_file = config::ConfigFile::from_args(std::env::args().skip(1));
+    let (cfg, err) = config_file.load();
     if let Some(e) = err {
         eprintln!("[nudge-settings] {e}");
     }
 
-    // Provider: real registry on Windows, real LaunchAgent on macOS, an
-    // in-memory fake elsewhere so the linux dev build compiles. Those users
-    // don't actually reach the settings window (no tray to spawn it), so the
-    // fake never runs in production.
-    //
-    // On Windows we refuse to open the window with a fake substitute when
-    // the real provider fails to construct (e.g. `current_exe()` returned
-    // Err — astronomically rare). Falling back to a FakeProvider would make
-    // the autostart toggle a silent lie: the in-memory state would flip,
-    // the config would persist `autostart: true`, but the registry would
-    // never be touched — breaking Task 2's transactional invariant.
-    #[cfg(target_os = "windows")]
-    let provider: Box<dyn autostart::AutostartProvider> = {
-        match autostart::WindowsRegistryProvider::for_current_exe() {
-            Ok(p) => Box::new(p),
+    // Everything the window needs from the OS and the disk, in one place:
+    // refused rather than opened over a fake when the autostart provider
+    // cannot be constructed.
+    let host =
+        match settings_app::SettingsHost::native(config_file.path().to_path_buf(), cfg.autostart) {
+            Ok(h) => h,
             Err(e) => {
                 eprintln!("[nudge-settings] cannot construct autostart provider: {e}");
                 return Err(eframe::Error::AppCreation(
                     format!("cannot construct autostart provider: {e}").into(),
                 ));
             }
-        }
-    };
-    // Same refusal on macOS, for the same reason: the LaunchAgent provider is
-    // the only thing that touches ~/Library/LaunchAgents, and substituting a
-    // fake would flip the checkbox and persist `autostart: true` while launchd
-    // never learns about the app.
-    #[cfg(target_os = "macos")]
-    let provider: Box<dyn autostart::AutostartProvider> = {
-        match autostart::MacLaunchAgentProvider::for_current_exe() {
-            Ok(p) => Box::new(p),
-            Err(e) => {
-                eprintln!("[nudge-settings] cannot construct autostart provider: {e}");
-                return Err(eframe::Error::AppCreation(
-                    format!("cannot construct autostart provider: {e}").into(),
-                ));
-            }
-        }
-    };
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    let provider: Box<dyn autostart::AutostartProvider> =
-        Box::new(autostart::FakeProvider::new(cfg.autostart));
-
-    // Persistence closure: write atomically to the same config path the
-    // main process reads from on launch. Move-captures the path; the
-    // closure is held by SettingsApp for the lifetime of the window.
-    let path_for_persist = config_path.clone();
-    let persist: settings_app::PersistFn =
-        Box::new(move |c: &config::Config| config::save(&path_for_persist, c));
-    // §9: an enabled sprite must pass the §10 check or Save refuses it.
-    let sprite_check: settings_app::SpriteCheckFn = Box::new(|path: &std::path::Path| {
-        sprite_png::check_sprite_file(path).map_err(|e| e.to_string())
-    });
-    // §5: a saved combination someone else holds is warned about, not
-    // refused. Windows answers nothing here: its arbitration is documented
-    // but unmeasured.
-    let conflict: settings_app::ConflictFn = Box::new(platform::hotkey_conflict);
+        };
 
     // §9: sized to the form and not resizable — the form's height at this
     // width, its margins and the reserved message line included, so the
@@ -309,16 +155,7 @@ fn run_settings_ui() -> eframe::Result {
     eframe::run_native(
         "Nudge — Settings",
         options,
-        Box::new(move |cc| {
-            Ok(Box::new(SettingsApp::new(
-                cc,
-                cfg,
-                provider,
-                persist,
-                sprite_check,
-                conflict,
-            )))
-        }),
+        Box::new(move |cc| Ok(Box::new(SettingsApp::new(cc, cfg, host)))),
     )
 }
 
@@ -352,27 +189,14 @@ fn main() -> eframe::Result {
 
     // Load the user config (or use defaults). Bad / missing files are
     // logged but never fatal — the app must always come up.
-    //
-    // `--config <path>` overrides the default location. When the override is
-    // set we also skip first-run seeding: a caller pointing at a custom file
-    // (perf test, throwaway sandbox) doesn't want a default file silently
-    // materialized alongside it.
-    let cli_config_path = config::parse_config_arg(std::env::args().skip(1));
-    let config_path = cli_config_path
-        .clone()
-        .unwrap_or_else(config::resolve_default_config_path);
-    if cli_config_path.is_none() {
-        config::migrate_legacy_config(&config_path);
-    }
-    let (config, config_err) = config::load_or_default(&config_path);
+    let config_file = config::ConfigFile::from_args(std::env::args().skip(1));
+    let (config, config_err) = config_file.load();
     if let Some(err) = config_err {
         eprintln!("[nudge] {err}");
-    } else if cli_config_path.is_none() && !config_path.exists() {
-        // First run: seed the file so users have a template to edit.
-        if let Err(e) = config::ensure_default_written(&config_path) {
-            eprintln!("[nudge] failed to write default config: {e}");
-        }
+    } else if let Err(e) = config_file.seed_default_if_missing() {
+        eprintln!("[nudge] failed to write default config: {e}");
     }
+    let config_path = config_file.path().to_path_buf();
     let configured_hotkey = config.hotkey_or_unbound();
     let (default_minutes, interval_was_invalid) = config.resolved_interval_minutes();
     if interval_was_invalid {
@@ -426,10 +250,7 @@ fn main() -> eframe::Result {
     // The window's creation size. On both platforms `NudgeApp::place_window`
     // makes it the work area on the first frame (spec §1); Windows also
     // positions it here, so the box is centred until then.
-    let win_size = [
-        nudge_state::POPUP_SIZE.0 as f32,
-        nudge_state::POPUP_SIZE.1 as f32,
-    ];
+    let win_size = [layout::POPUP_SIZE.0 as f32, layout::POPUP_SIZE.1 as f32];
     #[cfg(target_os = "windows")]
     let viewport = {
         use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
@@ -439,7 +260,7 @@ fn main() -> eframe::Result {
                 GetSystemMetrics(SM_CYSCREEN).max(1) as u32,
             )
         };
-        let (x, y) = nudge_state::window_position(
+        let (x, y) = layout::window_position(
             (screen_w, screen_h),
             (win_size[0] as u32, win_size[1] as u32),
         );

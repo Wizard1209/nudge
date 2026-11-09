@@ -3,6 +3,31 @@ use std::fmt;
 
 use crate::nudge_state::TriggerSource;
 
+/// The `implementation` this binary writes into every event — and the name
+/// of its journal file, `journal-<implementation>.ndjson`.
+const IMPLEMENTATION: &str = "rust";
+
+/// Where the popup's submissions go: one call per event, `Err` when the
+/// event did not reach storage. The popup holds one of these and knows
+/// nothing about files or browser storage — [`default_sink`] is the real
+/// store for this build, and a test hands in a recorder.
+pub type JournalSink = Box<dyn FnMut(&JournalEvent) -> Result<(), JournalError>>;
+
+/// This build's journal: the NDJSON file under Documents natively, the
+/// browser's localStorage on wasm. The Documents folder is looked up on
+/// every write, not once, so one the OS moves while the app runs (a
+/// OneDrive redirect on Windows) is followed.
+pub fn default_sink() -> JournalSink {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        Box::new(|event| write_event(&resolve_default_journal_path(), event))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        Box::new(write_event_to_localstorage)
+    }
+}
+
 /// A single journal event in NDJSON format per the journal spec.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JournalEvent {
@@ -94,7 +119,7 @@ pub fn journal_path(documents_dir: &std::path::Path, implementation: &str) -> st
 #[cfg(not(target_arch = "wasm32"))]
 pub fn resolve_default_journal_path() -> std::path::PathBuf {
     let docs = dirs::document_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-    journal_path(&docs, "rust")
+    journal_path(&docs, IMPLEMENTATION)
 }
 
 /// Append a journal event to an NDJSON file.
@@ -198,7 +223,7 @@ pub fn new_submitted_event(
         event_type: "submitted".to_string(),
         entry_id: ulid::Ulid::new().to_string(),
         captured_at,
-        implementation: "rust".to_string(),
+        implementation: IMPLEMENTATION.to_string(),
         trigger_source: trigger_source_name(trigger_source).to_string(),
         doing,
         bullshit,
