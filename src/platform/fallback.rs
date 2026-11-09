@@ -5,13 +5,6 @@
 //! already had: the tree builds and the popup runs on a machine that is
 //! neither of the two shipping platforms, so a developer there can work on
 //! the portable half. It never nudges, and never did.
-//!
-//! Blanket `dead_code` allow because that is precisely what this file is:
-//! the whole facade, present so the seam type-checks, with no caller for the
-//! parts of it this target never reaches. Do not copy the attribute into a
-//! backend with real behaviour — there an unused function means something.
-
-#![allow(dead_code)]
 
 use eframe::egui;
 

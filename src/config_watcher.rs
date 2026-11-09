@@ -78,10 +78,6 @@ pub fn diff(old: &Config, new: &Config) -> Vec<ConfigChange> {
 // ----------------------------------------------------------------------
 
 #[cfg(not(target_arch = "wasm32"))]
-#[allow(unused_imports)] // WatcherHandle is held by-value at the bin call site
-// via type inference (`Option<WatcherHandle>`) — the
-// bin never names the type, but it must stay public
-// for tests and downstream consumers of the lib.
 pub use native::{LiveChange, LiveConfig, WatcherHandle, spawn};
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -119,9 +115,7 @@ mod native {
         }
 
         /// What is currently in effect. Read by the backends' tests to check
-        /// the baseline a reload left behind; the binary's copy of this module
-        /// has no caller.
-        #[allow(dead_code)]
+        /// the baseline a reload left behind.
         pub fn current(&self) -> &Config {
             &self.current
         }

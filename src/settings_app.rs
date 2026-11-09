@@ -421,7 +421,6 @@ impl SettingsHost {
     /// the tests, from every test thread at once. The browser build and the
     /// headless tests start from this and override what they need; the
     /// native binary has no caller.
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub fn headless(provider: Box<dyn AutostartProvider>) -> Self {
         Self {
             provider,

@@ -1,35 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+// The binary is the library plus an entry point: every module is declared
+// once, in `lib.rs`, and the bin reaches it through the crate name.
 #[cfg(not(target_arch = "wasm32"))]
-mod app;
-#[cfg(not(target_arch = "wasm32"))]
-mod autostart;
-#[cfg(not(target_arch = "wasm32"))]
-mod config;
-#[cfg(not(target_arch = "wasm32"))]
-mod config_watcher;
+use nudge_web::{app, config, layout, platform, settings_app};
 #[cfg(any(target_os = "windows", target_os = "macos"))]
-mod daisy;
-mod hotkey;
-#[cfg(not(target_arch = "wasm32"))]
-mod journal;
-#[cfg(not(target_arch = "wasm32"))]
-mod layout;
-#[cfg(not(target_arch = "wasm32"))]
-mod nudge_state;
-#[cfg(not(target_arch = "wasm32"))]
-mod platform;
-mod recorder;
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-mod screen_pick;
-#[cfg(not(target_arch = "wasm32"))]
-mod settings_app;
-#[cfg(not(target_arch = "wasm32"))]
-mod sprite_png;
-#[cfg(target_os = "windows")]
-mod tray_bridge;
-#[cfg(not(target_arch = "wasm32"))]
-mod word_jump;
+use nudge_web::{autostart, config_watcher};
 
 /// Exercise the real autostart provider against the live OS — the registry on
 /// Windows, `~/Library/LaunchAgents` plus the launchd domain on macOS — and
