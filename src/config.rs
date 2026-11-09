@@ -138,8 +138,39 @@ fn default_hotkey_label() -> String {
     hotkey::format(&hotkey::default_hotkey())
 }
 
+/// The interval the product ships with, in minutes (spec §4): the file's
+/// default, what the popup's field falls back to when it holds no number,
+/// and what the browser build starts with.
+pub const DEFAULT_INTERVAL_MINUTES: f64 = 10.0;
+
+/// Whether `minutes` is an interval at all: finite and strictly positive.
+/// The one rule behind the file's fallback, the popup's field, the settings
+/// window's field and the journal's `next_interval_minutes`.
+pub fn valid_interval_minutes(minutes: f64) -> bool {
+    minutes.is_finite() && minutes > 0.0
+}
+
+/// A typed interval that is a number but not a valid one — what both the
+/// popup and the settings window show for it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IntervalError {
+    pub input: String,
+}
+
+impl std::fmt::Display for IntervalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Interval must be a positive number of minutes (got: \"{}\")",
+            hotkey::echoed(&self.input)
+        )
+    }
+}
+
+impl std::error::Error for IntervalError {}
+
 fn default_interval_minutes_value() -> f64 {
-    10.0
+    DEFAULT_INTERVAL_MINUTES
 }
 
 impl Default for Config {
@@ -154,27 +185,38 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Parse the hotkey label, falling back to the default on error.
-    /// Returns `(parsed, label_was_invalid)` so the caller can log a warning
-    /// without re-parsing.
-    pub fn resolved_hotkey(&self) -> (hotkey::Hotkey, bool) {
+    /// The configured hotkey, or `None` when the label does not parse.
+    ///
+    /// An unreadable label leaves the app *unbound* rather than bound to a
+    /// default the user never asked for (design-spec §5): the tray and the
+    /// timer work regardless, so a substituted combination would be the one
+    /// failure they could not tell apart from success. The refusal is
+    /// reported here, once, so launch and live reload say the same thing
+    /// about the same file content.
+    pub fn hotkey_or_unbound(&self) -> Option<hotkey::Hotkey> {
         match hotkey::parse(&self.hotkey) {
-            Ok(h) => (h, false),
-            Err(_) => (hotkey::default_hotkey(), true),
+            Ok(hk) => Some(hk),
+            Err(e) => {
+                eprintln!(
+                    "[nudge] config hotkey \"{}\" is unusable ({e}), leaving it unbound. {}",
+                    self.hotkey,
+                    hotkey::VOCABULARY
+                );
+                None
+            }
         }
     }
 
     /// Validate the configured interval, falling back to the built-in
     /// default if it isn't a finite positive number. Returns
     /// `(minutes, was_invalid)` so the caller can log a warning without
-    /// re-validating. Mirrors the same forgiving philosophy as
-    /// `resolved_hotkey` — a garbage value in the file must never refuse
-    /// the whole config.
+    /// re-validating — a garbage value in the file must never refuse the
+    /// whole config.
     pub fn resolved_interval_minutes(&self) -> (f64, bool) {
-        if self.default_interval_minutes.is_finite() && self.default_interval_minutes > 0.0 {
+        if valid_interval_minutes(self.default_interval_minutes) {
             (self.default_interval_minutes, false)
         } else {
-            (default_interval_minutes_value(), true)
+            (DEFAULT_INTERVAL_MINUTES, true)
         }
     }
 }
@@ -515,9 +557,7 @@ mod tests {
     #[test]
     fn default_hotkey_label_matches_parser_default() {
         let cfg = Config::default();
-        let (hk, invalid) = cfg.resolved_hotkey();
-        assert!(!invalid);
-        assert_eq!(hk, hotkey::default_hotkey());
+        assert_eq!(cfg.hotkey_or_unbound(), Some(hotkey::default_hotkey()));
     }
 
     #[test]
@@ -526,23 +566,20 @@ mod tests {
             hotkey: "Alt+J".to_string(),
             ..Config::default()
         };
-        let (hk, invalid) = cfg.resolved_hotkey();
-        assert!(!invalid);
+        let hk = cfg.hotkey_or_unbound().expect("Alt+J parses");
         assert_eq!(hk.modifiers, hotkey::MOD_ALT);
         assert_eq!(hk.key.as_str(), "J");
     }
 
     #[test]
-    fn invalid_hotkey_falls_back_silently() {
-        // Garbage in the label must not refuse the config; the global hotkey
-        // just defaults and the caller is responsible for telling the user.
+    fn invalid_hotkey_leaves_the_app_unbound() {
+        // Garbage in the label must not refuse the config, and must not bind
+        // a combination the user never asked for either (spec §5).
         let cfg = Config {
             hotkey: "Notarealkey".to_string(),
             ..Config::default()
         };
-        let (hk, invalid) = cfg.resolved_hotkey();
-        assert!(invalid);
-        assert_eq!(hk, hotkey::default_hotkey());
+        assert_eq!(cfg.hotkey_or_unbound(), None);
     }
 
     #[test]

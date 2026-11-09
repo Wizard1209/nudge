@@ -548,14 +548,9 @@ fn apply_config_reload(
                     }
                     *hotkey_registered = false;
                 }
-                let (parsed, invalid) = new_cfg.resolved_hotkey();
-                if invalid {
-                    eprintln!(
-                        "[nudge] config reload: hotkey \"{to}\" is unparseable, leaving unbound"
-                    );
-                } else {
-                    *hotkey_registered = try_register_hotkey(&parsed);
-                }
+                *hotkey_registered = new_cfg
+                    .hotkey_or_unbound()
+                    .is_some_and(|hk| try_register_hotkey(&hk));
             }
             ConfigChange::Interval => {
                 // Recorded only: the popup captured the launch-time

@@ -286,9 +286,7 @@ fn run_settings_ui() -> eframe::Result {
         Box::new(move |c: &config::Config| config::save(&path_for_persist, c));
     // §9: an enabled sprite must pass the §10 check or Save refuses it.
     let sprite_check: settings_app::SpriteCheckFn = Box::new(|path: &std::path::Path| {
-        sprite_png::check_sprite_file(path)
-            .map(|_size| ())
-            .map_err(|e| e.to_string())
+        sprite_png::check_sprite_file(path).map_err(|e| e.to_string())
     });
     // §5: a saved combination someone else holds is warned about, not
     // refused. Windows answers nothing here: its arbitration is documented
@@ -375,43 +373,15 @@ fn main() -> eframe::Result {
             eprintln!("[nudge] failed to write default config: {e}");
         }
     }
-    // An unreadable hotkey leaves the app unbound rather than silently
-    // binding something else (design-spec §5). Substituting the default here
-    // would take over a combination the user never asked for, and — because
-    // the tray and the timer work regardless — they would have no way to tell
-    // that their own combination is the one that failed.
-    //
-    // This is also what the live-reload path does when a hand-edit turns the
-    // hotkey into garbage, and the two must agree: the same file content
-    // cannot mean "default" at launch and "unbound" a second later.
-    let configured_hotkey = match hotkey::parse(&config.hotkey) {
-        Ok(hk) => Some(hk),
-        Err(e) => {
-            eprintln!(
-                "[nudge] config hotkey \"{}\" is unusable ({e}), starting without one. {}",
-                config.hotkey,
-                hotkey::VOCABULARY
-            );
-            None
-        }
-    };
+    let configured_hotkey = config.hotkey_or_unbound();
     let (default_minutes, interval_was_invalid) = config.resolved_interval_minutes();
     if interval_was_invalid {
         eprintln!(
-            "[nudge] config default_interval_minutes {} is not a positive finite number, falling back to 10",
-            config.default_interval_minutes
+            "[nudge] config default_interval_minutes {} is not a positive finite number, falling back to {}",
+            config.default_interval_minutes,
+            config::DEFAULT_INTERVAL_MINUTES
         );
     }
-    // A PNG that fails the check is not a sprite (spec §10): say why, show
-    // the plain card.
-    let sprite = match sprite_png::load_sprite(&config.sprite) {
-        Some(Ok(decoded)) => Some((decoded, config.sprite.clone())),
-        Some(Err(reason)) => {
-            eprintln!("[nudge] sprite not shown: {reason}");
-            None
-        }
-        None => None,
-    };
 
     // Whatever OS integration this platform has, started before the event
     // loop takes the main thread.
@@ -545,11 +515,9 @@ fn main() -> eframe::Result {
             // The half of the OS integration that needs the main thread to
             // already be the event loop: the status item and the hotkey.
             platform::start_on_event_loop(&cc.egui_ctx);
-            let mut app = NudgeApp::new(cc, default_minutes);
-            if let Some((decoded, cfg)) = sprite {
-                app = app.with_sprite(decoded, cfg);
-            }
-            Ok(Box::new(app))
+            Ok(Box::new(
+                NudgeApp::new(cc, default_minutes).with_sprite_config(&config.sprite),
+            ))
         }),
     )
 }
