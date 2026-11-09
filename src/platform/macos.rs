@@ -801,6 +801,8 @@ pub fn install_native_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
+// ---------- the settings window's hotkey row -------------------------------
+
 /// The settings window's key source: an app-local `NSEvent` monitor.
 ///
 /// **Main thread, with an `NSApplication` up** — call it from the eframe
