@@ -33,12 +33,12 @@ pub enum Recorder {
 ///
 /// `key` is the platform's own key code — on macOS the same integer the
 /// registration call takes, which is why nothing sits between capture and
-/// binding. `modifiers` is the [`crate::hotkey`] modifier mask (`MOD_CTRL` …
-/// `MOD_WIN`) held at that instant, not a set of keys currently down.
+/// binding. `modifiers` is the set held at that instant, not a set of keys
+/// currently down.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PressEdge {
     pub key: PhysicalKey,
-    pub modifiers: u8,
+    pub modifiers: crate::hotkey::Modifiers,
 }
 
 /// A platform key code, opaque to everything above the platform layer. A

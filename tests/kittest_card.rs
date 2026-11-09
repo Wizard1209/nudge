@@ -678,7 +678,7 @@ fn settings_return_while_the_recorder_is_armed_is_a_press_not_a_save() {
     // The press edge the monitor would report, and the key egui would see.
     source.edges.lock().unwrap().push(PressEdge {
         key: PhysicalKey(36),
-        modifiers: 0,
+        modifiers: nudge_web::hotkey::Modifiers::NONE,
     });
     harness.key_press(egui::Key::Enter);
     harness.run();

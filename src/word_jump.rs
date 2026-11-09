@@ -1,13 +1,19 @@
-//! Unicode-aware word boundary helpers for TextEdit Ctrl+Arrow / Ctrl+Backspace
-//! / Ctrl+Delete. Egui 0.31's built-in `is_word_char` is ASCII-only, so Cyrillic
-//! (and other non-ASCII) text breaks word jumping. We override that with an
-//! `is_alphanumeric()`-based predicate. Indices are *char* indices (matching
-//! egui's `CCursor::index`), not byte indices.
+//! Word boundaries for Ctrl/Alt+Arrow, Ctrl/Alt+Backspace and Ctrl/Alt+Delete
+//! in the popup's text fields. Indices are *char* indices (matching egui's
+//! `CCursor::index`), not byte indices.
+//!
+//! A word is a run of `is_alphanumeric()` characters or `_`, and a jump
+//! crosses the run the cursor is in plus the run after it: Ctrl+Right from
+//! inside `привет мир` lands at the start of `мир`, the way Windows moves.
+//! egui 0.34's own word jump is Unicode-aware as well, but it lands at the
+//! end of the word (the way macOS moves), stops at every `.`, and keeps
+//! `it's` as one word (Unicode word segmentation). Intercepting the keys is
+//! what keeps the behaviour described here instead.
 
 use eframe::egui;
 
-/// Returns the char index of the next word boundary at or after `cursor`.
-/// Mirrors egui's `next_word_boundary_char_index` semantics but Unicode-aware.
+/// Returns the char index of the next word boundary at or after `cursor`,
+/// by the run rule in the module doc.
 pub fn next_word_boundary(text: &str, cursor: usize) -> usize {
     next_boundary_in_iter(text.chars(), cursor)
 }
@@ -54,7 +60,7 @@ fn delete_char_range(s: &mut String, start_char: usize, end_char: usize) {
 }
 
 /// Intercept Ctrl+Arrow / Ctrl+Backspace / Ctrl+Delete on a focused TextEdit
-/// and replace egui's ASCII-only word-jump with our Unicode-aware version.
+/// and apply the boundaries above instead of egui's own.
 ///
 /// Call BEFORE drawing the TextEdit. Removes handled events from the input
 /// queue so TextEdit does not double-process them. Also mirrors the action on

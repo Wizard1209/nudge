@@ -185,7 +185,9 @@ pub struct NudgeApp {
     bullshit: String,
     next_minutes: String,
     focus_first: bool,
-    center_once: bool,
+    /// `true` until the first `ui()` has adopted the native window and
+    /// presented the launch popup.
+    first_frame: bool,
 
     // Shared state
     /// The browser's countdown, polled by `ui`. Native has none here: the
@@ -294,7 +296,7 @@ impl NudgeApp {
             bullshit: String::new(),
             next_minutes: default_minutes.to_string(),
             focus_first: true,
-            center_once: true,
+            first_frame: true,
             // Spec §4: timer is frozen until the user closes the popup for
             // the first time (Submit / Esc / Switch). hide_popup → arm_timer
             // unfreezes it with the interval the user chose.
@@ -1050,7 +1052,7 @@ impl eframe::App for NudgeApp {
         }
 
         // === First frame setup ===
-        if self.center_once {
+        if self.first_frame {
             // Position is set at launch from primary monitor dimensions (see
             // main.rs). Here the platform takes whatever it needs from the
             // native window before the first show.
@@ -1067,7 +1069,7 @@ impl eframe::App for NudgeApp {
             // Windows foreground dance needs the handle it stores.
             self.show_popup(ctx, TriggerSource::Timer);
 
-            self.center_once = false;
+            self.first_frame = false;
         }
 
         // === Native-only: check platform event flags ===
@@ -1094,10 +1096,7 @@ impl eframe::App for NudgeApp {
         // === Periodic repaint ===
         // WASM: always repaint — update() polls timer expiry here (no
         // background thread to ShowWindow us awake).
-        // Native: only while popup is visible. When hidden, tray clicks
-        // and the timer-expiry thread wake the event loop via ShowWindow,
-        // so a standing 1 Hz wakeup would just burn CPU compositing the
-        // transparent layered window through DWM.
+        // Native: only while popup is visible (see `repaint_interval`).
         #[cfg(target_arch = "wasm32")]
         ctx.request_repaint_after(std::time::Duration::from_secs(1));
         #[cfg(not(target_arch = "wasm32"))]

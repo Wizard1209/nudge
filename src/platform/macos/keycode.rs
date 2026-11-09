@@ -23,7 +23,7 @@
 //! US layout, and it is still that cap when a Russian layout makes it type
 //! `о`. That is what §5 rule 7 promises and it costs nothing to keep here.
 
-use crate::hotkey::{self, MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_WIN};
+use crate::hotkey::{self, Modifiers};
 use crate::recorder::{PhysicalKey, PressEdge, Verdict};
 
 /// Every key §5 can name, as `(kVK_* code, canonical token)`.
@@ -141,48 +141,48 @@ fn refused_name(code: u16) -> String {
 /// and `function` are deliberately dropped: macOS sets `function` by itself
 /// for the arrows and the F row, so honouring it would make `⌥⌘←` a different
 /// combination from the one the user pressed.
-pub fn modifiers_from_ns_flags(flags: u64) -> u8 {
+pub fn modifiers_from_ns_flags(flags: u64) -> Modifiers {
     const NS_SHIFT: u64 = 1 << 17;
     const NS_CONTROL: u64 = 1 << 18;
     const NS_OPTION: u64 = 1 << 19;
     const NS_COMMAND: u64 = 1 << 20;
 
-    let mut out = 0u8;
+    let mut out = Modifiers::NONE;
     if flags & NS_CONTROL != 0 {
-        out |= MOD_CTRL;
+        out |= Modifiers::CTRL;
     }
     if flags & NS_OPTION != 0 {
-        out |= MOD_ALT;
+        out |= Modifiers::ALT;
     }
     if flags & NS_SHIFT != 0 {
-        out |= MOD_SHIFT;
+        out |= Modifiers::SHIFT;
     }
     if flags & NS_COMMAND != 0 {
-        out |= MOD_WIN;
+        out |= Modifiers::WIN;
     }
     out
 }
 
 /// Our modifier mask as Carbon's, the shape `RegisterEventHotKey` takes.
-/// `MOD_WIN` is Command here, matching the parser's `Win|Super|Meta|Cmd`
+/// `Modifiers::WIN` is Command here, matching the parser's `Win|Super|Meta|Cmd`
 /// aliasing onto one bit.
-pub fn carbon_modifiers(m: u8) -> u32 {
+pub fn carbon_modifiers(m: Modifiers) -> u32 {
     const CMD_KEY: u32 = 1 << 8;
     const SHIFT_KEY: u32 = 1 << 9;
     const OPTION_KEY: u32 = 1 << 11;
     const CONTROL_KEY: u32 = 1 << 12;
 
     let mut out = 0u32;
-    if m & MOD_CTRL != 0 {
+    if m.contains(Modifiers::CTRL) {
         out |= CONTROL_KEY;
     }
-    if m & MOD_ALT != 0 {
+    if m.contains(Modifiers::ALT) {
         out |= OPTION_KEY;
     }
-    if m & MOD_SHIFT != 0 {
+    if m.contains(Modifiers::SHIFT) {
         out |= SHIFT_KEY;
     }
-    if m & MOD_WIN != 0 {
+    if m.contains(Modifiers::WIN) {
         out |= CMD_KEY;
     }
     out
@@ -205,7 +205,7 @@ pub fn classify_press(edge: PressEdge) -> Verdict {
     // A hotkey is modifiers *plus* a key, so a lone Esc can never be one and
     // the keystroke is free to mean "back out". With anything held it is an
     // ordinary combination and records.
-    if token == "ESCAPE" && edge.modifiers == 0 {
+    if token == "ESCAPE" && edge.modifiers.is_empty() {
         return Verdict::BareEscape;
     }
     match hotkey::from_parts(edge.modifiers, token) {
@@ -224,7 +224,7 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    fn edge(code: u16, modifiers: u8) -> PressEdge {
+    fn edge(code: u16, modifiers: Modifiers) -> PressEdge {
         PressEdge {
             key: PhysicalKey(code),
             modifiers,
@@ -301,14 +301,14 @@ mod tests {
 
     #[test]
     fn ns_flags_read_the_four_modifiers_carbon_can_bind() {
-        assert_eq!(modifiers_from_ns_flags(0), 0);
-        assert_eq!(modifiers_from_ns_flags(1 << 18), MOD_CTRL);
-        assert_eq!(modifiers_from_ns_flags(1 << 19), MOD_ALT);
-        assert_eq!(modifiers_from_ns_flags(1 << 17), MOD_SHIFT);
-        assert_eq!(modifiers_from_ns_flags(1 << 20), MOD_WIN);
+        assert_eq!(modifiers_from_ns_flags(0), Modifiers::NONE);
+        assert_eq!(modifiers_from_ns_flags(1 << 18), Modifiers::CTRL);
+        assert_eq!(modifiers_from_ns_flags(1 << 19), Modifiers::ALT);
+        assert_eq!(modifiers_from_ns_flags(1 << 17), Modifiers::SHIFT);
+        assert_eq!(modifiers_from_ns_flags(1 << 20), Modifiers::WIN);
         assert_eq!(
             modifiers_from_ns_flags((1 << 19) | (1 << 20)),
-            MOD_ALT | MOD_WIN
+            Modifiers::ALT | Modifiers::WIN
         );
     }
 
@@ -319,10 +319,14 @@ mod tests {
         // Reading any of them would make ⌥⌘← a different combination from the
         // one the user pressed.
         for stray in [1 << 16, 1 << 21, 1 << 22, 1 << 23] {
-            assert_eq!(modifiers_from_ns_flags(stray), 0, "flag {stray:#x}");
+            assert_eq!(
+                modifiers_from_ns_flags(stray),
+                Modifiers::NONE,
+                "flag {stray:#x}"
+            );
             assert_eq!(
                 modifiers_from_ns_flags((1 << 20) | stray),
-                MOD_WIN,
+                Modifiers::WIN,
                 "flag {stray:#x} next to Command"
             );
         }
@@ -330,15 +334,15 @@ mod tests {
 
     #[test]
     fn carbon_modifiers_are_the_documented_bits() {
-        assert_eq!(carbon_modifiers(0), 0);
-        assert_eq!(carbon_modifiers(MOD_CTRL), 1 << 12);
-        assert_eq!(carbon_modifiers(MOD_ALT), 1 << 11);
-        assert_eq!(carbon_modifiers(MOD_SHIFT), 1 << 9);
+        assert_eq!(carbon_modifiers(Modifiers::NONE), 0);
+        assert_eq!(carbon_modifiers(Modifiers::CTRL), 1 << 12);
+        assert_eq!(carbon_modifiers(Modifiers::ALT), 1 << 11);
+        assert_eq!(carbon_modifiers(Modifiers::SHIFT), 1 << 9);
         // Cmd, not Control: the parser aliases Win/Super/Meta/Cmd onto one bit
         // and this is the platform where that bit is Command.
-        assert_eq!(carbon_modifiers(MOD_WIN), 1 << 8);
+        assert_eq!(carbon_modifiers(Modifiers::WIN), 1 << 8);
         assert_eq!(
-            carbon_modifiers(MOD_CTRL | MOD_ALT | MOD_SHIFT | MOD_WIN),
+            carbon_modifiers(Modifiers::CTRL | Modifiers::ALT | Modifiers::SHIFT | Modifiers::WIN),
             (1 << 12) | (1 << 11) | (1 << 9) | (1 << 8)
         );
     }
@@ -351,7 +355,7 @@ mod tests {
 
     #[test]
     fn a_modified_letter_is_bindable() {
-        let verdict = classify_press(edge(0x26, MOD_ALT | MOD_WIN));
+        let verdict = classify_press(edge(0x26, Modifiers::ALT | Modifiers::WIN));
         assert_eq!(
             verdict,
             Verdict::Bindable(hotkey::parse("Alt+Cmd+J").unwrap())
@@ -360,7 +364,7 @@ mod tests {
 
     #[test]
     fn a_bare_letter_is_refused_by_name() {
-        match classify_press(edge(0x26, 0)) {
+        match classify_press(edge(0x26, Modifiers::NONE)) {
             Verdict::NotBindable { name } => assert_eq!(name, "J"),
             other => panic!("expected a refusal, got {other:?}"),
         }
@@ -369,16 +373,19 @@ mod tests {
     #[test]
     fn a_bare_f_key_records() {
         assert_eq!(
-            classify_press(edge(0x69, 0)),
+            classify_press(edge(0x69, Modifiers::NONE)),
             Verdict::Bindable(hotkey::parse("F13").unwrap())
         );
     }
 
     #[test]
     fn bare_escape_cancels_and_a_modified_escape_records() {
-        assert_eq!(classify_press(edge(0x35, 0)), Verdict::BareEscape);
         assert_eq!(
-            classify_press(edge(0x35, MOD_WIN)),
+            classify_press(edge(0x35, Modifiers::NONE)),
+            Verdict::BareEscape
+        );
+        assert_eq!(
+            classify_press(edge(0x35, Modifiers::WIN)),
             Verdict::Bindable(hotkey::parse("Cmd+Escape").unwrap())
         );
     }
@@ -388,19 +395,19 @@ mod tests {
         // Two different keys, two different codes. The toolkit folded them
         // together and that fold is what the refusal has to survive.
         assert_ne!(keycode_for("5"), Some(0x57));
-        match classify_press(edge(0x57, MOD_WIN)) {
+        match classify_press(edge(0x57, Modifiers::WIN)) {
             Verdict::NotBindable { name } => assert_eq!(name, "Keypad 5"),
             other => panic!("expected a refusal, got {other:?}"),
         }
         assert_eq!(
-            classify_press(edge(keycode_for("5").unwrap(), MOD_WIN)),
+            classify_press(edge(keycode_for("5").unwrap(), Modifiers::WIN)),
             Verdict::Bindable(hotkey::parse("Cmd+5").unwrap())
         );
     }
 
     #[test]
     fn an_unknown_key_code_still_says_that_the_press_arrived() {
-        match classify_press(edge(0xFF, MOD_WIN)) {
+        match classify_press(edge(0xFF, Modifiers::WIN)) {
             Verdict::NotBindable { name } => assert!(name.contains("255"), "{name}"),
             other => panic!("expected a refusal, got {other:?}"),
         }
@@ -413,7 +420,7 @@ mod tests {
         // held, and there is no rule about them anywhere.
         for (code, label) in [(0x07, "Cmd+X"), (0x08, "Cmd+C"), (0x09, "Cmd+V")] {
             assert_eq!(
-                classify_press(edge(code, MOD_WIN)),
+                classify_press(edge(code, Modifiers::WIN)),
                 Verdict::Bindable(hotkey::parse(label).unwrap()),
                 "{label}"
             );
