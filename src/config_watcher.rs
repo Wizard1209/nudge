@@ -142,8 +142,16 @@ mod native {
                     }
                     ConfigChange::Interval => eprintln!(
                         "[nudge] config reload: default_interval_minutes {} → {} \
-                         (no live effect; applies at next startup)",
-                        self.current.default_interval_minutes, new_cfg.default_interval_minutes
+                         (no live effect; {})",
+                        self.current.default_interval_minutes,
+                        new_cfg.default_interval_minutes,
+                        match new_cfg.resolved_interval_minutes() {
+                            (_, false) => "applies at next startup".to_string(),
+                            (fallback, true) => format!(
+                                "not {}, so the next startup falls back to {fallback}",
+                                config::interval_rule_text()
+                            ),
+                        }
                     ),
                     ConfigChange::Autostart => eprintln!(
                         "[nudge] config reload: autostart {} → {} \
@@ -399,6 +407,22 @@ mod tests {
                 }
                 std::thread::sleep(Duration::from_millis(20));
             }
+        }
+
+        #[test]
+        fn a_reload_of_an_interval_too_large_to_arm_changes_nothing_live() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.json");
+            let edited = Config {
+                default_interval_minutes: 1e20,
+                ..Config::default()
+            };
+            save(&path, &edited).unwrap();
+
+            let mut live = LiveConfig::new(path, Config::default());
+            assert_eq!(live.reload(), Vec::new(), "the interval has no live effect");
+            assert_eq!(live.current(), &edited, "but it is the new baseline");
+            assert_eq!(live.current().resolved_interval_minutes(), (10.0, true));
         }
 
         #[test]

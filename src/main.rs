@@ -175,8 +175,9 @@ fn main() -> eframe::Result {
     let (default_minutes, interval_was_invalid) = config.resolved_interval_minutes();
     if interval_was_invalid {
         eprintln!(
-            "[nudge] config default_interval_minutes {} is not a positive finite number, falling back to {}",
+            "[nudge] config default_interval_minutes {} is not {}, falling back to {}",
             config.default_interval_minutes,
+            config::interval_rule_text(),
             config::DEFAULT_INTERVAL_MINUTES
         );
     }

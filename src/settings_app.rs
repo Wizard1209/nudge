@@ -1207,6 +1207,20 @@ mod tests {
     }
 
     #[test]
+    fn parse_interval_minutes_holds_the_interval_bound() {
+        assert_eq!(parse_interval_minutes("1000000").unwrap(), 1_000_000.0);
+        for bad in ["1000000.0000001", "2e17", "1e20"] {
+            assert_eq!(
+                parse_interval_minutes(bad),
+                Err(IntervalError {
+                    input: bad.to_string()
+                }),
+                "{bad:?} should be rejected"
+            );
+        }
+    }
+
+    #[test]
     fn to_config_propagates_interval_error() {
         let mut f = SettingsForm::from_config(Config::default());
         f.interval_text = "garbage".to_string();

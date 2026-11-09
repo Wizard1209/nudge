@@ -72,7 +72,8 @@ Every line written in v1 must contain at least:
 - `captured_at` is the time the submission was accepted by the app, not the time
   the popup was first shown
 - `doing` and `bullshit` may be empty strings unless the product later tightens UI validation
-- `next_interval_minutes` must be a positive decimal number greater than `0`
+- `next_interval_minutes` must be a decimal number greater than `0` and at most
+  `1000000` — the interval rule of the design spec, §4
 - Unknown top-level keys must be tolerated by readers
 
 ### Reserved future event types
@@ -181,7 +182,7 @@ Given a validated `JournalEvent` and resolved `filePath`:
 - `captured_at` must include offset and milliseconds
 - `implementation` must be non-empty
 - `trigger_source` must be one of `timer` or `manual`
-- `next_interval_minutes` must be finite and greater than `0`
+- `next_interval_minutes` must be greater than `0` and at most `1000000`
 - `doing` and `bullshit` must be valid UTF-8 strings
 
 ### Durability

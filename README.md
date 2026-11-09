@@ -69,7 +69,8 @@ Full contract: [docs/journal-spec.md](docs/journal-spec.md)
 ## Defaults
 
 - Interval: **10 minutes** — field `default_interval_minutes` in
-  `config.json`, any positive number (integer or decimal).
+  `config.json`, any number (integer or decimal) above 0 and at most
+  1 000 000; anything else falls back to 10.
 - Journal: `<Documents>/Nudge/journal-rust.ndjson` — `%USERPROFILE%\Documents`
   on Windows, `~/Documents` on macOS.
 - Config: `%USERPROFILE%\Documents\Nudge\config.json` on Windows,
