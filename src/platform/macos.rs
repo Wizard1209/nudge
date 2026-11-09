@@ -57,7 +57,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use eframe::egui;
 use muda::{Menu, MenuEvent, MenuId, MenuItem};
@@ -73,9 +73,9 @@ use objc2_app_kit::{
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
+use super::shared::{self, Countdown, IconKey};
 use crate::config;
 use crate::config_watcher::{LiveChange, LiveConfig};
-use crate::daisy;
 use crate::hotkey::{self, Hotkey};
 use crate::layout::ScreenGeometry;
 use crate::nudge_state;
@@ -93,33 +93,9 @@ use status_item::StatusItem;
 
 // ---------- shared state ---------------------------------------------------
 
-/// The armed interval: when the next nudge is due and how long the interval
-/// was. `None` when no timer is armed — before the first close (spec §4 freezes
-/// the timer until then) and between an expiry and the reset that follows it.
-///
-/// The duration is what the petal countdown needs; the deadline is what the
-/// wake schedule needs.
-#[derive(Clone, Copy)]
-struct ArmedTimer {
-    deadline: Instant,
-    duration: Duration,
-}
-
-static TIMER: Mutex<Option<ArmedTimer>> = Mutex::new(None);
-
-/// Edge flags polled by `NudgeApp::ui`, mirroring the Windows ones so the
-/// state transition on expiry is the app's existing code path, not a second
-/// implementation of it.
-static TRAY_CLICKED: AtomicBool = AtomicBool::new(false);
-static TIMER_FIRED: AtomicBool = AtomicBool::new(false);
-
-/// Set by the `config_watcher` callback when `config.json` changes on disk,
-/// drained by `tick`.
-static CONFIG_RELOAD_REQUESTED: AtomicBool = AtomicBool::new(false);
-
 /// Raised by the status-item left click, by the menu's "Show Nudge" item and by
 /// the global hotkey — the three manual ways to summon the popup. Drained by
-/// `tick`, which turns it into the same `TRAY_CLICKED` edge Windows raises.
+/// `tick`, which turns it into the same tray-clicked edge Windows raises.
 static MANUAL_OPEN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 /// Raised by the menu's "Settings" / "Quit" items, drained by `tick`. The
@@ -128,16 +104,6 @@ static MANUAL_OPEN_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// menu's tracking loop still on the stack.
 static SETTINGS_REQUESTED: AtomicBool = AtomicBool::new(false);
 static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
-
-/// `true` while the popup is on screen. `tick` parks on it exactly as the
-/// tray thread does: while the user is looking at the popup we neither count
-/// down nor animate. Starts `true` because the app opens with the launch popup.
-///
-/// Raised by [`reveal`], in the frame `App::logic` orders the window in, and by
-/// `App::show_popup` a frame or more later when `ui()` catches up; cleared only
-/// by `App::hide_popup`. Both raise sites matter — see [`reveal`] for what the
-/// gap between them used to cost.
-static POPUP_VISIBLE: AtomicBool = AtomicBool::new(true);
 
 /// The application that had the keyboard when the popup took it, by pid:
 /// what [`hand_back_activation`] gives it back to (spec §1). Written by
@@ -155,11 +121,6 @@ static CHOSEN_SCREEN: Mutex<Option<NSRect>> = Mutex::new(None);
 
 /// What [`start`] recorded for [`start_on_event_loop`] to build. Taken once.
 static PENDING_START: Mutex<Option<(Option<Hotkey>, PathBuf, config::Config)>> = Mutex::new(None);
-
-/// A sprite change from a config reload, waiting for the app to apply it
-/// while the popup is hidden (spec §10). The newest change replaces an
-/// older one still waiting.
-static PENDING_SPRITE: Mutex<Option<config::SpriteConfig>> = Mutex::new(None);
 
 /// A clone of the egui context, so an AppKit / Carbon callback on the main
 /// thread can wake the event loop. `egui::Context` is `Send + Sync` and
@@ -189,9 +150,8 @@ struct UiState {
     _menu: Menu,
     _menu_items: [MenuItem; 3],
     /// Dedupe keys, so `set_frame` / `set_tooltip` are only called when what
-    /// they would display actually changes. The icon key is
-    /// `(petals attached, drifting petal + its progress in percent)`.
-    last_icon_key: Option<(u8, Option<(u8, u16)>)>,
+    /// they would display actually changes.
+    last_icon_key: Option<IconKey>,
     last_tooltip_minutes: Option<u64>,
     reload: ReloadState,
 }
@@ -329,8 +289,9 @@ pub fn request_manual_open() {
 }
 
 /// Wake the event loop so `logic` → [`tick`] runs now rather than at the next
-/// scheduled repaint. The macOS counterpart of `tray_bridge::wake_eframe`.
-fn wake() {
+/// scheduled repaint — after a handler raised a flag, and after every write
+/// to `platform::shared` (which calls this).
+pub(super) fn wake() {
     if let Some(ctx) = WAKE_CTX.lock().unwrap().as_ref() {
         ctx.request_repaint();
     }
@@ -341,49 +302,36 @@ fn wake() {
 /// No-op: nothing on this side needs the window handle. The reveal path goes
 /// through `NSApplication` and egui's viewport commands, both of which
 /// address the app's own main window without one.
-///
-/// Unreachable in the macOS *binary* — `app.rs` only captures a handle under
-/// `cfg(windows)` — but the facade is a set, and the alternative to keeping the
-/// odd one out is a cfg in the caller.
-//
-// `allow`, not `expect`: in the library half of the same build this is
-// reachable public API, so an `expect` would be unfulfilled there.
-#[allow(dead_code)]
-pub fn note_window_handle(_handle: isize) {}
+pub fn adopt_window(_frame: &eframe::Frame) {}
 
-pub fn set_tray_clicked() {
-    TRAY_CLICKED.store(true, Ordering::SeqCst);
+/// Whether the popup is the key window right now. Read from eframe's
+/// `viewport().focused`, which on macOS is current, not a frame behind:
+/// egui-winit 0.34 refreshes it from `Window::has_focus()` in
+/// `update_viewport_info`, called at the top of every frame immediately
+/// before `take_egui_input` (`egui-winit/src/lib.rs`:1278,
+/// `eframe/src/native/glow_integration.rs`:557), and on macOS
+/// `Window::has_focus()` is `NSWindow::isKeyWindow` — a live AppKit read,
+/// not a cached event. So this is exactly as current as an
+/// `NSApplication::isActive` call made from here, and it answers the sharper
+/// question: whether *this window* is the one Esc and Enter will reach,
+/// which is the condition spec §4 is actually about. It also needs no
+/// `MainThreadMarker`, so the arming logic stays reachable from the headless
+/// kittest tier.
+pub fn popup_is_foreground(ctx: &egui::Context) -> bool {
+    // `None` = winit has not reported on the window yet (first frames, and
+    // every kittest harness). Not focused is the safe reading: it delays
+    // arming, it cannot cause a close.
+    ctx.input(|i| i.viewport().focused) == Some(true)
 }
 
-pub fn take_tray_clicked() -> bool {
-    TRAY_CLICKED.swap(false, Ordering::SeqCst)
-}
-
-pub fn take_timer_fired() -> bool {
-    TIMER_FIRED.swap(false, Ordering::SeqCst)
-}
-
-/// Arm the timer. `duration` is what the petal countdown draws against;
-/// `deadline` is what the wake schedule and the tooltip count down to.
-///
-/// Wakes the event loop, because nothing else here will. A new deadline is
-/// only ever set from `hide_popup`, and `tick` refuses to schedule anything
-/// while `POPUP_VISIBLE` is still true — which it is at this point, since
-/// `hide_popup` clears it one line later. So the frame that turns this
-/// deadline into a `request_repaint_after` has to be asked for; without the
-/// wake the only thing producing it is the popup's own 1 Hz repaint request,
-/// issued earlier in the same `ui()` pass for an unrelated reason.
-pub fn set_timer_state(deadline: Instant, duration: Duration) {
-    // Scoped so the lock is released before `wake` — it takes a different
-    // mutex and calls into egui, and nothing here needs both at once.
-    {
-        *TIMER.lock().unwrap() = Some(ArmedTimer { deadline, duration });
-    }
-    wake();
-}
-
+/// The shared flag, plus what only this backend has to do when the popup
+/// goes away. The wake the shared write issues matters here: a new deadline
+/// is only ever set from `hide_popup`, and `tick` refuses to schedule
+/// anything while the popup still counts as visible — which it does at that
+/// point, since `hide_popup` clears it one line later. So the frame that
+/// turns the deadline into a `request_repaint_after` has to be asked for.
 pub fn set_popup_visible(visible: bool) {
-    POPUP_VISIBLE.store(visible, Ordering::SeqCst);
+    shared::set_popup_visible(visible);
     if !visible {
         // The blur panel hangs off the *window*, which is ordered out rather
         // than destroyed, so nothing else takes it down — left alone it keeps
@@ -462,25 +410,11 @@ fn remember_front_application() {
     }
 }
 
-/// Signal that `config.json` changed on disk. Idempotent — N saves before
-/// the next `tick` collapse into one re-read, which is the correct behaviour.
-pub fn request_config_reload() {
-    CONFIG_RELOAD_REQUESTED.store(true, Ordering::SeqCst);
-    // The hotkey is live-reloadable, so a reload must not sit unapplied until
-    // the timer happens to wake us.
-    wake();
-}
-
-/// The sprite change parked by the last reload, if any; `NudgeApp` drains it.
-pub fn take_pending_sprite() -> Option<config::SpriteConfig> {
-    PENDING_SPRITE.lock().unwrap().take()
-}
-
 /// One pass of the OS integration, called from `NudgeApp::logic` on every tick.
 ///
 /// Drains everything the event handlers raised, then either re-arms the wake
 /// for the remaining time — refreshing the status item on the way — or, once
-/// the deadline has passed, raises `TIMER_FIRED` and claims a reveal. It
+/// the deadline has passed, raises the timer-fired edge and claims a reveal. It
 /// deliberately does *not* perform the state transition itself: raising the
 /// flag routes expiry into the same `ui()` branch Windows uses, so there is one
 /// definition of what a timer-fired open does.
@@ -496,16 +430,16 @@ pub fn tick(ctx: &egui::Context) -> bool {
         spawn_settings_process();
     }
     reap_settings_children();
-    if CONFIG_RELOAD_REQUESTED.swap(false, Ordering::SeqCst) {
+    if shared::take_config_reload_requested() {
         apply_config_reload();
     }
 
-    let popup_visible = POPUP_VISIBLE.load(Ordering::SeqCst);
+    let popup_visible = shared::popup_visible();
 
     if MANUAL_OPEN_REQUESTED.swap(false, Ordering::SeqCst) && !popup_visible {
         // Same edge the Windows tray raises; `ui()` turns it into a
         // `TriggerSource::Manual` open.
-        set_tray_clicked();
+        shared::raise_tray_clicked();
         reveal(ctx);
         return true;
     }
@@ -516,47 +450,28 @@ pub fn tick(ctx: &egui::Context) -> bool {
         return false;
     }
 
-    let mut slot = TIMER.lock().unwrap();
-    let Some(timer) = *slot else {
+    let Some(timer) = shared::armed_timer() else {
         return false;
     };
 
-    // Spec §5's timeline lives in `daisy::frame_at` (pure + tested); this loop
-    // keeps only the wall-clock measurement and the AppKit I/O — the same
-    // split the Windows tray thread makes. `elapsed` is allowed to grow past
-    // `duration` so the last petal's fall can finish before the popup takes
-    // focus.
-    let now = Instant::now();
-    let elapsed = if now >= timer.deadline {
-        timer.duration + now.duration_since(timer.deadline)
-    } else {
-        timer
-            .duration
-            .saturating_sub(timer.deadline.duration_since(now))
-    };
-    let frame = daisy::frame_at(timer.duration, elapsed);
-    let remaining = timer.deadline.saturating_duration_since(now);
+    // The timeline is `shared`'s; what is this backend's is the AppKit I/O.
+    let countdown = timer.observe(Instant::now());
 
-    refresh_status_item(&frame, remaining);
+    refresh_status_item(&countdown);
 
-    if !frame.should_fire {
-        drop(slot);
-        ctx.request_repaint_after(next_wake(&frame, remaining));
+    if !countdown.frame.should_fire {
+        ctx.request_repaint_after(countdown.next_wake());
         return false;
     }
 
-    // Expired. Disarm so one deadline fires once: every close of a
-    // timer-fired popup resets the timer (`nudge_state::decide_close`), and
-    // that reset is what re-arms us through `set_timer_state`.
-    *slot = None;
-    drop(slot);
-
-    TIMER_FIRED.store(true, Ordering::SeqCst);
+    // Expired: disarm so one deadline fires once, and raise the edge.
+    shared::disarm_timer(timer);
+    shared::raise_timer_fired();
     reveal(ctx);
     true
 }
 
-/// Claim a reveal: choose the screen, raise `POPUP_VISIBLE` and ask for a
+/// Claim a reveal: choose the screen, mark the popup visible and ask for a
 /// repaint. Shared by the timer expiry and every manual trigger, so all four
 /// entry points have identical side effects. The window is ordered in by
 /// `NudgeApp::logic` when `tick` returns true: placed, shown, activated.
@@ -565,15 +480,15 @@ pub fn tick(ctx: &egui::Context) -> bool {
 /// so `ui()` is being skipped and cannot schedule the frame that will consume
 /// the flag we just raised.
 ///
-/// # Why this claims `POPUP_VISIBLE` itself
+/// # Why this marks the popup visible itself
 ///
-/// `POPUP_VISIBLE` used to be written only by `show_popup`, i.e. from `ui()`,
+/// The visible flag used to be written only by `show_popup`, i.e. from `ui()`,
 /// which cannot run in the same frame as this call: eframe samples
 /// `is_visible` at the top of the frame, before `logic()`, and gates `app.ui`
 /// on that sample (`glow_integration.rs` → `epi_integration.rs`). So between a
 /// reveal and its `show_popup` there is always at least one further `tick`
 /// that still saw the popup as hidden — and that tick would happily disarm the
-/// timer and raise `TIMER_FIRED` into a card `ui()` is about to open manually,
+/// timer and raise the timer-fired edge into a card `ui()` is about to open manually,
 /// where the flag is dropped. The deadline is then gone with nothing left to
 /// re-arm it (a manual Esc yields `reset_timer: None`) and the app never
 /// nudges again.
@@ -736,12 +651,9 @@ pub fn screen_geometry(ctx: &egui::Context, frame: &eframe::Frame) -> Option<Scr
 /// tooltip, and for the icon the whole cost of a status-item repaint, which
 /// runs from one daisy render per display density through to a menu-bar
 /// composite.
-fn refresh_status_item(frame: &daisy::DaisyFrame, remaining: Duration) {
-    let minutes = nudge_state::displayed_minutes(remaining);
-    let drift_key = frame
-        .drift
-        .map(|d| (d.petal_index, (d.progress * 100.0) as u16));
-    let icon_key = (frame.petals_remaining, drift_key);
+fn refresh_status_item(countdown: &Countdown) {
+    let minutes = countdown.tooltip_minutes();
+    let icon_key = countdown.icon_key();
 
     UI.with_borrow_mut(|slot| {
         let Some(ui) = slot.as_mut() else {
@@ -763,44 +675,15 @@ fn refresh_status_item(frame: &daisy::DaisyFrame, remaining: Duration) {
         };
 
         if *last_icon_key != Some(icon_key) {
-            tray.set_frame(frame.petals_remaining, frame.drift);
+            tray.set_frame(countdown.frame.petals_remaining, countdown.frame.drift);
             *last_icon_key = Some(icon_key);
         }
 
         if *last_tooltip_minutes != Some(minutes) {
-            tray.set_tooltip(&nudge_state::tooltip_for_remaining(remaining));
+            tray.set_tooltip(&countdown.tooltip());
             *last_tooltip_minutes = Some(minutes);
         }
     });
-}
-
-/// One drift frame, ~30 Hz — the cadence the Windows tray animates at.
-const DRIFT_FRAME: Duration = Duration::from_millis(33);
-
-/// Sleep floor, so a zero-length answer cannot turn the wake schedule into a
-/// spin.
-const MIN_WAKE: Duration = Duration::from_millis(20);
-
-/// When to wake next. Pure, so the wake schedule can be asserted without a
-/// window server.
-///
-/// Same schedule as the Windows tray loop: animate while a petal is falling,
-/// otherwise sleep until the next thing that changes what the user sees — a
-/// petal dropping, the tooltip's minute count changing, or the deadline. So an
-/// idle 10-minute interval wakes ~22 times plus twelve 250 ms bursts of
-/// animation, rather than running a standing timer.
-fn next_wake(frame: &daisy::DaisyFrame, remaining: Duration) -> Duration {
-    if frame.drift.is_some() {
-        return DRIFT_FRAME;
-    }
-
-    let to_petal = frame.petal_duration.saturating_sub(frame.time_since_drop);
-    // `tooltip_for_remaining` shows `ceil(remaining / 60)`, so its wording
-    // changes when `remaining` next crosses a whole minute.
-    let minutes = nudge_state::displayed_minutes(remaining);
-    let to_minute = remaining.saturating_sub(Duration::from_secs(minutes.saturating_sub(1) * 60));
-
-    remaining.min(to_petal).min(to_minute).max(MIN_WAKE)
 }
 
 // ---------- global hotkey --------------------------------------------------
@@ -950,7 +833,7 @@ fn reload_config(state: &mut ReloadState) {
                 state.registered = hk.and_then(|hk| try_register_hotkey(&hk));
             }
             LiveChange::Sprite(to) => {
-                *PENDING_SPRITE.lock().unwrap() = Some(to);
+                shared::park_sprite(to);
                 wake();
             }
         }
@@ -1188,6 +1071,11 @@ pub fn hotkey_conflict(hk: &Hotkey) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use super::shared::{
+        ArmedTimer, set_timer_state, take_pending_sprite, take_timer_fired, take_tray_clicked,
+    };
     use super::*;
 
     // === hotkey registration =================================================
@@ -1213,77 +1101,7 @@ mod tests {
         assert!(!holds_this_hotkey(&hk));
     }
 
-    // === the wake schedule ===================================================
-    //
-    // A 10-minute interval throughout: 12 petals, one every 50s, drift capped
-    // at 250ms.
-
     const INTERVAL: Duration = Duration::from_secs(600);
-
-    /// The frame `tick` would compute with `remaining` left on the clock.
-    fn frame_with(remaining: Duration) -> daisy::DaisyFrame {
-        daisy::frame_at(INTERVAL, INTERVAL.saturating_sub(remaining))
-    }
-
-    fn wake_with(remaining: Duration) -> Duration {
-        next_wake(&frame_with(remaining), remaining)
-    }
-
-    #[test]
-    fn wake_never_overshoots_the_deadline() {
-        for secs in [1, 5, 59, 60, 61, 300, 599] {
-            let remaining = Duration::from_secs(secs);
-            assert!(
-                wake_with(remaining) <= remaining,
-                "wake must not sleep past the deadline (remaining {secs}s)"
-            );
-        }
-    }
-
-    #[test]
-    fn wake_lands_on_the_next_tooltip_wording_change() {
-        // 2m05s left: the tooltip flips "~3 min" → "~2 min" in 5s, the next
-        // petal is further out, so the tooltip is what sets the alarm.
-        assert_eq!(wake_with(Duration::from_secs(125)), Duration::from_secs(5));
-    }
-
-    #[test]
-    fn wake_lands_on_the_next_petal_drop_when_that_comes_first() {
-        // 3m01s left: the tooltip boundary is 61s away and the petal is 1s
-        // away (419s elapsed is 49s into the 9th petal's 50s life).
-        assert_eq!(wake_with(Duration::from_secs(181)), Duration::from_secs(1));
-    }
-
-    #[test]
-    fn wake_animates_while_a_petal_is_falling() {
-        // 100ms into a petal drop (the second, at 75 s of a 600 s interval
-        // with 16 petals), inside the 250ms drift window.
-        let remaining = Duration::from_millis(524_900);
-        assert!(
-            frame_with(remaining).drift.is_some(),
-            "this is a drift frame"
-        );
-        assert_eq!(wake_with(remaining), DRIFT_FRAME);
-    }
-
-    #[test]
-    fn wake_keeps_animating_past_the_deadline_until_the_last_petal_lands() {
-        // `should_fire` waits for the final drift, so the deadline passing is
-        // not the end of the animation — the popup is owed to the user 250ms
-        // later, and the frames in between are the last petal falling.
-        let frame = daisy::frame_at(INTERVAL, INTERVAL + Duration::from_millis(200));
-        assert!(!frame.should_fire, "the final drift is still running");
-        assert_eq!(next_wake(&frame, Duration::ZERO), DRIFT_FRAME);
-    }
-
-    #[test]
-    fn wake_has_a_floor_so_it_cannot_ask_for_a_zero_length_sleep() {
-        // Nothing left to count down to and no drift to animate: without the
-        // floor this is a request to be woken immediately, forever.
-        let frame = daisy::frame_at(INTERVAL, INTERVAL * 2);
-        assert!(frame.drift.is_none(), "long past the last drift");
-        assert_eq!(next_wake(&frame, Duration::ZERO), MIN_WAKE);
-    }
 
     // === the handler → tick → app edge =======================================
 
@@ -1299,16 +1117,16 @@ mod tests {
     /// Put the module back in the state a fresh process starts in, so the
     /// order libtest happens to pick cannot change what a test sees.
     fn reset_globals() {
-        let _ = take_tray_clicked();
-        let _ = take_timer_fired();
+        let _ = shared::take_tray_clicked();
+        let _ = shared::take_timer_fired();
         let _ = MANUAL_OPEN_REQUESTED.swap(false, Ordering::SeqCst);
-        *TIMER.lock().unwrap() = None;
+        shared::clear_timer();
         set_popup_visible(false);
     }
 
     /// The middle link of the manual-open path: a handler raises a flag from
     /// outside any frame, and the *next* tick has to turn it into the
-    /// `TRAY_CLICKED` edge `ui()` consumes. If `tick` dropped it, a status-item
+    /// tray-clicked edge `ui()` consumes. If `tick` dropped it, a status-item
     /// click while the popup is hidden — the only state the status item exists
     /// for — would do nothing at all.
     #[test]
@@ -1339,7 +1157,7 @@ mod tests {
     /// A reveal is not instantaneous: `ui()` cannot run in the same frame that
     /// `tick` revealed in, so there is always at least one more `tick` before
     /// the card is acknowledged. If the timer is allowed to expire in that gap
-    /// it disarms itself and raises `TIMER_FIRED` into a card `ui()` is about
+    /// it disarms itself and raises the timer-fired edge into a card `ui()` is about
     /// to open as `Manual` — where the flag is dropped. A manual Esc then
     /// yields `reset_timer: None`, so nothing re-arms, and the app never
     /// nudges again.
@@ -1353,7 +1171,10 @@ mod tests {
         // out: hidden card, deadline already a second in the past (well past
         // the 250 ms final drift, so `should_fire` is true).
         let interval = Duration::from_secs(600);
-        set_timer_state(Instant::now() - Duration::from_secs(1), interval);
+        set_timer_state(ArmedTimer {
+            deadline: Instant::now() - Duration::from_secs(1),
+            duration: interval,
+        });
         request_manual_open();
 
         assert!(tick(&ctx), "the manual open claims a reveal");
@@ -1372,7 +1193,7 @@ mod tests {
             "an expiry must not be raised while a reveal is still unacknowledged"
         );
         assert!(
-            TIMER.lock().unwrap().is_some(),
+            shared::armed_timer().is_some(),
             "and the deadline must still be armed — nothing else would re-arm it"
         );
 
@@ -1386,7 +1207,7 @@ mod tests {
             "the overdue nudge fires once the manual card is out of the way"
         );
         assert!(
-            TIMER.lock().unwrap().is_none(),
+            shared::armed_timer().is_none(),
             "and one deadline still fires exactly once"
         );
     }
@@ -1400,14 +1221,14 @@ mod tests {
 
         reveal(&ctx);
         assert!(
-            POPUP_VISIBLE.load(Ordering::SeqCst),
+            shared::popup_visible(),
             "a claimed reveal is the popup up; `tick` must park until `hide_popup` says otherwise"
         );
     }
 
     /// A new deadline has to produce the tick that schedules it. Nothing else
     /// here will: `set_timer_state` is only ever called from `hide_popup`,
-    /// where `POPUP_VISIBLE` is still true, and `tick` schedules nothing in
+    /// where the popup still counts as visible, and `tick` schedules nothing in
     /// that state. Before this, the frame that armed the real deadline came
     /// from the popup's own 1 Hz repaint request, issued a few lines earlier
     /// in `ui()` for an unrelated reason — correct by accident.
@@ -1440,7 +1261,10 @@ mod tests {
              or this test cannot see the wake it exists for"
         );
 
-        set_timer_state(Instant::now() + Duration::from_secs(600), INTERVAL);
+        set_timer_state(ArmedTimer {
+            deadline: Instant::now() + Duration::from_secs(600),
+            duration: INTERVAL,
+        });
         assert!(
             ctx.has_requested_repaint(),
             "arming a deadline must ask for the frame that will schedule it"

@@ -157,10 +157,10 @@ pub struct DriftState {
 ///
 /// Spec §5 timing lives here: how many petals are still attached, the petal
 /// currently drifting away (if any), and whether enough time has passed —
-/// including the final drift — to fire the popup. The tray thread reads
-/// `elapsed` from the wall clock, calls [`frame_at`], then turns this into a
-/// `set_icon` + the `TIMER_FIRED` atomic. Keeping it pure lets the §5
-/// invariants run under `cargo test` without the Win32 message pump.
+/// including the final drift — to fire the popup. `platform::shared` reads
+/// `elapsed` from the wall clock and calls [`frame_at`]; each backend turns
+/// the result into its icon update and the timer-fired edge. Keeping it pure
+/// lets the §5 invariants run under `cargo test` without a message pump.
 #[derive(Clone, Copy, Debug)]
 pub struct DaisyFrame {
     /// Petals still attached to the flower (0..=PETAL_COUNT). Feed straight

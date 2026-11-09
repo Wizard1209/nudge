@@ -4,6 +4,7 @@ use crate::config::SpriteConfig;
 use crate::journal::{self, JournalSink};
 use crate::layout::{self, PopupLayout, ScreenGeometry};
 use crate::nudge_state::{self, Action, TriggerSource};
+#[cfg(target_arch = "wasm32")]
 use crate::timer::Timer;
 use crate::word_jump;
 
@@ -187,6 +188,9 @@ pub struct NudgeApp {
     center_once: bool,
 
     // Shared state
+    /// The browser's countdown, polled by `ui`. Native has none here: the
+    /// platform runs the countdown there (`arm_timer`).
+    #[cfg(target_arch = "wasm32")]
     timer: Timer,
     /// Where a Submit's event goes. The real store for this build unless the
     /// kittest tier hands in a recorder (`with_journal_sink`).
@@ -249,12 +253,6 @@ pub struct NudgeApp {
     /// `retry_focus_until_armed`.
     #[cfg(target_os = "macos")]
     shown_at: Option<std::time::Instant>,
-
-    // Native window handle for Win32 API calls.
-    // The tray icon itself lives on a dedicated thread (see tray_bridge);
-    // NudgeApp only signals popup state changes to it.
-    #[cfg(target_os = "windows")]
-    hwnd: Option<isize>,
 }
 
 impl NudgeApp {
@@ -284,8 +282,8 @@ impl NudgeApp {
         // activation (autostart at logon, spawn from a background shell) the
         // OS delivers no input events to the fresh window, and the event
         // loop never paints on its own: the window sits as a transparent
-        // never-rendered overlay, `ui()` never runs, so hwnd is never handed
-        // to the tray (its Show/hotkey wakeups need it) and the frozen
+        // never-rendered overlay, `ui()` never runs, so the window is never
+        // adopted by the platform (its Show/hotkey wakeups need it) and the frozen
         // first-launch timer can never be started by closing the popup.
         // Observed live on Windows: launch unfocused → no frame until the
         // first real input event hits the window.
@@ -298,8 +296,9 @@ impl NudgeApp {
             focus_first: true,
             center_once: true,
             // Spec §4: timer is frozen until the user closes the popup for
-            // the first time (Submit / Esc / Switch). hide_popup → reset()
+            // the first time (Submit / Esc / Switch). hide_popup → arm_timer
             // unfreezes it with the interval the user chose.
+            #[cfg(target_arch = "wasm32")]
             timer: Timer::frozen(),
             journal: journal::default_sink(),
             trigger_source: TriggerSource::Timer,
@@ -327,8 +326,6 @@ impl NudgeApp {
             armed: false,
             #[cfg(target_os = "macos")]
             shown_at: None,
-            #[cfg(target_os = "windows")]
-            hwnd: None,
         }
     }
 
@@ -547,57 +544,22 @@ impl NudgeApp {
     /// surface right now?" — used both at open-time to set `armed` and in
     /// the per-frame loop to detect focus loss.
     ///
-    /// Windows and WASM go through `GetForegroundWindow` / `document.hasFocus()`
-    /// directly rather than eframe's `viewport().focused`, because there that
-    /// field is filled from a window event and so lags a frame behind
-    /// `WM_ACTIVATE`.
-    ///
-    /// **macOS reads `viewport().focused`, and the lag objection above does not
-    /// carry over.** egui-winit 0.34 refreshes that field from
-    /// `Window::has_focus()` in `update_viewport_info`, called at the top of
-    /// every frame immediately before `take_egui_input` (`egui-winit/src/lib.rs`
-    /// :1278, `eframe/src/native/glow_integration.rs`:557). On macOS
-    /// `Window::has_focus()` is `NSWindow::isKeyWindow` — a live AppKit read,
-    /// not a cached event — so this is exactly as current as an
-    /// `NSApplication::isActive` call made from here, and it answers the
-    /// sharper question: whether *this window* is the one Esc and Enter will
-    /// reach, which is the condition spec §4 is actually about. It also needs
-    /// no `MainThreadMarker`, so the arming logic stays reachable from the
-    /// headless kittest tier.
+    /// Native asks the platform, whose backends each say which reading is
+    /// current enough there (`platform::popup_is_foreground`). The browser
+    /// reads `document.hasFocus()` rather than eframe's `viewport().focused`,
+    /// which is filled from a window event and lags a frame behind.
     fn current_foreground_matches(&self, ctx: &egui::Context) -> bool {
-        // Only the macOS arm reads it; the others ask their OS directly.
-        let _ = ctx;
-
-        #[cfg(target_os = "windows")]
+        #[cfg(not(target_arch = "wasm32"))]
         {
-            use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
-            let Some(hwnd_val) = self.hwnd else {
-                return false;
-            };
-            let fg = unsafe { GetForegroundWindow() };
-            !fg.0.is_null() && fg.0 as isize == hwnd_val
+            crate::platform::popup_is_foreground(ctx)
         }
         #[cfg(target_arch = "wasm32")]
         {
-            return web_sys::window()
+            let _ = ctx;
+            web_sys::window()
                 .and_then(|w| w.document())
                 .and_then(|d| d.has_focus().ok())
-                .unwrap_or(false);
-        }
-        #[cfg(target_os = "macos")]
-        {
-            // `None` = winit has not reported on the window yet (first frames,
-            // and every kittest harness). Not focused is the safe reading:
-            // it delays arming, it cannot cause a close.
-            ctx.input(|i| i.viewport().focused) == Some(true)
-        }
-        #[cfg(not(any(target_os = "windows", target_os = "macos", target_arch = "wasm32")))]
-        {
-            // The fallback host has no OS integration at all (see
-            // `platform::fallback`): it never nudges, nothing activates the
-            // window, and a focus-loss close would be the only spec §4
-            // behaviour present on a platform that has none of the rest.
-            false
+                .unwrap_or(false)
         }
     }
 
@@ -667,11 +629,8 @@ impl NudgeApp {
         }
     }
 
-    /// Close the popup (spec §4) and take the window off screen. On macOS a
-    /// placed window is shrunk to one point in this pass and ordered out in
-    /// the next: AppKit resizes the presentation surfaces only of a window
-    /// that is still on screen, and the pass in between paints one
-    /// transparent 1×1 frame nobody sees.
+    /// Close the popup (spec §4): execute the close decision, take the
+    /// window off screen, start the next interval if the decision says so.
     // `ctx` is only needed to hide the native window; the browser build has
     // none.
     #[cfg_attr(target_arch = "wasm32", expect(unused_variables))]
@@ -713,15 +672,9 @@ impl NudgeApp {
         // Clear error on successful action
         self.error_message = None;
 
-        // Shared: timer reset. `Some(interval)` ⇒ reset; `None` ⇒ leave the
-        // live timer ticking (manual Esc / Switch).
-        if let Some(interval) = outcome.reset_timer {
-            self.timer.reset(interval);
-        }
-
-        // Shared: reset form per the decision. Only Submit clears
-        // doing/bullshit; Esc and Switch preserve them so the next open
-        // resumes where the user left off.
+        // Reset the form per the decision. Only Submit clears doing/bullshit;
+        // Esc and Switch preserve them so the next open resumes where the
+        // user left off.
         if outcome.clear_form {
             self.doing.clear();
             self.bullshit.clear();
@@ -736,61 +689,67 @@ impl NudgeApp {
         // back away.
         self.card_rect = None;
 
-        // macOS: shrink the hidden window to one point, so neither the GL
-        // drawable nor the window server keeps work-area-sized buffers for
-        // the whole interval. Only a window `place_window` placed: that is
-        // the one `restore_window` knows how to give its frame back. Its
-        // order-out then waits a pass (`order_out_after_pass`).
-        #[cfg(target_os = "macos")]
-        let order_out_now = if self.placed.take().is_some() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(HIDDEN_WINDOW_SIZE));
-            self.window_shrunk = true;
-            self.order_out_after_pass = Some(ctx.cumulative_pass_nr());
-            ctx.request_repaint();
-            false
-        } else {
-            true
-        };
-        #[cfg(all(not(target_os = "macos"), not(target_arch = "wasm32")))]
-        let order_out_now = true;
-
-        // Tell egui the viewport is hidden. Without this, egui's event
-        // loop keeps pumping/scheduling for the "visible" viewport even
-        // when we SW_HIDE the HWND directly — winit then burns a full
-        // core on the main thread despite update() never being called.
         #[cfg(not(target_arch = "wasm32"))]
-        if order_out_now {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        self.withdraw_window(ctx);
+
+        // `Some(interval)` ⇒ start the next interval; `None` ⇒ leave the live
+        // timer ticking (manual Esc / Switch).
+        if let Some(interval) = outcome.reset_timer {
+            self.arm_timer(interval);
         }
 
-        // Windows-only: hide the HWND directly as well. The viewport command
-        // above is what stops winit burning a core; this is what the tray
-        // thread's ShowWindow(SW_RESTORE) later undoes.
-        #[cfg(target_os = "windows")]
-        if let Some(hwnd_val) = self.hwnd {
-            unsafe {
-                use windows::Win32::Foundation::HWND;
-                use windows::Win32::UI::WindowsAndMessaging::*;
-                let _ = ShowWindow(HWND(hwnd_val as *mut _), SW_HIDE);
-            }
-        }
-
-        // Native: hand the platform the new deadline, then tell it the popup
-        // is gone. Whatever owns the countdown there — the tray thread on
-        // Windows, `App::logic` on macOS — takes it from here and wakes the
-        // popup when it expires.
+        // Native: tell the platform the popup is gone. Whatever owns the
+        // countdown there — the tray thread on Windows, `App::logic` on macOS
+        // — takes it from here and wakes the popup when it expires.
         #[cfg(not(target_arch = "wasm32"))]
         {
-            if let Some(interval) = outcome.reset_timer {
-                let deadline = std::time::Instant::now() + interval;
-                crate::platform::set_timer_state(deadline, interval);
-            }
             crate::platform::set_popup_visible(false);
             // Hidden now: a change that waited for this close goes in before
             // the next reveal, which on Windows the tray thread may do
             // before another frame runs.
             self.apply_pending_sprite();
         }
+    }
+
+    /// Start the next interval. The countdown belongs to whoever runs it:
+    /// the platform on native, which wakes the popup on expiry; this app's
+    /// own `Timer` in the browser, which `ui` polls every frame.
+    fn arm_timer(&mut self, interval: std::time::Duration) {
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::platform::set_timer_state(crate::platform::ArmedTimer {
+            deadline: std::time::Instant::now() + interval,
+            duration: interval,
+        });
+        #[cfg(target_arch = "wasm32")]
+        self.timer.reset(interval);
+    }
+
+    /// Take the native window off screen. On macOS a placed window is shrunk
+    /// to one point in this pass and ordered out in the next: AppKit resizes
+    /// the presentation surfaces only of a window that is still on screen,
+    /// and the pass in between paints one transparent 1×1 frame nobody sees.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn withdraw_window(&mut self, ctx: &egui::Context) {
+        // macOS: shrink the hidden window to one point, so neither the GL
+        // drawable nor the window server keeps work-area-sized buffers for
+        // the whole interval. Only a window `place_window` placed: that is
+        // the one `restore_window` knows how to give its frame back. Its
+        // order-out then waits a pass (`order_out_after_pass`).
+        #[cfg(target_os = "macos")]
+        if self.placed.take().is_some() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(HIDDEN_WINDOW_SIZE));
+            self.window_shrunk = true;
+            self.order_out_after_pass = Some(ctx.cumulative_pass_nr());
+            ctx.request_repaint();
+            return;
+        }
+
+        // Tell egui the viewport is hidden. Without this, egui's event
+        // loop keeps pumping/scheduling for the "visible" viewport even
+        // when the platform hides the native window directly — winit then
+        // burns a full core on the main thread despite update() never being
+        // called.
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
     }
 
     fn card_frame() -> egui::Frame {
@@ -1092,23 +1051,11 @@ impl eframe::App for NudgeApp {
 
         // === First frame setup ===
         if self.center_once {
-            // Position is set at launch from primary monitor dimensions (see main.rs).
-            // Here we only capture the native window handle and store it for the tray.
-
-            // Extract native window handle and share with tray event handlers
-            #[cfg(target_os = "windows")]
-            {
-                use raw_window_handle::HasWindowHandle;
-                if let Ok(wh) = frame.window_handle()
-                    && let raw_window_handle::RawWindowHandle::Win32(h) = wh.as_raw()
-                {
-                    let hwnd_val = h.hwnd.get();
-                    self.hwnd = Some(hwnd_val);
-                    crate::platform::note_window_handle(hwnd_val);
-
-                    crate::platform::keep_tool_window(hwnd_val);
-                }
-            }
+            // Position is set at launch from primary monitor dimensions (see
+            // main.rs). Here the platform takes whatever it needs from the
+            // native window before the first show.
+            #[cfg(not(target_arch = "wasm32"))]
+            crate::platform::adopt_window(frame);
 
             // Spec §1/§4: present the launch popup. The app is constructed
             // hidden, so this is the one and only entry into the visible
@@ -1116,8 +1063,8 @@ impl eframe::App for NudgeApp {
             // opens, with the same side effects (force_foreground so the
             // popup gets keyboard focus even when the launcher — autostart
             // at logon — didn't hand us foreground, then arm the
-            // focus-loss check). Runs after hwnd capture above because
-            // force_foreground needs the handle.
+            // focus-loss check). Runs after `adopt_window` because the
+            // Windows foreground dance needs the handle it stores.
             self.show_popup(ctx, TriggerSource::Timer);
 
             self.center_once = false;

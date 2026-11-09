@@ -1,10 +1,11 @@
-//! Windows backend: mostly `tray_bridge`, re-exported.
+//! Windows backend: the tray thread in `tray_bridge`, plus the window.
 //!
-//! The tray thread there owns the timer, the hotkey and the popup wakeup.
-//! What lives here is what the seam needs on top: adapters for the entry
-//! points whose signatures carried `HWND`, the screen the popup is laid out
-//! on (spec §1), which `tray_bridge::force_foreground` picks at show time,
-//! and the settings window's single-instance guard.
+//! The tray thread owns the countdown, the hotkey and the popup wakeup.
+//! What lives here is the rest of the seam: everything that touches the
+//! popup's `HWND` (adopting it, hiding it, asking whether it is foreground),
+//! the screen the popup is laid out on (spec §1), which
+//! `tray_bridge::force_foreground` picks at show time, and the settings
+//! window's single-instance guard. `HWND` never crosses the seam.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicIsize, Ordering};
@@ -18,8 +19,8 @@ use ::windows::Win32::UI::Shell::{
 };
 use ::windows::Win32::UI::WindowsAndMessaging::{
     CallWindowProcW, GWL_EXSTYLE, GWLP_WNDPROC, GetCursorPos, GetForegroundWindow,
-    GetWindowLongPtrW, GetWindowRect, MONITORINFOF_PRIMARY, STYLESTRUCT, SetWindowLongPtrW,
-    WM_STYLECHANGING, WNDPROC, WS_EX_TOOLWINDOW,
+    GetWindowLongPtrW, GetWindowRect, MONITORINFOF_PRIMARY, STYLESTRUCT, SW_HIDE,
+    SetWindowLongPtrW, ShowWindow, WM_STYLECHANGING, WNDPROC, WS_EX_TOOLWINDOW,
 };
 use ::windows::core::BOOL;
 use eframe::egui;
@@ -28,17 +29,17 @@ use crate::config;
 use crate::hotkey::Hotkey;
 use crate::layout::ScreenGeometry;
 
-pub use crate::tray_bridge::{
-    request_config_reload, set_popup_visible, set_timer_state, take_pending_sprite,
-    take_timer_fired, take_tray_clicked,
-};
-
-/// The raise side of `take_tray_clicked`. No caller goes through the seam for
-/// it today — on Windows the tray thread's own event handlers set the flag
-/// directly, and macOS has no status item yet — but it is half of a pair, and
-/// dropping it would leave the macOS tray with nothing to call when it lands.
+/// The seam's entry for a manual summons. The tray thread's own handlers
+/// call `tray_bridge` directly, so in the binary nothing reaches it through
+/// here; the kittests do.
 #[allow(unused_imports)]
-pub use crate::tray_bridge::set_tray_clicked;
+pub use crate::tray_bridge::request_manual_open;
+
+/// Wake the tray thread's message pump, so a write to the shared state is
+/// acted on now rather than at its next scheduled pass.
+pub(super) fn wake() {
+    crate::tray_bridge::wake_tray_thread();
+}
 
 /// Start the OS-integration machinery: here, the tray thread, which also
 /// owns the global hotkey and the config-reload diff.
@@ -51,9 +52,43 @@ pub fn start(hotkey: Option<Hotkey>, config_path: std::path::PathBuf, initial: c
 /// item and hotkey cannot exist until the main thread is the event loop's.
 pub fn start_on_event_loop(_ctx: &egui::Context) {}
 
-/// `tray_bridge::store_hwnd` under a name that doesn't presume a handle.
-pub fn note_window_handle(handle: isize) {
-    crate::tray_bridge::store_hwnd(handle);
+/// Take the popup's `HWND` from the native window: store it for the tray
+/// thread's wakeups and the foreground check, and keep the tool-window bit
+/// on it for its whole life.
+pub fn adopt_window(frame: &eframe::Frame) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    if let Ok(wh) = frame.window_handle()
+        && let RawWindowHandle::Win32(h) = wh.as_raw()
+    {
+        let handle = h.hwnd.get();
+        crate::tray_bridge::store_hwnd(handle);
+        keep_tool_window(handle);
+    }
+}
+
+/// The shared flag, plus hiding the `HWND` itself on the way out. The
+/// viewport's `Visible(false)` is what stops winit burning a core; this is
+/// what the tray thread's `ShowWindow(SW_RESTORE)` later undoes.
+pub fn set_popup_visible(visible: bool) {
+    if !visible && let Some(hwnd) = crate::tray_bridge::load_hwnd() {
+        // SAFETY: `hwnd` is the popup window `adopt_window` stored.
+        unsafe {
+            let _ = ShowWindow(HWND(hwnd as *mut _), SW_HIDE);
+        }
+    }
+    super::shared::set_popup_visible(visible);
+}
+
+/// Whether the popup is the foreground window right now. Asked of Win32
+/// rather than read from eframe's `viewport().focused`, which is filled from
+/// a window event and so lags a frame behind `WM_ACTIVATE`.
+pub fn popup_is_foreground(_ctx: &egui::Context) -> bool {
+    let Some(hwnd) = crate::tray_bridge::load_hwnd() else {
+        return false;
+    };
+    // SAFETY: a plain query with no arguments.
+    let fg = unsafe { GetForegroundWindow() };
+    !fg.0.is_null() && fg.0 as isize == hwnd
 }
 
 /// winit's window procedure, which `keep_tool_window` chains to.
@@ -64,7 +99,7 @@ static WINIT_WNDPROC: AtomicIsize = AtomicIsize::new(0);
 /// The bit keeps the popup out of Alt+Tab, and it is what Chromium-based apps
 /// beneath read to not count the transparent, screen-sized popup as covering
 /// them — without it they stop painting while it is up and show black.
-pub fn keep_tool_window(handle: isize) {
+fn keep_tool_window(handle: isize) {
     unsafe extern "system" fn proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
         if msg == WM_STYLECHANGING && w.0 as i32 == GWL_EXSTYLE.0 {
             // SAFETY: for GWL_EXSTYLE, `l` points at the STYLESTRUCT being applied.
