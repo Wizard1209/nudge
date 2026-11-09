@@ -143,11 +143,29 @@ fn default_hotkey_label() -> String {
 /// and what the browser build starts with.
 pub const DEFAULT_INTERVAL_MINUTES: f64 = 10.0;
 
-/// Whether `minutes` is an interval at all: finite and strictly positive.
-/// The one rule behind the file's fallback, the popup's field, the settings
-/// window's field and the journal's `next_interval_minutes`.
+/// The longest interval, in minutes: a million, a little under two years.
+///
+/// Fixed rather than derived from the clock. An interval is armed as
+/// `Instant::now() + duration`, and where that overflows depends on the
+/// platform's `Instant` (macOS counts signed seconds, about 1.5e17 minutes;
+/// Windows and the browser count from an epoch, so the limit there shrinks
+/// with uptime) — a bound taken from any of them would hold on one platform
+/// and move on another. A million minutes is longer than any interval anyone
+/// means, round enough to state in a message, and eleven orders of magnitude
+/// short of the smallest of those limits.
+pub const MAX_INTERVAL_MINUTES: f64 = 1_000_000.0;
+
+/// Whether `minutes` is an interval a timer can be armed with: more than 0
+/// and at most [`MAX_INTERVAL_MINUTES`] (NaN fails both comparisons). The one
+/// rule behind the file's fallback, the popup's field, the settings window's
+/// field and the journal's `next_interval_minutes`.
 pub fn valid_interval_minutes(minutes: f64) -> bool {
-    minutes.is_finite() && minutes > 0.0
+    minutes > 0.0 && minutes <= MAX_INTERVAL_MINUTES
+}
+
+/// The rule [`valid_interval_minutes`] applies, as every refusal of it says it.
+pub fn interval_rule_text() -> String {
+    format!("more than 0 and at most {MAX_INTERVAL_MINUTES} minutes")
 }
 
 /// A typed interval that is a number but not a valid one — what both the
@@ -161,7 +179,8 @@ impl std::fmt::Display for IntervalError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Interval must be a positive number of minutes (got: \"{}\")",
+            "Interval must be {} (got: \"{}\")",
+            interval_rule_text(),
             hotkey::echoed(&self.input)
         )
     }
@@ -208,7 +227,7 @@ impl Config {
     }
 
     /// Validate the configured interval, falling back to the built-in
-    /// default if it isn't a finite positive number. Returns
+    /// default if [`valid_interval_minutes`] refuses it. Returns
     /// `(minutes, was_invalid)` so the caller can log a warning without
     /// re-validating — a garbage value in the file must never refuse the
     /// whole config.
@@ -659,6 +678,80 @@ mod tests {
             assert!(invalid, "{bad} should be flagged invalid");
             assert_eq!(mins, 10.0, "{bad} should fall back to 10.0");
         }
+    }
+
+    #[test]
+    fn a_number_too_large_to_arm_is_refused_not_armed() {
+        // Finite and positive, but 6e21 seconds does not fit a `Duration`:
+        // the rule refuses it, so nothing downstream is asked to build one.
+        assert!(!valid_interval_minutes(1e20));
+        assert_eq!(
+            crate::settings_app::parse_interval_minutes("1e20"),
+            Err(IntervalError {
+                input: "1e20".to_string()
+            })
+        );
+        assert!(crate::nudge_state::parse_interval("1e20").is_err());
+    }
+
+    #[test]
+    fn the_interval_rule_ends_at_a_million_minutes() {
+        assert!(valid_interval_minutes(MAX_INTERVAL_MINUTES));
+        assert!(!valid_interval_minutes(MAX_INTERVAL_MINUTES.next_up()));
+        // 2e17 minutes fits a `Duration` (u64 seconds) and still cannot be
+        // armed where `Instant` counts signed seconds: a bound at "fits a
+        // Duration" would accept it.
+        assert!(std::time::Duration::try_from_secs_f64(2e17 * 60.0).is_ok());
+        #[cfg(unix)]
+        assert!(
+            std::time::Instant::now()
+                .checked_add(std::time::Duration::from_secs_f64(2e17 * 60.0))
+                .is_none()
+        );
+        assert!(!valid_interval_minutes(2e17));
+    }
+
+    #[test]
+    fn the_longest_interval_arms() {
+        let longest = crate::nudge_state::parse_interval("1000000").expect("the edge is accepted");
+        assert_eq!(longest.as_secs_f64(), MAX_INTERVAL_MINUTES * 60.0);
+        // What arming does with it: the deadline the platform is handed
+        // (`web_time::Instant` is `std`'s on native) and the browser build's
+        // own timer.
+        let _deadline = web_time::Instant::now() + longest;
+        let mut timer = crate::timer::Timer::frozen();
+        timer.reset(longest);
+        assert!(!timer.is_expired());
+    }
+
+    #[test]
+    fn a_configured_interval_too_large_to_arm_falls_back() {
+        for bad in [1e20, 2e17, MAX_INTERVAL_MINUTES.next_up()] {
+            let cfg = Config {
+                default_interval_minutes: bad,
+                ..Config::default()
+            };
+            assert_eq!(cfg.resolved_interval_minutes(), (10.0, true), "{bad}");
+        }
+        let longest = Config {
+            default_interval_minutes: MAX_INTERVAL_MINUTES,
+            ..Config::default()
+        };
+        assert_eq!(
+            longest.resolved_interval_minutes(),
+            (MAX_INTERVAL_MINUTES, false)
+        );
+    }
+
+    #[test]
+    fn the_refusal_states_the_rule_it_applies() {
+        assert_eq!(
+            IntervalError {
+                input: "1e20".to_string()
+            }
+            .to_string(),
+            "Interval must be more than 0 and at most 1000000 minutes (got: \"1e20\")"
+        );
     }
 
     #[test]

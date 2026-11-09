@@ -200,6 +200,145 @@ fn escape_dismisses_the_card() {
     assert_eq!(harness.query_all_by_role(Role::TextInput).count(), 0);
 }
 
+/// A card whose journal is recorded rather than written, for the interval
+/// tests below.
+fn recording_nudge_harness<'a>(
+    default_minutes: f64,
+) -> (
+    Harness<'a, NudgeApp>,
+    std::rc::Rc<std::cell::RefCell<Vec<JournalEvent>>>,
+) {
+    let events: std::rc::Rc<std::cell::RefCell<Vec<JournalEvent>>> = Default::default();
+    let recorder = std::rc::Rc::clone(&events);
+    let mut harness = Harness::new_eframe(move |cc| {
+        NudgeApp::new(cc, default_minutes).with_journal_sink(Box::new(move |event| {
+            recorder.borrow_mut().push(event.clone());
+            Ok(())
+        }))
+    });
+    harness.run();
+    (harness, events)
+}
+
+/// Type into the n-th field of the card.
+fn type_into_card(harness: &mut Harness<'_, NudgeApp>, nth: usize, text: &str) {
+    harness
+        .get_all_by_role(Role::TextInput)
+        .nth(nth)
+        .unwrap()
+        .focus();
+    harness.run();
+    harness
+        .get_all_by_role(Role::TextInput)
+        .nth(nth)
+        .unwrap()
+        .type_text(text);
+    harness.run();
+}
+
+/// Spec §4 "Failed submits stay put": an interval past the bound is refused
+/// like any other invalid one — the popup stays, says why, writes nothing.
+#[test]
+fn submitting_an_interval_too_large_to_arm_is_refused() {
+    let (mut harness, events) = recording_nudge_harness(1.0);
+    type_into_card(&mut harness, 0, "doing");
+    type_into_card(&mut harness, 2, "e20");
+    let inputs: Vec<_> = harness.get_all_by_role(Role::TextInput).collect();
+    assert_eq!(inputs[2].value().as_deref(), Some("1e20"));
+
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+
+    assert_eq!(
+        harness.get_all_by_role(Role::TextInput).count(),
+        3,
+        "the popup stays"
+    );
+    assert!(
+        harness
+            .query_by_label(
+                "Interval must be more than 0 and at most 1000000 minutes (got: \"1e20\")"
+            )
+            .is_some(),
+        "the popup says why"
+    );
+    assert!(
+        events.borrow().is_empty(),
+        "a refused submit wrote something"
+    );
+}
+
+/// Spec §4: `Leave` never validates — an interval past the bound falls back
+/// to the default and the popup closes.
+#[test]
+fn leaving_with_an_interval_too_large_to_arm_closes() {
+    let (mut harness, events) = recording_nudge_harness(1.0);
+    type_into_card(&mut harness, 2, "e20");
+    assert_eq!(
+        harness
+            .get_all_by_role(Role::TextInput)
+            .nth(2)
+            .unwrap()
+            .value()
+            .as_deref(),
+        Some("1e20")
+    );
+
+    // A click off the card, as the OS would deliver it.
+    let pos = egui::pos2(2.0, 2.0);
+    harness.event(egui::Event::PointerMoved(pos));
+    for pressed in [true, false] {
+        harness.event(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    harness.run();
+
+    assert_eq!(
+        harness.query_all_by_role(Role::TextInput).count(),
+        0,
+        "the popup closed"
+    );
+    assert!(events.borrow().is_empty());
+}
+
+/// A `default_interval_minutes` past the bound in `config.json` is refused at
+/// launch the way `main` reads it: the popup starts on the 10-minute default,
+/// and its first submit records that.
+#[test]
+fn a_configured_interval_too_large_to_arm_starts_the_popup_on_the_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    std::fs::write(&path, r#"{"default_interval_minutes":1e20}"#).unwrap();
+    let (config, err) = nudge_web::config::load_or_default(&path);
+    assert!(err.is_none(), "{err:?}");
+    assert_eq!(config.default_interval_minutes, 1e20);
+
+    let (minutes, was_invalid) = config.resolved_interval_minutes();
+    assert!(was_invalid);
+    let (mut harness, events) = recording_nudge_harness(minutes);
+    assert_eq!(
+        harness
+            .get_all_by_role(Role::TextInput)
+            .nth(2)
+            .unwrap()
+            .value()
+            .as_deref(),
+        Some("10")
+    );
+
+    type_into_card(&mut harness, 0, "doing");
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+
+    let events = events.borrow();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].next_interval_minutes, 10.0);
+}
+
 // =============================================================================
 // SettingsApp
 // =============================================================================
@@ -624,7 +763,9 @@ fn settings_return_runs_the_same_checks_and_shows_the_same_message() {
 
     assert!(
         harness
-            .query_by_label("Interval must be a positive number of minutes (got: \"7x\")")
+            .query_by_label(
+                "Interval must be more than 0 and at most 1000000 minutes (got: \"7x\")"
+            )
             .is_some(),
         "the message line does not carry the interval check's reason"
     );
@@ -633,6 +774,31 @@ fn settings_return_runs_the_same_checks_and_shows_the_same_message() {
         "a refused save from Return wrote something"
     );
     assert!(!says_saved(&harness), "a refused save must not say Saved");
+}
+
+/// §9: the Default interval field holds the popup's rule, so an interval
+/// too large to arm is refused with the rule's message and never reaches
+/// the file the next launch reads.
+#[test]
+fn settings_refuses_an_interval_too_large_to_arm() {
+    let (mut harness, persisted) = settings_harness(cfg("Alt+J", 1.0, false));
+
+    type_into(&mut harness, 1, "e20");
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+
+    assert!(
+        harness
+            .query_by_label(
+                "Interval must be more than 0 and at most 1000000 minutes (got: \"1e20\")"
+            )
+            .is_some(),
+        "the message line does not carry the interval check's reason"
+    );
+    assert!(
+        persisted.lock().unwrap().is_empty(),
+        "an interval too large to arm was written"
+    );
 }
 
 /// §9 Saving: "`Save` is live only while the form differs from the file" —

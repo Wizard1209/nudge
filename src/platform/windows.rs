@@ -32,7 +32,6 @@ use crate::layout::ScreenGeometry;
 /// The seam's entry for a manual summons. The tray thread's own handlers
 /// call `tray_bridge` directly, so in the binary nothing reaches it through
 /// here; the kittests do.
-#[allow(unused_imports)]
 pub use crate::tray_bridge::request_manual_open;
 
 /// Wake the tray thread's message pump, so a write to the shared state is
