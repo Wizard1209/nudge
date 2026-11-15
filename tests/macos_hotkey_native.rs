@@ -76,7 +76,7 @@ use core_graphics::window::{
     kCGWindowBounds, kCGWindowIsOnscreen, kCGWindowLayer, kCGWindowOwnerPID,
 };
 
-use nudge_web::hotkey::{self, MOD_ALT, MOD_WIN};
+use nudge_web::hotkey::{self, Modifiers};
 use nudge_web::platform::{hotkey_carbon, keycode};
 use nudge_web::recorder::PROMPT;
 
@@ -1010,18 +1010,18 @@ fn press(label: &str) {
     press_chord(code, carbon_to_cg_flags(hk.modifiers));
 }
 
-fn carbon_to_cg_flags(modifiers: u8) -> CGEventFlags {
+fn carbon_to_cg_flags(modifiers: Modifiers) -> CGEventFlags {
     let mut flags = CGEventFlags::CGEventFlagNull;
-    if modifiers & hotkey::MOD_CTRL != 0 {
+    if modifiers.contains(Modifiers::CTRL) {
         flags |= CGEventFlags::CGEventFlagControl;
     }
-    if modifiers & MOD_ALT != 0 {
+    if modifiers.contains(Modifiers::ALT) {
         flags |= CGEventFlags::CGEventFlagAlternate;
     }
-    if modifiers & hotkey::MOD_SHIFT != 0 {
+    if modifiers.contains(Modifiers::SHIFT) {
         flags |= CGEventFlags::CGEventFlagShift;
     }
-    if modifiers & MOD_WIN != 0 {
+    if modifiers.contains(Modifiers::WIN) {
         flags |= CGEventFlags::CGEventFlagCommand;
     }
     flags
@@ -1176,16 +1176,16 @@ fn records_the_spelled_combinations() {
 fn ui_modifiers(flags: CGEventFlags) -> u64 {
     let mut mask = 0u64;
     if flags.contains(CGEventFlags::CGEventFlagControl) {
-        mask |= hotkey::MOD_CTRL as u64;
+        mask |= Modifiers::CTRL.bits() as u64;
     }
     if flags.contains(CGEventFlags::CGEventFlagAlternate) {
-        mask |= MOD_ALT as u64;
+        mask |= Modifiers::ALT.bits() as u64;
     }
     if flags.contains(CGEventFlags::CGEventFlagShift) {
-        mask |= hotkey::MOD_SHIFT as u64;
+        mask |= Modifiers::SHIFT.bits() as u64;
     }
     if flags.contains(CGEventFlags::CGEventFlagCommand) {
-        mask |= MOD_WIN as u64;
+        mask |= Modifiers::WIN.bits() as u64;
     }
     mask
 }
@@ -1240,7 +1240,7 @@ fn cmd_c_records_and_does_not_reach_the_clipboard() {
     assert_eq!(ui.hotkey_field().as_deref(), Some("⌘C"));
     assert_eq!(
         app.edges(),
-        vec![(VK_ANSI_C as u64, MOD_WIN as u64)],
+        vec![(VK_ANSI_C as u64, Modifiers::WIN.bits() as u64)],
         "⌘C reached the monitor as something other than the C cap with ⌘ held"
     );
     assert_eq!(
@@ -1279,7 +1279,7 @@ fn the_keypad_is_refused_and_leaves_the_recorder_armed() {
     assert!(ui.armed(), "a refusal must not disarm: {:#?}", ui.0);
     assert_eq!(
         app.edges(),
-        vec![(VK_ANSI_KEYPAD5 as u64, MOD_WIN as u64)],
+        vec![(VK_ANSI_KEYPAD5 as u64, Modifiers::WIN.bits() as u64)],
         "the keypad's 5 arrived as some other key code — the digit row's, perhaps"
     );
     app.land_fixture(
@@ -1368,7 +1368,10 @@ fn modifiers_alone_and_fn_alone_are_not_events() {
     press_chord(VK_ANSI_J, alt_cmd());
     assert_eq!(
         app.edges(),
-        vec![(VK_ANSI_J as u64, (MOD_ALT | MOD_WIN) as u64)],
+        vec![(
+            VK_ANSI_J as u64,
+            (Modifiers::ALT | Modifiers::WIN).bits() as u64
+        )],
         "the control chord never reached the monitor, so every null below is meaningless"
     );
     assert_eq!(Ui::settings().hotkey_field().as_deref(), Some("⌥⌘J"));
@@ -1381,7 +1384,10 @@ fn modifiers_alone_and_fn_alone_are_not_events() {
     press_chord(VK_ANSI_J, alt_cmd() | CGEventFlags::CGEventFlagSecondaryFn);
     assert_eq!(
         app.edges(),
-        vec![(VK_ANSI_J as u64, (MOD_ALT | MOD_WIN) as u64)],
+        vec![(
+            VK_ANSI_J as u64,
+            (Modifiers::ALT | Modifiers::WIN).bits() as u64
+        )],
         "fn either was not delivered, or was counted as a modifier"
     );
 
@@ -1454,7 +1460,10 @@ fn a_russian_layout_records_the_same_physical_key() {
     );
     assert_eq!(
         app.edges(),
-        vec![(VK_ANSI_J as u64, (MOD_ALT | MOD_WIN) as u64)],
+        vec![(
+            VK_ANSI_J as u64,
+            (Modifiers::ALT | Modifiers::WIN).bits() as u64
+        )],
         "the key code changed with the layout — it is supposed to be a position"
     );
     click_button("Save");
@@ -1730,7 +1739,10 @@ fn pressing_cmd_space_while_armed_either_records_it_or_never_arrives() {
         }
         [(code, mods)] => {
             eprintln!("[observed] ⌘Space reached the monitor as {code}/{mods}");
-            assert_eq!((*code, *mods), (VK_SPACE as u64, MOD_WIN as u64));
+            assert_eq!(
+                (*code, *mods),
+                (VK_SPACE as u64, Modifiers::WIN.bits() as u64)
+            );
             assert_eq!(
                 ui.hotkey_field().as_deref(),
                 Some("⌘Space"),

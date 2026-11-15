@@ -27,7 +27,7 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 use nudge_web::config::Config;
-use nudge_web::hotkey;
+use nudge_web::hotkey::{self, Modifiers};
 use nudge_web::platform::keycode;
 use nudge_web::recorder::{EdgeSource, Input, PhysicalKey, PressEdge, Verdict};
 use nudge_web::settings_app::{HotkeyRecorder, SettingsForm, apply_effect};
@@ -140,7 +140,14 @@ fn parse_stream(path: &Path) -> Result<Stream, String> {
         let modifiers = edge
             .get("modifiers")
             .and_then(serde_json::Value::as_u64)
-            .ok_or_else(|| format!("{}: edge {n} has no modifiers", path.display()))?;
+            .and_then(|bits| u8::try_from(bits).ok())
+            .and_then(Modifiers::from_bits)
+            .ok_or_else(|| {
+                format!(
+                    "{}: edge {n} has no modifiers, or a number that is not a set of the four",
+                    path.display()
+                )
+            })?;
         let ns_flags = edge
             .get("ns_flags")
             .and_then(serde_json::Value::as_u64)
@@ -155,7 +162,7 @@ fn parse_stream(path: &Path) -> Result<Stream, String> {
         edges.push(RecordedEdge {
             edge: PressEdge {
                 key: PhysicalKey(code as u16),
-                modifiers: modifiers as u8,
+                modifiers,
             },
             ns_flags,
         });

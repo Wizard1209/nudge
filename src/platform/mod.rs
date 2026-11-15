@@ -18,7 +18,7 @@
 //!   `cfg(not(any(windows, macos)))` arms in `main.rs` / `autostart.rs` have.
 //!
 //! What the three have in common — the edge flags the app polls, the armed
-//! timer, the parked sprite change — is written once, in [`shared`]; each
+//! timer, the parked sprite change — is written once, in `shared`; each
 //! backend adds only a `wake` that `shared` calls after a write it must act
 //! on, and the OS-shaped functions that are genuinely its own.
 //!
