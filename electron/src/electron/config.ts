@@ -1,3 +1,4 @@
+import { app } from "electron";
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -42,7 +43,50 @@ export function saveConfig(path: string, config: Config): void {
   renameSync(tmp, path);
 }
 
-/** Absolute path to config.json, alongside the journal in <Documents>/Nudge. */
+/**
+ * Directory holding config.json. On macOS it is `<appData>/Nudge`
+ * (`~/Library/Application Support/Nudge`), away from the TCC-gated, iCloud-synced
+ * Documents folder; elsewhere (Windows, the WSL bridge) it is the shared
+ * `<Documents>/Nudge` directory next to the journal.
+ */
+export function configDirFor(
+  platform: NodeJS.Platform,
+  nudgeDir: string,
+  appData: string,
+): string {
+  return platform === "darwin" ? join(appData, "Nudge") : nudgeDir;
+}
+
+/**
+ * Move a config left in the old location to the new one, once. Never copies;
+ * if the destination exists, or there is nothing to move, nothing is touched.
+ */
+export function migrateLegacyConfig(legacy: string, destination: string): void {
+  if (legacy === destination || existsSync(destination) || !existsSync(legacy)) return;
+  try {
+    mkdirSync(dirname(destination), { recursive: true });
+    renameSync(legacy, destination);
+    console.error(`[nudge] moved config ${legacy} -> ${destination}`);
+  } catch (err) {
+    console.error(`[nudge] could not move config ${legacy} -> ${destination}: ${err}`);
+  }
+}
+
+let resolvedPath: string | null = null;
+
+/**
+ * Absolute path to config.json (see {@link configDirFor}). On first call on
+ * macOS, moves a config left in `<Documents>/Nudge` to the new location, so the
+ * move happens before anything reads the file.
+ */
 export function getConfigPath(): string {
-  return join(resolveNudgeDir(), "config.json");
+  if (resolvedPath) return resolvedPath;
+  const nudgeDir = resolveNudgeDir();
+  // NUDGE_DIR is the test override: everything stays inside it.
+  const dir = process.env.NUDGE_DIR
+    ? nudgeDir
+    : configDirFor(process.platform, nudgeDir, app.getPath("appData"));
+  resolvedPath = join(dir, "config.json");
+  if (dir !== nudgeDir) migrateLegacyConfig(join(nudgeDir, "config.json"), resolvedPath);
+  return resolvedPath;
 }

@@ -94,8 +94,8 @@ function isWSL(): boolean {
 }
 
 /**
- * Resolve the shared `<Documents>/Nudge` directory that holds both the journal
- * and config.json. On WSL this bridges to the Windows user profile via
+ * Resolve the `<Documents>/Nudge` directory that holds the journal
+ * (and config.json off macOS). On WSL this bridges to the Windows user profile via
  * cmd.exe + wslpath; elsewhere it uses Electron's documents path. Cached.
  */
 export function resolveNudgeDir(): string {
