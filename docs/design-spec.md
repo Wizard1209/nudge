@@ -510,6 +510,11 @@ file while a hand-editing user reads the other.
 | Open at login / Launch with Windows | checkbox | Registers the app to launch at session start. The label names the platform's own mechanism, because that is what tells the user whether the setting applies to them. |
 | Sprite | checkbox, path with `Browse…`, X, Y, Card width | The `sprite` block of §10. X, Y and Card width must be whole numbers, Card width positive; an enabled sprite must pass the §10 PNG check or `Save` refuses it, naming the reason. |
 
+While the `Sprite` checkbox is off, the PNG and Position rows are drawn at
+half opacity, the way a disabled control is, so an off sprite reads as off at
+a glance. They stay editable: `Save` still checks their numbers and writes
+what is in them, but checks the PNG only for an enabled sprite.
+
 #### The hotkey row
 
 The field always holds a string in the §5 grammar, shown in this platform's

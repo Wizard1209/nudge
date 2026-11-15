@@ -482,6 +482,23 @@ describe('settings sub-app', () => {
             }
         });
 
+        // §9: with the sprite off, the PNG and Position rows are dimmed and
+        // stay editable; the checkbox row is not dimmed.
+        it('dims the PNG and Position rows while the sprite is off, and only then', async () => {
+            // The opacity a field is painted with: its own times its ancestors'.
+            const shown = () => page.evaluate((ids) => ids.map((id) => {
+                let o = 1;
+                for (let el = document.querySelector(`[data-testid="${id}"]`); el; el = el.parentElement) {
+                    o *= Number(getComputedStyle(el).opacity);
+                }
+                return o;
+            }), IDS);
+            expect(await shown()).toEqual([1, 0.5, 0.5, 0.5, 0.5]);
+            expect(await page.$eval('[data-testid="settings-sprite-path"]', (el) => el.disabled)).toBe(false);
+            await page.click('[data-testid="settings-sprite-enabled"]');
+            expect(await shown()).toEqual([1, 1, 1, 1, 1]);
+        });
+
         it('has no Browse button in the browser sub-app', async () => {
             expect(await page.$('[data-testid="settings-sprite-browse"]')).toBeNull();
         });
