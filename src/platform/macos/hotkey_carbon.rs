@@ -348,9 +348,9 @@ pub enum HotkeyStatus {
     Free,
     /// macOS's own shortcut table has it — `⌘Space`, `⌘Tab`, the screenshot
     /// shortcuts. Registration reports nothing about these; the hotkey would
-    /// bind and never fire. Carries the table row, which is all macOS gives:
-    /// the dictionaries hold no identifier.
-    HeldBySystem(i64),
+    /// bind and never fire. Which function holds it is not reported: the
+    /// table's dictionaries carry no identifier, only a row index.
+    HeldBySystem,
     /// Another application registered it exclusively.
     HeldExclusively,
     /// The running Nudge instance holds it. Distinguished from a foreign
@@ -366,10 +366,11 @@ impl std::fmt::Display for HotkeyStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             HotkeyStatus::Free => write!(f, "free as far as we can tell"),
-            HotkeyStatus::HeldBySystem(row) => write!(
+            HotkeyStatus::HeldBySystem => write!(
                 f,
-                "taken by a macOS system shortcut (system table row {row}) — \
-                 it can be saved, but the system gets the keystroke first"
+                "taken by a macOS system shortcut (see System Settings › \
+                 Keyboard › Keyboard Shortcuts) — it can be saved, but the \
+                 system gets the keystroke first"
             ),
             HotkeyStatus::HeldExclusively => write!(
                 f,
@@ -410,8 +411,8 @@ pub fn assess(hk: &Hotkey) -> HotkeyStatus {
     // Source 1: the system's own table. First because it is the one that
     // costs nothing and catches ⌘Space.
     let table = symbolic::read_symbolic_hotkeys();
-    if let Some(row) = symbolic::held_by_system(&table, code, carbon_mods) {
-        return HotkeyStatus::HeldBySystem(row);
+    if symbolic::held_by_system(&table, code, carbon_mods).is_some() {
+        return HotkeyStatus::HeldBySystem;
     }
 
     // Source 2: an exclusive registration, immediately dropped — and dropping
@@ -452,6 +453,14 @@ mod tests {
         assert_eq!(K_EVENT_PARAM_DIRECT_OBJECT, 0x2D2D2D2D);
         assert_eq!(TYPE_EVENT_HOT_KEY_ID, 0x686B6964);
         assert_eq!(NUDGE_SIGNATURE, 0x4E444745);
+    }
+
+    /// The table row means nothing to a user; where to look does.
+    #[test]
+    fn a_system_shortcut_is_reported_by_where_to_change_it() {
+        let text = HotkeyStatus::HeldBySystem.to_string();
+        assert!(text.contains("Keyboard Shortcuts"), "{text}");
+        assert!(!text.contains("row"), "{text}");
     }
 
     #[test]

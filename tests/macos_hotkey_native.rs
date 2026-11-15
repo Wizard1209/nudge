@@ -1646,7 +1646,7 @@ fn cmd_space_registers_and_is_still_reported_as_the_systems() {
     assert!(
         matches!(
             hotkey_carbon::assess(&hk),
-            hotkey_carbon::HotkeyStatus::HeldBySystem(_)
+            hotkey_carbon::HotkeyStatus::HeldBySystem
         ),
         "⌘Space must be reported as the system's, from the system's own table"
     );
