@@ -25,9 +25,10 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use nudge_web::app::NudgeApp;
 use nudge_web::autostart::AutostartProvider;
 use nudge_web::config::Config;
+use nudge_web::journal::JournalEvent;
 use nudge_web::recorder::{self, EdgeSource, PhysicalKey, PressEdge, Verdict};
 use nudge_web::settings_app::{
-    ConflictFn, MARGIN, PersistFn, SettingsApp, SettingsForm, SpriteCheckFn, WINDOW_SIZE,
+    MARGIN, PersistFn, SettingsApp, SettingsForm, SettingsHost, SpriteCheckFn, WINDOW_SIZE,
 };
 
 // =============================================================================
@@ -155,16 +156,39 @@ fn typing_round_trips_including_cyrillic() {
     );
 }
 
-/// Escape runs the real Dismiss path. Enter (Submit) is deliberately never
-/// exercised here: `hide_popup`'s submit branch calls
-/// `journal::resolve_default_journal_path()` (src/journal.rs:93-96), which
-/// has no injection point and writes straight into the developer's real
-/// `~/Documents/Nudge/journal-rust.ndjson`.
-///
-/// TODO: covering Submit needs `journal::resolve_default_journal_path` (or
-/// whatever writes the NDJSON line) to accept an injected path/writer the
-/// way `SettingsApp` already accepts an injected `AutostartProvider` and
-/// persist closure — that seam does not exist yet.
+/// Enter runs the real Submit path against a recording journal sink — the
+/// same seam `SettingsApp` has for persistence — so the write never reaches
+/// the developer's own `~/Documents`. One event, carrying the typed text and
+/// the interval field's value.
+#[test]
+fn enter_submits_one_journal_event() {
+    let events: std::rc::Rc<std::cell::RefCell<Vec<JournalEvent>>> = Default::default();
+    let recorder = std::rc::Rc::clone(&events);
+    let mut harness = Harness::new_eframe(move |cc| {
+        NudgeApp::new(cc, 10.0).with_journal_sink(Box::new(move |event| {
+            recorder.borrow_mut().push(event.clone());
+            Ok(())
+        }))
+    });
+    harness.run();
+
+    harness
+        .get_all_by_role(Role::TextInput)
+        .next()
+        .unwrap()
+        .type_text("писать отчёт");
+    harness.run();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+
+    let events = events.borrow();
+    assert_eq!(events.len(), 1, "one Submit, one line");
+    assert_eq!(events[0].doing, "писать отчёт");
+    assert_eq!(events[0].trigger_source, "timer");
+    assert_eq!(events[0].next_interval_minutes, 10.0);
+}
+
+/// Escape runs the real Dismiss path.
 #[test]
 fn escape_dismisses_the_card() {
     let mut harness = nudge_harness(10.0);
@@ -229,22 +253,6 @@ fn cfg(hotkey: &str, minutes: f64, autostart: bool) -> Config {
     }
 }
 
-fn no_op_persist() -> PersistFn {
-    Box::new(|_cfg: &Config| Ok(()))
-}
-
-/// A conflict check that knows of no one: a save here must not ask the OS,
-/// which would register a real hotkey on the machine running the tests — and
-/// from every test thread at once.
-fn no_conflict() -> ConflictFn {
-    Box::new(|_hk| None)
-}
-
-/// A PNG check that passes everything: no test here reads a file.
-fn accept_any_sprite() -> SpriteCheckFn {
-    Box::new(|_path: &std::path::Path| Ok(()))
-}
-
 /// The autostart checkbox, by its platform label — there are two checkboxes
 /// in the window now, and the sprite's is the other one.
 #[cfg(target_os = "macos")]
@@ -259,10 +267,7 @@ fn settings_form_populates_from_a_config() {
         SettingsApp::new(
             cc,
             cfg("Alt+J", 7.0, true),
-            provider,
-            no_op_persist(),
-            accept_any_sprite(),
-            no_conflict(),
+            SettingsHost::headless(provider),
         )
     });
     harness.run();
@@ -320,10 +325,7 @@ fn settings_app_editing_a_field_round_trips_through_the_ui() {
         SettingsApp::new(
             cc,
             cfg("Alt+J", 7.0, false),
-            provider,
-            no_op_persist(),
-            accept_any_sprite(),
-            no_conflict(),
+            SettingsHost::headless(provider),
         )
     });
     harness.run();
@@ -368,10 +370,10 @@ fn toggling_autostart_goes_through_the_injected_provider_not_the_os() {
         SettingsApp::new(
             cc,
             cfg("Alt+J", 7.0, false),
-            boxed_provider,
-            persist,
-            accept_any_sprite(),
-            no_conflict(),
+            SettingsHost {
+                persist,
+                ..SettingsHost::headless(boxed_provider)
+            },
         )
     });
     harness.run();
@@ -418,10 +420,11 @@ fn settings_save_with_a_bad_sprite_shows_the_reason_and_persists_nothing() {
         SettingsApp::new(
             cc,
             cfg("Alt+J", 7.0, false),
-            provider,
-            persist,
-            refuse,
-            no_conflict(),
+            SettingsHost {
+                persist,
+                sprite_check: refuse,
+                ..SettingsHost::headless(provider)
+            },
         )
     });
     harness.run();
@@ -488,10 +491,10 @@ fn settings_harness<'a>(
             SettingsApp::new(
                 cc,
                 config,
-                provider,
-                persist,
-                accept_any_sprite(),
-                no_conflict(),
+                SettingsHost {
+                    persist,
+                    ..SettingsHost::headless(provider)
+                },
             )
         });
     harness.run();
@@ -541,10 +544,10 @@ fn settings_harness_with_source<'a>(
         .build_eframe(move |_cc| {
             SettingsApp::with_source(
                 config,
-                provider,
-                persist,
-                accept_any_sprite(),
-                no_conflict(),
+                SettingsHost {
+                    persist,
+                    ..SettingsHost::headless(provider)
+                },
                 Some(Box::new(source)),
             )
         });

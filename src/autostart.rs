@@ -27,6 +27,42 @@ pub trait AutostartProvider {
     /// Whether the app is currently registered. Used both to drive the UI
     /// toggle and to *confirm* an `enable`/`disable` actually took effect.
     fn is_enabled(&self) -> Result<bool, String>;
+    /// Where the registration lives, for a human reading a log or the
+    /// selftest's banner.
+    fn location(&self) -> String {
+        "unspecified".to_string()
+    }
+}
+
+/// The provider for this machine: the `Run` key on Windows, a LaunchAgent on
+/// macOS, an in-memory fake everywhere else — the Linux dev build has no tray
+/// to open the settings window from, so the fake never runs in production.
+///
+/// `Err` when the real provider cannot be constructed (`current_exe` failed —
+/// astronomically rare). The caller must refuse rather than fall back to the
+/// fake: a fake would flip the in-memory state and persist `autostart: true`
+/// while the OS was never touched, breaking the transactional invariant
+/// `apply_autostart` exists to keep.
+pub fn provider_for_current_exe(
+    #[cfg_attr(
+        any(target_os = "windows", target_os = "macos"),
+        allow(unused_variables)
+    )]
+    initial_enabled: bool,
+) -> Result<Box<dyn AutostartProvider>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        WindowsRegistryProvider::for_current_exe()
+            .map(|p| Box::new(p) as Box<dyn AutostartProvider>)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        MacLaunchAgentProvider::for_current_exe().map(|p| Box::new(p) as Box<dyn AutostartProvider>)
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        Ok(Box::new(FakeProvider::new(initial_enabled)))
+    }
 }
 
 /// Why an [`apply_autostart`] call failed. Split so the caller can tell
@@ -157,6 +193,9 @@ impl AutostartProvider for FakeProvider {
     fn is_enabled(&self) -> Result<bool, String> {
         Ok(self.enabled.get() ^ self.lie_on_confirm)
     }
+    fn location(&self) -> String {
+        "in-memory fake".to_string()
+    }
 }
 
 /// Registry-name the app registers itself under in the `Run` key. Stable
@@ -194,6 +233,9 @@ fn to_wide(s: &str) -> Vec<u16> {
 
 #[cfg(target_os = "windows")]
 impl AutostartProvider for WindowsRegistryProvider {
+    fn location(&self) -> String {
+        format!("HKCU\\{RUN_SUBKEY} value \"{RUN_VALUE_NAME}\"")
+    }
     fn enable(&self) -> Result<(), String> {
         use windows::Win32::Foundation::ERROR_SUCCESS;
         use windows::Win32::System::Registry::{
@@ -377,12 +419,15 @@ impl MacLaunchAgentProvider {
         }
     }
 
-    /// Where this provider writes its plist.
+    /// Where this provider writes its plist. Read by `tests/macos_autostart.rs`
+    /// to check the sandbox; the binary reads it through [`Self::location`].
+    #[allow(dead_code)]
     pub fn plist_path(&self) -> &std::path::Path {
         &self.plist_path
     }
 
-    /// The executable path this provider records in the plist.
+    /// The executable path this provider records in the plist. Same reader.
+    #[allow(dead_code)]
     pub fn program(&self) -> &std::path::Path {
         &self.program
     }
@@ -621,6 +666,13 @@ fn current_uid() -> u32 {
 
 #[cfg(target_os = "macos")]
 impl AutostartProvider for MacLaunchAgentProvider {
+    fn location(&self) -> String {
+        format!(
+            "LaunchAgent {LAUNCH_AGENT_LABEL}: plist {}, program {}",
+            self.plist_path.display(),
+            self.program.display()
+        )
+    }
     fn enable(&self) -> Result<(), String> {
         self.write_plist()?;
         if let Err(e) = self.register() {

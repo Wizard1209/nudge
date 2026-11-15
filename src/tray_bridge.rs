@@ -38,7 +38,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::config;
-use crate::config_watcher::{self, ConfigChange};
+use crate::config_watcher::{LiveChange, LiveConfig};
 use crate::daisy;
 use crate::hotkey::{
     self, Hotkey, MOD_ALT as MY_MOD_ALT, MOD_CTRL, MOD_SHIFT as MY_MOD_SHIFT, MOD_WIN as MY_MOD_WIN,
@@ -197,13 +197,10 @@ fn wake_tray_thread() {
 /// aren't reading. None disables the hotkey for this run (e.g. an invalid
 /// config label).
 ///
-/// `config_path` and `initial_config` are the launch-time snapshot. The
-/// tray thread keeps `initial_config` as its `previous_cfg` baseline so
-/// that when the watcher fires it can diff the freshly-re-read file
-/// against what's currently in effect (e.g. only re-register the
-/// hotkey when the *parsed* string differs, not on every save). The
-/// path lets the tray thread re-read the file from the same source the
-/// settings process writes to — including any `--config` override.
+/// `config_path` and `initial_config` are the launch-time snapshot: the
+/// baseline the tray thread reloads against when the watcher fires, read
+/// from the same file the settings process writes to — including any
+/// `--config` override.
 pub fn spawn_tray_thread(
     hotkey: Option<Hotkey>,
     config_path: PathBuf,
@@ -324,11 +321,10 @@ fn tray_thread_main(hotkey: Option<Hotkey>, config_path: PathBuf, initial_config
         try_register_hotkey(hk);
     }
 
-    // Live-reload bookkeeping: the previous Config so each reload can
-    // diff against what we actually applied last, and a flag tracking
-    // whether the hotkey is currently registered (so we know whether
-    // to call UnregisterHotKey before re-registering).
-    let mut previous_cfg = initial_config;
+    // Live-reload bookkeeping: the config as last applied, and whether the
+    // hotkey is currently registered (so we know whether to call
+    // UnregisterHotKey before re-registering).
+    let mut live_config = LiveConfig::new(config_path, initial_config);
     let mut hotkey_registered = hotkey.is_some();
 
     use tray_icon::TrayIconBuilder;
@@ -421,7 +417,7 @@ fn tray_thread_main(hotkey: Option<Hotkey>, config_path: PathBuf, initial_config
         // we never silently drop a request, even though we don't fight
         // the popup for attention while it's up.
         if CONFIG_RELOAD_REQUESTED.swap(false, Ordering::SeqCst) {
-            apply_config_reload(&config_path, &mut previous_cfg, &mut hotkey_registered);
+            apply_config_reload(&mut live_config, &mut hotkey_registered);
         }
 
         if POPUP_VISIBLE.load(Ordering::SeqCst) {
@@ -507,37 +503,14 @@ fn tray_thread_main(hotkey: Option<Hotkey>, config_path: PathBuf, initial_config
     }
 }
 
-/// Re-read `config_path` and apply any live-meaningful diff against
-/// `previous_cfg`. Only the hotkey has live UI effect on the running
-/// app today (see module doc + `config_watcher` docs); the interval
-/// and autostart fields are updated in the in-memory record so the
-/// next diff is computed against truth, but they don't trigger any
-/// syscalls here.
-///
-/// A malformed file is tolerated the same way `load_or_default` does
-/// it: log to stderr, fall back to defaults, keep the previous in-
-/// memory record. The watcher must not be the thing that kills the
-/// app over a typo in the user's config.
-fn apply_config_reload(
-    config_path: &std::path::Path,
-    previous_cfg: &mut config::Config,
-    hotkey_registered: &mut bool,
-) {
-    let (new_cfg, err) = config::load_or_default(config_path);
-    if let Some(e) = err {
-        eprintln!("[nudge] config reload: {e} — keeping previous in-memory config");
-        return;
-    }
-
-    let changes = config_watcher::diff(previous_cfg, &new_cfg);
-    if changes.is_empty() {
-        return;
-    }
-
-    for change in &changes {
+/// Re-read `config.json` and act on what changed — the re-read, the diff and
+/// the logging are [`LiveConfig::reload`]'s, shared with the macOS backend;
+/// what is this thread's is how the Win32 hotkey is rebound and where a
+/// sprite change is parked.
+fn apply_config_reload(live_config: &mut LiveConfig, hotkey_registered: &mut bool) {
+    for change in live_config.reload() {
         match change {
-            ConfigChange::Hotkey { from, to } => {
-                eprintln!("[nudge] config reload: hotkey \"{from}\" → \"{to}\"");
+            LiveChange::Hotkey(hk) => {
                 // Unregister the previous binding (best-effort — if it
                 // wasn't actually registered, Win32 returns FALSE and
                 // we ignore it; the next try_register_hotkey is the
@@ -548,26 +521,7 @@ fn apply_config_reload(
                     }
                     *hotkey_registered = false;
                 }
-                *hotkey_registered = new_cfg
-                    .hotkey_or_unbound()
-                    .is_some_and(|hk| try_register_hotkey(&hk));
-            }
-            ConfigChange::Interval => {
-                // Recorded only: the popup captured the launch-time
-                // default and the user owns the field afterwards.
-                eprintln!(
-                    "[nudge] config reload: default_interval_minutes \
-                     {} → {} (no live effect; applies at next startup)",
-                    previous_cfg.default_interval_minutes, new_cfg.default_interval_minutes
-                );
-            }
-            ConfigChange::Autostart => {
-                // Settings process owns the registry write
-                // transactionally; we just refresh our cached copy.
-                eprintln!(
-                    "[nudge] config reload: autostart {} → {} (settings process owns registry)",
-                    previous_cfg.autostart, new_cfg.autostart
-                );
+                *hotkey_registered = hk.is_some_and(|hk| try_register_hotkey(&hk));
             }
             // Drained by `NudgeApp::logic` on the next frame — the reveal's,
             // when the popup is hidden, which is where it has to be applied
@@ -575,14 +529,11 @@ fn apply_config_reload(
             // Windows port of the shield (spec §1) is pending.
             // TODO: wake eframe here without `force_foreground` once the
             // Windows shield lands.
-            ConfigChange::Sprite { to } => {
-                eprintln!("[nudge] config reload: sprite → {to:?} (applied while hidden)");
-                *PENDING_SPRITE.lock().unwrap() = Some(to.clone());
+            LiveChange::Sprite(to) => {
+                *PENDING_SPRITE.lock().unwrap() = Some(to);
             }
         }
     }
-
-    *previous_cfg = new_cfg;
 }
 
 /// One frame of the daisy as the notification-area icon, drawn at the size

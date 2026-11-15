@@ -74,12 +74,12 @@ use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::config;
-use crate::config_watcher::{self, ConfigChange};
+use crate::config_watcher::{LiveChange, LiveConfig};
 use crate::daisy;
 use crate::hotkey::{self, Hotkey};
+use crate::layout::ScreenGeometry;
 use crate::nudge_state;
 use crate::screen_pick;
-use crate::sprite::ScreenGeometry;
 
 pub mod front_window;
 pub mod hotkey_carbon;
@@ -212,8 +212,7 @@ struct ReloadState {
     registered: Option<hotkey_carbon::Registration>,
     /// Where the config lives, and what is currently in effect — the baseline
     /// a reload diffs against, exactly as the tray thread keeps it on Windows.
-    config_path: PathBuf,
-    previous_cfg: config::Config,
+    config: LiveConfig,
 }
 
 // ---------- lifecycle ------------------------------------------------------
@@ -281,8 +280,7 @@ pub fn start_on_event_loop(ctx: &egui::Context) {
             last_tooltip_minutes: None,
             reload: ReloadState {
                 registered,
-                config_path,
-                previous_cfg: initial,
+                config: LiveConfig::new(config_path, initial),
             },
         });
     });
@@ -921,14 +919,10 @@ fn reap_exited(children: &mut Vec<std::process::Child>) {
     });
 }
 
-/// Re-read `config.json` and apply any live-meaningful diff, mirroring
-/// `tray_bridge::apply_config_reload`: only the hotkey has live effect on a
-/// running app, the other two fields are recorded so the next diff is computed
-/// against truth.
-///
-/// A malformed file is tolerated the way `load_or_default` does it: log, keep
-/// the previous in-memory config. The watcher must not be the thing that kills
-/// the app over a typo.
+/// Re-read `config.json` and act on what changed — the re-read, the diff and
+/// the logging are [`LiveConfig::reload`]'s, shared with the Windows tray
+/// thread; what is this backend's is how a hotkey is rebound and how a parked
+/// sprite wakes the app.
 fn apply_config_reload() {
     UI.with_borrow_mut(|slot| {
         let Some(ui) = slot.as_mut() else {
@@ -944,45 +938,23 @@ fn apply_config_reload() {
 /// The reload itself, over the state it actually needs — deliberately not over
 /// `UiState`, so it holds no opinion about whether a status item exists.
 fn reload_config(state: &mut ReloadState) {
-    let (new_cfg, err) = config::load_or_default(&state.config_path);
-    if let Some(e) = err {
-        eprintln!("[nudge] config reload: {e} — keeping previous in-memory config");
-        return;
-    }
-
-    for change in config_watcher::diff(&state.previous_cfg, &new_cfg) {
+    for change in state.config.reload() {
         match change {
-            ConfigChange::Hotkey { from, to } => {
-                eprintln!("[nudge] config reload: hotkey \"{from}\" → \"{to}\"");
+            LiveChange::Hotkey(hk) => {
                 // Dropping the old registration is what unregisters it, and it
                 // happens before the new one is attempted: two live bindings on
                 // one combination would leave the OS delivering to whichever
                 // the OS chose.
                 state.registered = None;
                 note_own_hotkey(None);
-                state.registered = new_cfg
-                    .hotkey_or_unbound()
-                    .and_then(|hk| try_register_hotkey(&hk));
+                state.registered = hk.and_then(|hk| try_register_hotkey(&hk));
             }
-            ConfigChange::Interval => eprintln!(
-                "[nudge] config reload: default_interval_minutes {} → {} \
-                 (no live effect; applies at next startup)",
-                state.previous_cfg.default_interval_minutes, new_cfg.default_interval_minutes
-            ),
-            ConfigChange::Autostart => eprintln!(
-                "[nudge] config reload: autostart {} → {} \
-                 (settings process owns the LaunchAgent)",
-                state.previous_cfg.autostart, new_cfg.autostart
-            ),
-            ConfigChange::Sprite { to } => {
-                eprintln!("[nudge] config reload: sprite → {to:?} (applied while hidden)");
+            LiveChange::Sprite(to) => {
                 *PENDING_SPRITE.lock().unwrap() = Some(to);
                 wake();
             }
         }
     }
-
-    state.previous_cfg = new_cfg;
 }
 
 // ---------------------------------------------------------------------------
@@ -1518,8 +1490,7 @@ mod tests {
 
         let mut state = ReloadState {
             registered: None,
-            config_path: path.clone(),
-            previous_cfg: before,
+            config: LiveConfig::new(path.clone(), before),
         };
         let _guard = tick_globals();
         reload_config(&mut state);
@@ -1531,7 +1502,8 @@ mod tests {
         );
 
         assert_eq!(
-            state.previous_cfg, after,
+            state.config.current(),
+            &after,
             "the baseline the next diff is computed against must be what is on disk"
         );
         assert!(
@@ -1561,12 +1533,11 @@ mod tests {
         };
         let mut state = ReloadState {
             registered: None,
-            config_path: path,
-            previous_cfg: before.clone(),
+            config: LiveConfig::new(path, before.clone()),
         };
         reload_config(&mut state);
 
-        assert_eq!(state.previous_cfg, before);
+        assert_eq!(state.config.current(), &before);
         assert_eq!(
             take_pending_sprite(),
             None,
@@ -1608,8 +1579,7 @@ mod tests {
         config::save(&path, &after).expect("write the edited config");
         let mut state = ReloadState {
             registered: None,
-            config_path: path,
-            previous_cfg: before,
+            config: LiveConfig::new(path, before),
         };
         reload_config(&mut state);
 

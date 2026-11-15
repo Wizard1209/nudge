@@ -19,7 +19,7 @@ use eframe::egui;
 
 use crate::config;
 use crate::hotkey::Hotkey;
-use crate::sprite::ScreenGeometry;
+use crate::layout::ScreenGeometry;
 
 pub fn start(_hotkey: Option<Hotkey>, _config_path: std::path::PathBuf, _initial: config::Config) {}
 
@@ -60,6 +60,14 @@ pub fn screen_geometry(_ctx: &egui::Context, _frame: &eframe::Frame) -> Option<S
 }
 
 pub fn install_native_fonts(_ctx: &egui::Context) {}
+
+/// No single-instance guard here: this host has no menu to open the settings
+/// window from, so nothing can open it twice.
+pub struct SettingsLock;
+
+pub fn acquire_settings_singleton() -> Option<SettingsLock> {
+    Some(SettingsLock)
+}
 
 /// No key source here, so the settings window's hotkey row is the plain typed
 /// field it has always been. `None` is the whole answer: the row asks for a

@@ -403,6 +403,56 @@ pub type SpriteCheckFn = Box<dyn Fn(&Path) -> Result<(), String> + Send>;
 /// a test registers nothing on the machine running it.
 pub type ConflictFn = Box<dyn Fn(&Hotkey) -> Option<String> + Send>;
 
+/// What the settings window needs from whoever opens it: the OS side of the
+/// autostart checkbox, where a save goes, how an enabled sprite's PNG is
+/// checked, and who else holds a combination. The window itself touches no
+/// registry, file or OS table — all of that comes through here.
+pub struct SettingsHost {
+    pub provider: Box<dyn AutostartProvider>,
+    pub persist: PersistFn,
+    pub sprite_check: SpriteCheckFn,
+    pub conflict: ConflictFn,
+}
+
+impl SettingsHost {
+    /// A host with nothing behind it: a save succeeds without writing, every
+    /// sprite passes, and no one holds any combination — so a save here never
+    /// asks the OS, which would register a real hotkey on the machine running
+    /// the tests, from every test thread at once. The browser build and the
+    /// headless tests start from this and override what they need; the
+    /// native binary has no caller.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub fn headless(provider: Box<dyn AutostartProvider>) -> Self {
+        Self {
+            provider,
+            persist: Box::new(|_cfg: &Config| Ok(())),
+            sprite_check: Box::new(|_path: &Path| Ok(())),
+            conflict: Box::new(|_hk| None),
+        }
+    }
+
+    /// The host the native settings process runs on: this machine's autostart
+    /// provider, saves to `config_path` (the file the running app watches),
+    /// the §10 PNG check on the named file, and the platform's conflict
+    /// report (§5). `Err` when the provider cannot be constructed — the
+    /// window is then refused rather than opened over a fake.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn native(
+        config_path: std::path::PathBuf,
+        initial_autostart: bool,
+    ) -> Result<Self, String> {
+        let provider = crate::autostart::provider_for_current_exe(initial_autostart)?;
+        Ok(Self {
+            provider,
+            persist: Box::new(move |c: &Config| config::save(&config_path, c)),
+            sprite_check: Box::new(|path: &Path| {
+                crate::sprite_png::check_sprite_file(path).map_err(|e| e.to_string())
+            }),
+            conflict: Box::new(crate::platform::hotkey_conflict),
+        })
+    }
+}
+
 /// Save, as the form sees it: validate, check the sprite file when the
 /// sprite is on, write, rebaseline. `Ok` carries what reached the disk;
 /// `Err` the one line the window shows instead, and nothing was written.
@@ -498,14 +548,7 @@ pub struct SettingsApp {
 }
 
 impl SettingsApp {
-    pub fn new(
-        cc: &eframe::CreationContext<'_>,
-        config: Config,
-        provider: Box<dyn AutostartProvider>,
-        persist: PersistFn,
-        sprite_check: SpriteCheckFn,
-        conflict: ConflictFn,
-    ) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, config: Config, host: SettingsHost) -> Self {
         // Default eframe visuals — settings is NOT the spotlight. Opaque
         // panel, normal chrome. We still pin dark mode so the look matches
         // the popup. set_theme comes first: set_visuals only writes into
@@ -527,19 +570,22 @@ impl SettingsApp {
         let source = crate::platform::new_edge_source(&cc.egui_ctx);
         #[cfg(target_arch = "wasm32")]
         let source = None;
-        Self::with_source(config, provider, persist, sprite_check, conflict, source)
+        Self::with_source(config, host, source)
     }
 
     /// [`SettingsApp::new`] with the recorder's key source handed in — what
     /// lets a test arm the recorder with no platform behind it.
     pub fn with_source(
         config: Config,
-        provider: Box<dyn AutostartProvider>,
-        persist: PersistFn,
-        sprite_check: SpriteCheckFn,
-        conflict: ConflictFn,
+        host: SettingsHost,
         source: Option<Box<dyn EdgeSource>>,
     ) -> Self {
+        let SettingsHost {
+            provider,
+            persist,
+            sprite_check,
+            conflict,
+        } = host;
         Self {
             form: SettingsForm::from_config(config),
             provider,

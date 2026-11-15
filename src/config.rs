@@ -273,7 +273,7 @@ pub fn config_path(root: &std::path::Path) -> std::path::PathBuf {
 /// `target/`, a copy in `/Applications` and a DMG mount all read and write
 /// the same file.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn resolve_default_config_path() -> std::path::PathBuf {
+fn resolve_default_config_path() -> std::path::PathBuf {
     config_path(&config_root())
 }
 
@@ -308,7 +308,7 @@ fn legacy_config_path() -> Option<std::path::PathBuf> {
 /// outcome we wanted; on any other failure the caller carries on with an
 /// empty destination and gets a fresh default, which is recoverable by hand.
 #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
-pub fn migrate_legacy_config(destination: &std::path::Path) {
+fn migrate_legacy_config(destination: &std::path::Path) {
     let Some(legacy) = legacy_config_path() else {
         return;
     };
@@ -344,18 +344,72 @@ fn move_config_file(legacy: &std::path::Path, destination: &std::path::Path) {
 
 /// No-op off macOS: nothing moved, so there is nothing to migrate.
 #[cfg(all(not(target_os = "macos"), not(target_arch = "wasm32")))]
-pub fn migrate_legacy_config(_destination: &std::path::Path) {}
+fn migrate_legacy_config(_destination: &std::path::Path) {}
+
+/// The config file a process runs against, resolved once at startup: the
+/// `--config <path>` override from the command line, or the platform's
+/// default location — after the legacy `~/Documents` file has been moved
+/// there on macOS. An explicit override names exactly the file to use, so
+/// neither the legacy move nor first-run seeding happens beside it: a
+/// throwaway config for the perf test or a sandbox stays the one file that
+/// was named.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct ConfigFile {
+    path: std::path::PathBuf,
+    overridden: bool,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl ConfigFile {
+    /// Resolve from the process's arguments (without the program name).
+    pub fn from_args<I, S>(args: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        match parse_config_arg(args) {
+            Some(path) => Self {
+                path,
+                overridden: true,
+            },
+            None => {
+                let path = resolve_default_config_path();
+                migrate_legacy_config(&path);
+                Self {
+                    path,
+                    overridden: false,
+                }
+            }
+        }
+    }
+
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
+    /// Read the file. A missing or malformed one yields the default alongside
+    /// the error to log — a process never refuses to start over its config.
+    pub fn load(&self) -> (Config, Option<ConfigError>) {
+        load_or_default(&self.path)
+    }
+
+    /// First run: write the default so users have a template to edit instead
+    /// of needing to know the schema. Nothing happens under an explicit
+    /// `--config`, or when a file is already there.
+    pub fn seed_default_if_missing(&self) -> Result<(), ConfigError> {
+        if self.overridden {
+            return Ok(());
+        }
+        ensure_default_written(&self.path)
+    }
+}
 
 /// Pull a `--config <path>` or `--config=<path>` override out of CLI args.
-/// Used by the perf test (and any future tooling) to point a launched
-/// nudge.exe at a throwaway config without clobbering the user's real one.
-/// An explicit path also suppresses first-run seeding and the legacy move,
-/// so a throwaway config is exactly the file that was named and nothing
-/// appears beside it. Returns `None` if the flag is absent or trailing
-/// without a value — silent, since this is a power-user lever rather than a
-/// documented contract.
+/// Returns `None` if the flag is absent or trailing without a value —
+/// silent, since this is a power-user lever rather than a documented
+/// contract.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn parse_config_arg<I, S>(args: I) -> Option<std::path::PathBuf>
+fn parse_config_arg<I, S>(args: I) -> Option<std::path::PathBuf>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
@@ -407,33 +461,14 @@ pub fn load_or_default(path: &std::path::Path) -> (Config, Option<ConfigError>) 
     }
 }
 
-/// Write the default config to `path` if no file is there yet. Used on
-/// first run so users have a starting template to edit instead of needing
-/// to know the schema.
+/// Write the default config to `path` if no file is there yet — the same
+/// atomic write a save is, so a reader never sees a half-written template.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn ensure_default_written(path: &std::path::Path) -> Result<(), ConfigError> {
-    use std::fs;
     if path.exists() {
         return Ok(());
     }
-    let path_str = path.display().to_string();
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        fs::create_dir_all(parent).map_err(|e| ConfigError::Io {
-            path: path_str.clone(),
-            detail: e.to_string(),
-        })?;
-    }
-    let body =
-        serde_json::to_string_pretty(&Config::default()).map_err(|e| ConfigError::Parse {
-            path: path_str.clone(),
-            detail: e.to_string(),
-        })?;
-    fs::write(path, body).map_err(|e| ConfigError::Io {
-        path: path_str,
-        detail: e.to_string(),
-    })
+    save(path, &Config::default())
 }
 
 /// Atomically persist `config` to `path`. Writes a sibling `<path>.tmp` then
@@ -879,6 +914,18 @@ mod tests {
                 parse_config_arg(["--config", "/a.json", "--config", "/b.json"]),
                 Some(std::path::PathBuf::from("/a.json"))
             );
+        }
+
+        #[test]
+        fn an_explicit_config_override_is_never_seeded() {
+            // `--config` names exactly the file to use: no template appears
+            // beside a throwaway config.
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("throwaway.json");
+            let file = ConfigFile::from_args(["--config", path.to_str().unwrap()]);
+            assert_eq!(file.path(), path.as_path());
+            file.seed_default_if_missing().unwrap();
+            assert!(!path.exists(), "an overridden config must not be seeded");
         }
 
         #[test]

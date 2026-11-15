@@ -25,7 +25,7 @@ use eframe::egui::{self, Rect, ViewportCommand, ViewportId, pos2, vec2};
 use egui_kittest::Harness;
 
 use nudge_web::app::NudgeApp;
-use nudge_web::sprite::ScreenGeometry;
+use nudge_web::layout::ScreenGeometry;
 
 /// A 1470×956 display with a 33 pt menu bar.
 fn geometry() -> ScreenGeometry {
