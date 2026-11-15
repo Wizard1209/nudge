@@ -423,8 +423,10 @@
         />
       </label>
       <!-- The one field that holds long text, in the label's size: a path
-           of ordinary length reads whole instead of clipped. -->
-      <div class="flex items-center justify-between gap-3 min-h-11 px-3">
+           of ordinary length reads whole instead of clipped. §9: with the
+           sprite off this row and the next are dimmed — their children, so
+           the hairlines stay — and stay editable. -->
+      <div class={["flex items-center justify-between gap-3 min-h-11 px-3", !spriteEnabled && "*:opacity-50"]}>
         <span class="text-sm shrink-0">PNG</span>
         <div class="flex flex-1 min-w-0 gap-2">
           <input
@@ -447,7 +449,7 @@
         </div>
       </div>
       <!-- §10: the three are in points; the unit is said once, on the row. -->
-      <div class="flex items-center justify-between gap-3 min-h-11 px-3">
+      <div class={["flex items-center justify-between gap-3 min-h-11 px-3", !spriteEnabled && "*:opacity-50"]}>
         <span data-testid="settings-sprite-position" class="text-sm">Position (pt)</span>
         <div class="flex items-center gap-3">
           <label class="flex items-center gap-1.5 text-sm text-zinc-400">

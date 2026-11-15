@@ -737,6 +737,17 @@ fn hairline(ui: &mut egui::Ui) {
     );
 }
 
+/// `contents`, drawn at the toolkit's disabled opacity when `dim` — the
+/// disabled look without the disabling: it still takes input.
+fn dimmed(ui: &mut egui::Ui, dim: bool, contents: impl FnOnce(&mut egui::Ui)) {
+    ui.scope(|ui| {
+        if dim {
+            ui.multiply_opacity(ui.visuals().disabled_alpha());
+        }
+        contents(ui);
+    });
+}
+
 /// A row: its text at the left, then `rest` over what is left of it, laid
 /// out left to right at the row's height; `rest` is handed the text's
 /// response, for a control the text labels.
@@ -960,69 +971,75 @@ impl eframe::App for SettingsApp {
 
                 // Group 3: the §10 sprite — on/off, the PNG, where it sits and
                 // how wide the card is under it. The file is checked on Save,
-                // not here.
+                // not here. §9: while it is off the two rows under the
+                // checkbox are dimmed, the hairlines between them not.
                 group(ui, |ui| {
                     checkbox_row(ui, "Sprite", &mut self.form.sprite_enabled);
+                    let off = !self.form.sprite_enabled;
                     hairline(ui);
-                    row_with(ui, "PNG", |ui, _| {
-                        // The path field takes what the row leaves after the
-                        // button, so the two end at the row's right edge.
-                        let field_width = ui.available_width()
-                            - remembered_width(ui, width_id("browse"))
-                                .map_or(0.0, |w| w + ui.spacing().item_spacing.x);
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.form.sprite_path)
-                                .id(egui::Id::new(ID_SPRITE_PATH))
-                                .desired_width(field_width)
-                                .hint_text("Path to a PNG with a transparent background"),
-                        );
-                        // A native file dialog takes the focus, which would
-                        // end a recording anyway; not offering it while armed
-                        // keeps the two from racing. The browser build has no
-                        // dialog at all.
-                        #[cfg(any(target_os = "windows", target_os = "macos"))]
-                        {
-                            let browse = ui.add_enabled(!armed, egui::Button::new("Browse…"));
-                            remember_width(ui, width_id("browse"), browse.rect.width());
-                            if browse.clicked()
-                                && let Some(picked) = pick_sprite_file()
+                    dimmed(ui, off, |ui| {
+                        row_with(ui, "PNG", |ui, _| {
+                            // The path field takes what the row leaves after the
+                            // button, so the two end at the row's right edge.
+                            let field_width = ui.available_width()
+                                - remembered_width(ui, width_id("browse"))
+                                    .map_or(0.0, |w| w + ui.spacing().item_spacing.x);
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.form.sprite_path)
+                                    .id(egui::Id::new(ID_SPRITE_PATH))
+                                    .desired_width(field_width)
+                                    .hint_text("Path to a PNG with a transparent background"),
+                            );
+                            // A native file dialog takes the focus, which would
+                            // end a recording anyway; not offering it while armed
+                            // keeps the two from racing. The browser build has no
+                            // dialog at all.
+                            #[cfg(any(target_os = "windows", target_os = "macos"))]
                             {
-                                self.form.sprite_path = picked;
+                                let browse = ui.add_enabled(!armed, egui::Button::new("Browse…"));
+                                remember_width(ui, width_id("browse"), browse.rect.width());
+                                if browse.clicked()
+                                    && let Some(picked) = pick_sprite_file()
+                                {
+                                    self.form.sprite_path = picked;
+                                }
                             }
-                        }
+                        })
                     });
                     hairline(ui);
                     // §10: the three are in points; the unit is said once, on
                     // the row.
-                    row(ui, "Position (pt)", "position", |ui| {
-                        for (name, text, id, hint) in [
-                            (
-                                "X",
-                                &mut self.form.sprite_x_text,
-                                ID_SPRITE_X,
-                                "0".to_string(),
-                            ),
-                            (
-                                "Y",
-                                &mut self.form.sprite_y_text,
-                                ID_SPRITE_Y,
-                                "0".to_string(),
-                            ),
-                            (
-                                "Card width",
-                                &mut self.form.card_width_text,
-                                ID_CARD_WIDTH,
-                                crate::config::DEFAULT_CARD_WIDTH.to_string(),
-                            ),
-                        ] {
-                            ui.label(egui::RichText::new(name).weak());
-                            ui.add(
-                                egui::TextEdit::singleline(text)
-                                    .id(egui::Id::new(id))
-                                    .desired_width(NUMBER_FIELD_WIDTH)
-                                    .hint_text(hint),
-                            );
-                        }
+                    dimmed(ui, off, |ui| {
+                        row(ui, "Position (pt)", "position", |ui| {
+                            for (name, text, id, hint) in [
+                                (
+                                    "X",
+                                    &mut self.form.sprite_x_text,
+                                    ID_SPRITE_X,
+                                    "0".to_string(),
+                                ),
+                                (
+                                    "Y",
+                                    &mut self.form.sprite_y_text,
+                                    ID_SPRITE_Y,
+                                    "0".to_string(),
+                                ),
+                                (
+                                    "Card width",
+                                    &mut self.form.card_width_text,
+                                    ID_CARD_WIDTH,
+                                    crate::config::DEFAULT_CARD_WIDTH.to_string(),
+                                ),
+                            ] {
+                                ui.label(egui::RichText::new(name).weak());
+                                ui.add(
+                                    egui::TextEdit::singleline(text)
+                                        .id(egui::Id::new(id))
+                                        .desired_width(NUMBER_FIELD_WIDTH)
+                                        .hint_text(hint),
+                                );
+                            }
+                        })
                     });
                 });
                 ui.add_space(GROUP_GAP);

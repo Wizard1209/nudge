@@ -1391,3 +1391,94 @@ fn long_token_stays_on_the_message_line(token: &str) {
         banner.max.x
     );
 }
+
+// -----------------------------------------------------------------------------
+// §9 Fields — an off sprite's rows are dimmed, and stay editable.
+// -----------------------------------------------------------------------------
+
+/// The alpha each text in `texts` was last painted with, 0 to 1, in that
+/// order — a row's text, or what a field holds. `None` for one not painted.
+fn painted_alpha(harness: &Harness<'_, SettingsApp>, texts: &[&str]) -> Vec<Option<f32>> {
+    fn walk(shape: &egui::Shape, found: &mut Vec<(String, f32)>) {
+        match shape {
+            egui::Shape::Text(t) => {
+                // A glyph's own colour, unless it left it to the shape's.
+                let glyph = t
+                    .galley
+                    .rows
+                    .iter()
+                    .flat_map(|r| r.row.visuals.mesh.vertices.first())
+                    .map(|v| v.color)
+                    .find(|c| *c != egui::Color32::PLACEHOLDER);
+                let color = t.override_text_color.or(glyph).unwrap_or(t.fallback_color);
+                found.push((t.galley.text().to_string(), f32::from(color.a()) / 255.0));
+            }
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, found)),
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    for clipped in &harness.output().shapes {
+        walk(&clipped.shape, &mut found);
+    }
+    texts
+        .iter()
+        .map(|want| found.iter().find(|(t, _)| t == want).map(|(_, a)| *a))
+        .collect()
+}
+
+/// §9: "While the `Sprite` checkbox is off, the PNG and Position rows are
+/// drawn at half opacity, the way a disabled control is … They stay
+/// editable".
+#[test]
+fn settings_dims_the_sprite_rows_while_the_sprite_is_off() {
+    const TEXTS: [&str; 6] = [
+        "Sprite",
+        "PNG",
+        "/art/s.png",
+        "Position (pt)",
+        "-41",
+        "Card width",
+    ];
+    let config = |enabled: bool| {
+        let mut config = cfg("Alt+J", 7.0, false);
+        config.sprite.enabled = enabled;
+        config.sprite.path = "/art/s.png".to_string();
+        config.sprite.x = -41;
+        config
+    };
+    let (on, _) = settings_harness(config(true));
+    let (mut off, persisted) = settings_harness(config(false));
+    let on_alpha = painted_alpha(&on, &TEXTS);
+    let off_alpha = painted_alpha(&off, &TEXTS);
+    assert!(
+        on_alpha.iter().chain(&off_alpha).all(Option::is_some),
+        "every text painted: on {on_alpha:?}, off {off_alpha:?}"
+    );
+
+    // Against the same text with the sprite on: the checkbox row as it was,
+    // the two rows under it at the disabled alpha.
+    let dim = egui::Visuals::dark().disabled_alpha();
+    let ratios: Vec<f32> = on_alpha
+        .iter()
+        .zip(&off_alpha)
+        .map(|(on, off)| off.unwrap() / on.unwrap())
+        .collect();
+    let want = [1.0, dim, dim, dim, dim, dim];
+    assert!(
+        ratios.iter().zip(want).all(|(r, w)| (r - w).abs() < 0.02),
+        "off/on alpha of {TEXTS:?}: {ratios:?}, want {want:?}"
+    );
+
+    // Dimmed is not disabled: the path still takes typing, and Save writes it.
+    type_into(&mut off, 2, "x");
+    off.get_by_label("Save").click();
+    off.run();
+    let saved = persisted.lock().unwrap().last().map(|c| c.sprite.clone());
+    assert!(
+        saved
+            .as_ref()
+            .is_some_and(|s| !s.enabled && s.path.len() == "/art/s.png".len() + 1),
+        "a dimmed field is still edited and saved: {saved:?}"
+    );
+}
