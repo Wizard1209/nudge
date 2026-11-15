@@ -13,39 +13,32 @@
 
 #![allow(dead_code)]
 
-use std::time::{Duration, Instant};
-
 use eframe::egui;
 
 use crate::config;
 use crate::hotkey::Hotkey;
 use crate::layout::ScreenGeometry;
 
+pub use super::shared::set_popup_visible;
+
+/// Nothing to wake: no thread and no tick acts on the shared state here.
+pub(super) fn wake() {}
+
 pub fn start(_hotkey: Option<Hotkey>, _config_path: std::path::PathBuf, _initial: config::Config) {}
 
 pub fn start_on_event_loop(_ctx: &egui::Context) {}
 
-pub fn note_window_handle(_handle: isize) {}
+pub fn adopt_window(_frame: &eframe::Frame) {}
 
-pub fn set_tray_clicked() {}
-
-pub fn take_tray_clicked() -> bool {
+/// Never: this host has no OS integration at all — it never nudges, nothing
+/// activates the window, and a focus-loss close would be the only spec §4
+/// behaviour present on a platform that has none of the rest.
+pub fn popup_is_foreground(_ctx: &egui::Context) -> bool {
     false
 }
 
-pub fn take_timer_fired() -> bool {
-    false
-}
-
-pub fn set_timer_state(_deadline: Instant, _duration: Duration) {}
-
-pub fn set_popup_visible(_visible: bool) {}
-
-pub fn request_config_reload() {}
-
-pub fn take_pending_sprite() -> Option<config::SpriteConfig> {
-    None
-}
+/// Nothing summons the popup manually here, so this raises nothing.
+pub fn request_manual_open() {}
 
 pub fn focus_popup(_ctx: &egui::Context) {}
 

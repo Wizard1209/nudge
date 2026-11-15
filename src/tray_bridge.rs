@@ -12,18 +12,17 @@
 //!   - Owns the `TrayIcon` and the menu items.
 //!   - Runs a `MsgWaitForMultipleObjectsEx`-driven loop that interleaves
 //!     message dispatch with animation frames.
-//!   - Reads timer state out of `ANIMATOR_TIMER` and popup state out of
-//!     `POPUP_VISIBLE`, both updated by the eframe thread.
+//!   - Reads the armed timer and the popup's visibility out of
+//!     `platform::shared`, both written by the eframe thread.
 //!   - Wakes from a long wait via `PostThreadMessageW` whenever eframe
 //!     changes state.
-//!   - Fires the popup when the timer expires (sets `TIMER_FIRED` +
+//!   - Fires the popup when the timer expires (raises the timer edge +
 //!     `ShowWindow(SW_RESTORE)` on eframe's HWND).
 
 use std::path::PathBuf;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
@@ -44,6 +43,7 @@ use crate::hotkey::{
     self, Hotkey, MOD_ALT as MY_MOD_ALT, MOD_CTRL, MOD_SHIFT as MY_MOD_SHIFT, MOD_WIN as MY_MOD_WIN,
 };
 use crate::nudge_state;
+use crate::platform::shared;
 
 // ---------- shared state ---------------------------------------------------
 
@@ -51,39 +51,9 @@ use crate::nudge_state;
 /// tray thread when the timer expires.
 static HWND_STORE: AtomicIsize = AtomicIsize::new(0);
 
-/// Edge flags polled by `NudgeApp::update()`.
-static TRAY_CLICKED: AtomicBool = AtomicBool::new(false);
-
-/// A sprite change from a config reload, waiting for the app to apply it
-/// while the popup is hidden (spec §10). The newest change replaces an
-/// older one still waiting.
-static PENDING_SPRITE: Mutex<Option<config::SpriteConfig>> = Mutex::new(None);
-static TIMER_FIRED: AtomicBool = AtomicBool::new(false);
-
-/// Set by the config_watcher callback (off the tray thread) when
-/// `config.json` changes on disk. The tray thread picks this up on its
-/// next wake, re-reads the file, and applies any live-meaningful diff
-/// (currently: re-register the hotkey when it differs). Stays an
-/// AtomicBool rather than a counter — N concurrent saves all collapse
-/// to "re-read once", which is the correct behaviour.
-static CONFIG_RELOAD_REQUESTED: AtomicBool = AtomicBool::new(false);
-
-/// `true` while the popup is on screen. The tray thread treats this as
-/// "freeze animation": clear out any pending repaints and wait until eframe
-/// flips it back to `false`.
-static POPUP_VISIBLE: AtomicBool = AtomicBool::new(true);
-
 /// OS thread id of the tray thread — used by `PostThreadMessageW` to wake
 /// the pump when state changes from the eframe side.
 static TRAY_THREAD_ID: AtomicU32 = AtomicU32::new(0);
-
-#[derive(Clone, Copy)]
-struct AnimatorTimer {
-    deadline: Instant,
-    duration: Duration,
-}
-
-static ANIMATOR_TIMER: Mutex<Option<AnimatorTimer>> = Mutex::new(None);
 
 /// Custom message we post to the tray thread purely to wake the pump out
 /// of `MsgWaitForMultipleObjectsEx`. Value is opaque — we drain and ignore.
@@ -138,47 +108,17 @@ pub fn force_foreground(hwnd: HWND) {
     }
 }
 
-/// The sprite change parked by the last reload, if any; `NudgeApp` drains it.
-pub fn take_pending_sprite() -> Option<config::SpriteConfig> {
-    PENDING_SPRITE.lock().unwrap().take()
+/// A manual summons — the tray's left click, its "Show Nudge" item, the
+/// global hotkey: raise the edge `NudgeApp::ui` turns into a Manual open and
+/// bring the popup to the foreground so a frame runs to see it.
+pub fn request_manual_open() {
+    shared::raise_tray_clicked();
+    wake_eframe();
 }
 
-pub fn set_tray_clicked() {
-    TRAY_CLICKED.store(true, Ordering::SeqCst);
-}
-
-pub fn take_tray_clicked() -> bool {
-    TRAY_CLICKED.swap(false, Ordering::SeqCst)
-}
-
-pub fn take_timer_fired() -> bool {
-    TIMER_FIRED.swap(false, Ordering::SeqCst)
-}
-
-/// Push a fresh deadline / duration to the animator. Called from
-/// `NudgeApp::hide_popup` whenever the timer is reset.
-pub fn set_timer_state(deadline: Instant, duration: Duration) {
-    *ANIMATOR_TIMER.lock().unwrap() = Some(AnimatorTimer { deadline, duration });
-    wake_tray_thread();
-}
-
-/// Mirror `popup_visible` into the tray thread so it can park instead of
-/// repainting while the user is interacting with the form.
-pub fn set_popup_visible(visible: bool) {
-    POPUP_VISIBLE.store(visible, Ordering::SeqCst);
-    wake_tray_thread();
-}
-
-/// Signal that `config.json` changed on disk and the tray thread should
-/// re-read + diff it on its next iteration. Called from the
-/// `config_watcher` callback, off any tray thread. Idempotent: setting
-/// the flag twice before the tray sees it collapses to one re-read.
-pub fn request_config_reload() {
-    CONFIG_RELOAD_REQUESTED.store(true, Ordering::SeqCst);
-    wake_tray_thread();
-}
-
-fn wake_tray_thread() {
+/// Wake the pump out of `MsgWaitForMultipleObjectsEx`, so a write to the
+/// shared state is acted on now.
+pub(crate) fn wake_tray_thread() {
     let tid = TRAY_THREAD_ID.load(Ordering::SeqCst);
     if tid != 0 {
         unsafe {
@@ -368,8 +308,7 @@ fn tray_thread_main(hotkey: Option<Hotkey>, config_path: PathBuf, initial_config
                 ..
             }
         ) {
-            set_tray_clicked();
-            wake_eframe();
+            request_manual_open();
         }
     }));
 
@@ -379,8 +318,7 @@ fn tray_thread_main(hotkey: Option<Hotkey>, config_path: PathBuf, initial_config
                 std::process::exit(0);
             }
             if event.id == show_id {
-                set_tray_clicked();
-                wake_eframe();
+                request_manual_open();
             }
             if event.id == settings_id {
                 // Spawn a second instance of nudge.exe with --settings.
@@ -398,16 +336,11 @@ fn tray_thread_main(hotkey: Option<Hotkey>, config_path: PathBuf, initial_config
     // Hold these so they aren't dropped — menu only keeps weak refs.
     let _menu_items = (show_item, settings_item, quit_item);
 
-    // We dedupe identical icon updates so set_icon isn't called every loop.
-    // State key: (petals_remaining, drift_progress_x100, drift_active).
-    let mut last_state_key: (u8, u16, bool) = (255, 0, false);
-    // Dedupe tooltip updates the same way — only call set_tooltip when the
-    // rendered minute number changes (spec §5: "updated once per minute").
-    // `None` forces a refresh on the first loop iteration after a new timer.
+    // Dedupe keys, so `set_icon` / `set_tooltip` are only called when what
+    // they would display actually changes. `None` forces a refresh on the
+    // first pass after a new timer.
+    let mut last_icon_key: Option<shared::IconKey> = None;
     let mut last_tooltip_minutes: Option<u64> = None;
-    // Latch so a single timer instance fires the popup at most once.
-    let mut fired_for_deadline: Option<Instant> = None;
-
     loop {
         drain_messages();
 
@@ -416,18 +349,18 @@ fn tray_thread_main(hotkey: Option<Hotkey>, config_path: PathBuf, initial_config
         // arrives mid-popup gets applied as soon as the popup closes —
         // we never silently drop a request, even though we don't fight
         // the popup for attention while it's up.
-        if CONFIG_RELOAD_REQUESTED.swap(false, Ordering::SeqCst) {
+        if shared::take_config_reload_requested() {
             apply_config_reload(&mut live_config, &mut hotkey_registered);
         }
 
-        if POPUP_VISIBLE.load(Ordering::SeqCst) {
+        if shared::popup_visible() {
             // Popup is up. Don't fight it for attention; idle until eframe
             // tells us things have changed.
             wait_for_message(u32::MAX);
             continue;
         }
 
-        let timer = match *ANIMATOR_TIMER.lock().unwrap() {
+        let timer = match shared::armed_timer() {
             Some(t) => t,
             None => {
                 wait_for_message(u32::MAX);
@@ -435,71 +368,41 @@ fn tray_thread_main(hotkey: Option<Hotkey>, config_path: PathBuf, initial_config
             }
         };
 
-        let now = Instant::now();
-        // Let elapsed keep growing past `duration` so the final drift
-        // animation can finish before we settle on the bare-center frame.
-        let elapsed = if now >= timer.deadline {
-            timer.duration + now.duration_since(timer.deadline)
-        } else {
-            timer
-                .duration
-                .saturating_sub(timer.deadline.duration_since(now))
-        };
+        // The timeline is `shared`'s; what is this thread's is the Win32 I/O.
+        let countdown = timer.observe(Instant::now());
 
-        // Spec §5 timeline math lives in `daisy::frame_at` (pure + tested);
-        // the tray thread keeps only the wall-clock measurement above and the
-        // Win32 I/O below.
-        let frame = daisy::frame_at(timer.duration, elapsed);
-        let petals_remaining = frame.petals_remaining;
-        let drift = frame.drift;
-
-        let drift_scaled = drift.map(|d| (d.progress * 100.0) as u16).unwrap_or(0);
-        let key = (petals_remaining, drift_scaled, drift.is_some());
-        if key != last_state_key {
-            if let Ok(icon) = tray_icon_frame(petals_remaining, drift) {
+        let icon_key = countdown.icon_key();
+        if last_icon_key != Some(icon_key) {
+            let frame = &countdown.frame;
+            if let Ok(icon) = tray_icon_frame(frame.petals_remaining, frame.drift) {
                 let _ = tray.set_icon(Some(icon));
             }
-            last_state_key = key;
+            last_icon_key = Some(icon_key);
         }
 
-        // Tooltip — refresh only when the displayed minute number changes.
-        // `remaining` saturates at zero past the deadline, so `tooltip_for_remaining`
-        // produces "now" during the drift-to-fire window.
-        let remaining = timer.deadline.saturating_duration_since(now);
-        let mins_now = nudge_state::displayed_minutes(remaining);
-        if last_tooltip_minutes != Some(mins_now) {
-            let text = nudge_state::tooltip_for_remaining(remaining);
-            let _ = tray.set_tooltip(Some(&text));
-            last_tooltip_minutes = Some(mins_now);
+        let minutes = countdown.tooltip_minutes();
+        if last_tooltip_minutes != Some(minutes) {
+            let _ = tray.set_tooltip(Some(&countdown.tooltip()));
+            last_tooltip_minutes = Some(minutes);
         }
 
-        // Time to fire the popup? `frame.should_fire` waits for the very last
+        // Time to fire the popup? `should_fire` waits for the very last
         // drift to finish so the user actually sees the final petal fall
         // before the popup takes focus.
-        if frame.should_fire && fired_for_deadline != Some(timer.deadline) {
-            fired_for_deadline = Some(timer.deadline);
-            TIMER_FIRED.store(true, Ordering::SeqCst);
+        if countdown.frame.should_fire {
+            // Disarm so one deadline fires once; the close that follows
+            // re-arms through `set_timer_state`.
+            shared::disarm_timer(timer);
+            shared::raise_timer_fired();
             if let Some(hwnd_val) = load_hwnd() {
                 force_foreground(HWND(hwnd_val as *mut _));
             }
-            // Park; eframe will flip POPUP_VISIBLE shortly and wake us.
+            // Park; eframe will mark the popup hidden shortly and wake us.
             wait_for_message(u32::MAX);
             continue;
         }
 
-        let next_wake_ms: u32 = if drift.is_some() {
-            33 // ~30 Hz during drift
-        } else if elapsed >= timer.duration {
-            // Past expiry but pre-fire — re-check soon.
-            10
-        } else {
-            // Until the next petal drop, clamped to a minute as a sanity
-            // backstop in case the system clock jumps.
-            let to_next = frame.petal_duration.saturating_sub(frame.time_since_drop);
-            (to_next.as_millis() as u32).min(60_000)
-        };
-
-        wait_for_message(next_wake_ms);
+        wait_for_message(countdown.next_wake().as_millis() as u32);
     }
 }
 
@@ -530,7 +433,7 @@ fn apply_config_reload(live_config: &mut LiveConfig, hotkey_registered: &mut boo
             // TODO: wake eframe here without `force_foreground` once the
             // Windows shield lands.
             LiveChange::Sprite(to) => {
-                *PENDING_SPRITE.lock().unwrap() = Some(to);
+                shared::park_sprite(to);
             }
         }
     }
@@ -574,8 +477,7 @@ fn drain_messages() {
             // drop it for lack of a target window. Same UX path as a tray
             // left-click: pop the popup as a Manual trigger.
             if msg.message == WM_HOTKEY && msg.wParam.0 == HOTKEY_ID_SHOW_POPUP as usize {
-                set_tray_clicked();
-                wake_eframe();
+                request_manual_open();
                 continue;
             }
             let _ = TranslateMessage(&msg);
