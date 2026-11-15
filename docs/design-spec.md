@@ -233,14 +233,15 @@ app is running and "ripens" instead of a numeric countdown.
   petal is a strip that runs out from under the centre: narrowest where it
   leaves the disc, widest about three fifths of the way out, closed by a
   pointed-oval tip. Petal and centre meet with no gap between them. The white
-  petal base softens into a warm pink at the very tips — the daisy's
-  signature, distinguishing it from a generic field chamomile.
+  petal softens into a soft grey-blue over its outer two thirds, darkest at
+  the tip, so the outline holds on a light menu bar as well as a dark one;
+  the centre is a saturated golden yellow, large enough to read at 16 px.
 - The icon is one file, `assets/daisy.svg`, and the apps know nothing about
   petals beyond it. Its root viewBox is the canvas; each petal is an element
   with the id `petal-0` … `petal-15` (at any depth), `petal-0` at 12 o'clock
   and the rest clockwise, and `disc` is the centre, drawn after the petals so
   it covers their bases. Everything else in the file — the petal outlines,
-  the white-to-pink gradient, the small irregularities of a real head — is
+  the white-to-blue gradient, the small irregularities of a real head — is
   the drawing, and changing the icon means saving a new file with the same
   ids, not editing a renderer.
 - A fallen petal is removed by its id: its element, with everything inside
@@ -253,7 +254,7 @@ app is running and "ripens" instead of a numeric countdown.
   a falling petal is rasterised once per size and kept.
 - Just the daisy and its center. No frame, background, shadow, digits, or
   any text inside the icon.
-- The palette is the only place in the app with an accent color (pink tip +
+- The palette is the only place in the app with an accent color (blue tip +
   yellow center). The card and pill stay monochrome.
 - On macOS the daisy is drawn at the menu bar's icon size, 18 pt, with one
   bitmap per display density the bar comes in (18 px for 1x, 36 px for 2x),
