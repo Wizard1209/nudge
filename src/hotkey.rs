@@ -130,7 +130,7 @@ pub fn parse(input: &str) -> Result<Hotkey, ParseError> {
     }
 
     let mut modifiers: u8 = 0;
-    let mut key: Option<String> = None;
+    let mut key: Option<&str> = None;
 
     for segment in trimmed.split('+') {
         let mut tok = segment.trim();
@@ -158,43 +158,39 @@ pub fn parse(input: &str) -> Result<Hotkey, ParseError> {
             "SHIFT" => modifiers |= MOD_SHIFT,
             "WIN" | "SUPER" | "META" | "CMD" | "COMMAND" => modifiers |= MOD_WIN,
             _ => {
-                let canonical = canonicalize_key(&upper)
-                    .ok_or_else(|| ParseError::UnknownToken(tok.to_string()))?;
+                // Judged here, not only in `from_parts` below, so that an
+                // unknown token is refused by name even when a key was
+                // already seen: "Ctrl+A+Foo" is an unknown "Foo", not a
+                // second key.
+                if canonicalize_key(&upper).is_none() {
+                    return Err(ParseError::UnknownToken(tok.to_string()));
+                }
                 if key.is_some() {
                     return Err(ParseError::MultipleKeys);
                 }
-                key = Some(canonical);
+                key = Some(tok);
             }
         }
     }
 
     let key = key.ok_or(ParseError::MissingKey)?;
-    // §5: at least one modifier, except for the F-row. The registration call
-    // accepts a bare key on both platforms and then owns it machine-wide —
-    // this is the only place that says no.
-    if modifiers == 0 && !is_function_key(&key) {
-        return Err(ParseError::MissingModifier(key));
-    }
-    Ok(Hotkey {
-        modifiers,
-        key: HotkeyKey(key),
-    })
+    from_parts(modifiers, key)
 }
 
-/// Build a [`Hotkey`] from a modifier mask and one key token, applying the
-/// same canonicalisation and the same modifier rule [`parse`] does.
+/// Build a [`Hotkey`] from a modifier mask and one key token: canonicalise
+/// the key and apply §5's modifier rule.
 ///
-/// This is the door a *captured* press comes through, where [`parse`] is the
-/// door a *typed* string comes through. It exists so the platform never has to
-/// format a label and re-parse it to get a `Hotkey` — a round trip through
-/// text is a second grammar waiting to disagree with this one. Both entry
-/// points call [`canonicalize_key`] and both apply the F-row exception, and a
-/// test asserts they agree for every token the grammar knows.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // only the macOS edge source builds from key codes
+/// This is the door a *captured* press comes through, and the last step of
+/// the door a *typed* string comes through — [`parse`] tokenises and then ends
+/// here, so the platform never has to format a label and re-parse it to get a
+/// `Hotkey`, and there is one place that says what a key plus a mask may be.
 pub fn from_parts(modifiers: u8, token: &str) -> Result<Hotkey, ParseError> {
     let upper = token.to_ascii_uppercase();
     let key =
         canonicalize_key(&upper).ok_or_else(|| ParseError::UnknownToken(token.to_string()))?;
+    // §5: at least one modifier, except for the F-row. The registration call
+    // accepts a bare key on both platforms and then owns it machine-wide —
+    // this is the only place that says no.
     if modifiers == 0 && !is_function_key(&key) {
         return Err(ParseError::MissingModifier(key));
     }
@@ -235,18 +231,21 @@ pub fn all_key_tokens() -> Vec<String> {
     out
 }
 
+/// The `n` of an `F{n}` token (uppercased) when it is on the F-row the
+/// grammar knows, `F1`..`F24`; `None` for every other token.
+fn function_key_number(upper: &str) -> Option<u8> {
+    upper
+        .strip_prefix('F')
+        .and_then(|rest| rest.parse::<u8>().ok())
+        .filter(|n| (1..=24).contains(n))
+}
+
 /// Whether a canonical key token is one of `F1`..`F24` — the keys that type
 /// nothing, and so are the only ones allowed to stand alone (§5).
 fn is_function_key(key: &str) -> bool {
-    key.strip_prefix('F')
-        .and_then(|rest| rest.parse::<u8>().ok())
-        .is_some_and(|n| (1..=24).contains(&n))
+    function_key_number(key).is_some()
 }
 
-/// Return the canonical form of a key token (already uppercased) if we
-/// recognise it. None means "not a key we know how to register". Kept
-/// separate from `parse` so the platform layer can also use it for
-/// VK-mapping without re-parsing the whole string.
 /// The symbol caps, named by their unshifted legend (§5). One character each,
 /// so they are their own canonical token and their own label on both
 /// platforms. The shifted twin of a cap (`?` for `/`, `+` for `=`) is not a
@@ -281,18 +280,18 @@ const NAMED_KEYS: &[(&str, &[&str], &str, &str)] = &[
     ("DELETE",    &["DELETE", "DEL", "⌦"],            "Delete",    "⌦"),
 ];
 
+/// The canonical form of a key token (already uppercased) if we recognise
+/// it. `None` means "not a key we know how to register". Kept separate from
+/// [`parse`] so the platform layer can also use it for VK-mapping without
+/// re-parsing the whole string.
 fn canonicalize_key(upper: &str) -> Option<String> {
     if let Some(ch) = one_char(upper)
         && (ch.is_ascii_alphanumeric() || SYMBOL_KEYS.contains(ch))
     {
         return Some(upper.to_string());
     }
-    // Function keys F1..F24
-    if let Some(rest) = upper.strip_prefix('F')
-        && let Ok(n) = rest.parse::<u8>()
-        && (1..=24).contains(&n)
-    {
-        return Some(format!("F{}", n));
+    if let Some(n) = function_key_number(upper) {
+        return Some(format!("F{n}"));
     }
     NAMED_KEYS
         .iter()

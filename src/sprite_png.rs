@@ -42,7 +42,7 @@ impl std::error::Error for SpriteError {}
 /// What the header says: size, and whether the PNG can carry transparency
 /// at all (an alpha channel, or a `tRNS` chunk).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PngInfo {
+struct PngInfo {
     pub width: u32,
     pub height: u32,
     pub has_alpha: bool,
@@ -70,7 +70,7 @@ fn chunk_type(bytes: &[u8], at: usize) -> &[u8] {
 /// Signature, size and alpha from the 33-byte header, then a chunk walk for
 /// a `tRNS` up to the first `IDAT`. No CRC check; a truncated file is simply
 /// not a PNG.
-pub fn inspect_png(bytes: &[u8]) -> Result<PngInfo, SpriteError> {
+fn inspect_png(bytes: &[u8]) -> Result<PngInfo, SpriteError> {
     if bytes.len() < PNG_HEADER_LEN || bytes[..8] != PNG_SIGNATURE {
         return Err(SpriteError::NotPng);
     }
@@ -98,7 +98,7 @@ pub fn inspect_png(bytes: &[u8]) -> Result<PngInfo, SpriteError> {
 }
 
 /// True if any pixel of a 4-bytes-per-pixel bitmap has alpha 0.
-pub fn has_transparent_pixel(pixels: &[u8]) -> bool {
+fn has_transparent_pixel(pixels: &[u8]) -> bool {
     pixels.as_chunks::<4>().0.iter().any(|p| p[3] == 0)
 }
 
@@ -127,7 +127,7 @@ fn checked_pixels(
 /// "A PNG without a background": an alpha channel and at least one fully
 /// transparent pixel. `decode` returns a 4-bytes-per-pixel bitmap, or `None`
 /// when the image cannot be decoded.
-pub fn check_sprite_png(
+fn check_sprite_png(
     bytes: &[u8],
     decode: impl FnOnce(&[u8]) -> Option<Vec<u8>>,
 ) -> Result<[u32; 2], SpriteError> {
@@ -135,16 +135,20 @@ pub fn check_sprite_png(
 }
 
 /// Unmultiplied RGBA; a `tRNS` chunk is expanded into the alpha channel.
-pub fn decode_rgba(bytes: &[u8]) -> Option<(Vec<u8>, [u32; 2])> {
+/// Decoding only — the §10 check is [`load_sprite`]'s.
+pub fn decode_rgba(bytes: &[u8]) -> Option<DecodedSprite> {
     let img = image::load_from_memory_with_format(bytes, image::ImageFormat::Png)
         .ok()?
         .to_rgba8();
     let px = [img.width(), img.height()];
-    Some((img.into_raw(), px))
+    Some(DecodedSprite {
+        rgba: img.into_raw(),
+        px,
+    })
 }
 
 fn decode(bytes: &[u8]) -> Option<Vec<u8>> {
-    decode_rgba(bytes).map(|(rgba, _)| rgba)
+    decode_rgba(bytes).map(|sprite| sprite.rgba)
 }
 
 fn read_sprite(path: &Path) -> Result<Vec<u8>, SpriteError> {
@@ -154,11 +158,11 @@ fn read_sprite(path: &Path) -> Result<Vec<u8>, SpriteError> {
     fs::read(path).map_err(|_| SpriteError::NotFound(path.to_path_buf()))
 }
 
-/// The check the settings window runs on Save: the size on success, the
-/// reason otherwise.
-pub fn check_sprite_file(path: &Path) -> Result<[u32; 2], SpriteError> {
+/// The check the settings window runs on Save: the reason when the file is
+/// not a sprite, nothing otherwise.
+pub fn check_sprite_file(path: &Path) -> Result<(), SpriteError> {
     let bytes = read_sprite(path)?;
-    check_sprite_png(&bytes, decode)
+    check_sprite_png(&bytes, decode).map(|_size| ())
 }
 
 /// The sprite a config asks for: `None` while it is off, otherwise the
@@ -323,10 +327,6 @@ mod tests {
         assert!(!has_transparent_pixel(&[0, 0, 0, 1]));
     }
 
-    fn decode(bytes: &[u8]) -> Option<Vec<u8>> {
-        decode_rgba(bytes).map(|(rgba, _)| rgba)
-    }
-
     #[test]
     fn check_accepts_the_green_fixture() {
         assert_eq!(check_sprite_png(GREEN, decode), Ok([720, 430]));
@@ -425,7 +425,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("green.png");
         std::fs::write(&file, GREEN).unwrap();
-        assert_eq!(check_sprite_file(&file), Ok([720, 430]));
+        assert_eq!(check_sprite_file(&file), Ok(()));
     }
 
     #[test]
@@ -459,7 +459,7 @@ mod tests {
     /// green one is 720×430 with exactly two pixel values.
     #[test]
     fn the_green_fixture_is_a_test_fixture() {
-        let (rgba, px) = decode_rgba(GREEN).unwrap();
+        let DecodedSprite { rgba, px } = decode_rgba(GREEN).unwrap();
         assert_eq!(px, [720, 430]);
         let mut seen = std::collections::BTreeSet::new();
         for p in rgba.as_chunks::<4>().0 {

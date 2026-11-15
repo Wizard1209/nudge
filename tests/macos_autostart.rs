@@ -5,16 +5,13 @@
 //! `MacLaunchAgentProvider` does two things, and only one of them can be
 //! sandboxed:
 //!
-//!   * it writes `~/Library/LaunchAgents/com.wizard1209.nudge.plist`. That
-//!     path is derived through `dirs::home_dir()`, which on macOS reads `$HOME`
-//!     first — verified by observation, not assumed:
-//!     `probe_home_override_is_honoured` is that observation, and it fails
-//!     loudly rather than letting the rest of the file quietly write into the
-//!     developer's real `~/Library/LaunchAgents`. Overriding `HOME` therefore
-//!     moves the whole footprint into a temp dir, exactly as
-//!     `tests/macos_native.rs` does for the config and journal.
+//!   * it writes `~/Library/LaunchAgents/com.wizard1209.nudge.plist`. The
+//!     provider is built over an explicit home (`MacLaunchAgentProvider::in_home`),
+//!     so every test here builds one over a fresh temp dir and the whole file
+//!     footprint lands there — the developer's real `~/Library/LaunchAgents`
+//!     is never touched, and no test changes the process's `HOME`.
 //!
-//!   * it registers the job with `launchctl`. `HOME` has no effect on that:
+//!   * it registers the job with `launchctl`. The home has no effect on that:
 //!     launchd's per-user domain is keyed by uid, so there is no sandboxed
 //!     domain to bootstrap into and every `launchctl` call would hit the
 //!     developer's live login session. Every test here that would invoke
@@ -23,21 +20,10 @@
 //!     `nudge --autostart-selftest` instead: a deliberate manual act on the
 //!     real machine. Nothing that runs under a plain `cargo test` shells out
 //!     to `launchctl` at all.
-//!
-//! # `HOME` is process-global
-//!
-//! Cargo runs the tests in one binary on threads, so `set_var("HOME", …)`
-//! from one test is visible to all of them — and the provider reads `HOME`
-//! when it is *constructed*, not when the file is written. Under default
-//! parallelism that shows up as tests writing their plist into a sibling
-//! test's temp dir and then failing to find it. `HOME_LOCK` serialises the
-//! whole set-then-use region, so plain `cargo test` (what CI runs) is correct
-//! without `--test-threads=1`.
 
 #![cfg(target_os = "macos")]
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
 
 use nudge_web::autostart::{
     AutostartProvider, LAUNCH_AGENT_LABEL, MacLaunchAgentProvider, apply_autostart,
@@ -45,58 +31,39 @@ use nudge_web::autostart::{
 };
 use nudge_web::config::Config;
 
-/// Serialises every test that touches `HOME`. See the module header.
-static HOME_LOCK: Mutex<()> = Mutex::new(());
-
-/// Everything a sandboxed test holds: the lock (for as long as `HOME` is
-/// redirected), the temp dir (deleted on drop), and the plist path the
-/// provider is now expected to derive.
+/// Everything a sandboxed test holds: the temp home (deleted on drop), the
+/// plist path a provider over it must derive, and that provider.
 struct Sandbox {
-    _lock: MutexGuard<'static, ()>,
     home: tempfile::TempDir,
     plist: PathBuf,
+    provider: MacLaunchAgentProvider,
 }
 
-/// Point `HOME` at a fresh temp dir, under the lock.
-///
-/// `set_var` is `unsafe` in edition 2024 precisely because it is not
-/// thread-safe; `HOME_LOCK` is what makes it safe here. A failing test
-/// poisons the lock, and recovering the guard is right — the invariant being
-/// protected is "one test owns `HOME` at a time", which a panic does not
-/// break.
-fn sandboxed_home() -> Sandbox {
-    let lock = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+/// A provider over a fresh temp home, naming this test binary as the program.
+fn sandbox() -> Sandbox {
     let home = tempfile::tempdir().expect("temp HOME");
-    unsafe { std::env::set_var("HOME", home.path()) };
     let plist = launch_agent_plist_path(home.path(), LAUNCH_AGENT_LABEL);
+    let program = std::env::current_exe().expect("current_exe");
+    let provider = MacLaunchAgentProvider::in_home(home.path(), program);
     Sandbox {
-        _lock: lock,
         home,
         plist,
+        provider,
     }
 }
 
-/// The precondition every other test in this file rests on: `dirs` — and
-/// therefore the provider's path derivation — actually follows an overridden
-/// `HOME` on macOS. If this ever goes red, the rest of the file is writing
-/// into the developer's real `~/Library/LaunchAgents` and must not run.
+/// The precondition every other test in this file rests on: a provider built
+/// over a home derives its plist path under that home. If this ever goes red,
+/// the rest of the file is writing somewhere other than its sandbox.
 #[test]
-fn probe_home_override_is_honoured() {
-    let sb = sandboxed_home();
+fn a_provider_over_a_home_keeps_its_plist_under_it() {
+    let sb = sandbox();
 
-    assert_eq!(
-        dirs::home_dir().as_deref(),
-        Some(sb.home.path()),
-        "dirs::home_dir() ignored the overridden HOME — every other test here \
-         would write into the real ~/Library/LaunchAgents"
-    );
-
-    let provider = MacLaunchAgentProvider::for_current_exe().expect("provider");
-    assert_eq!(provider.plist_path(), sb.plist.as_path());
+    assert_eq!(sb.provider.plist_path(), sb.plist.as_path());
     assert!(
-        provider.plist_path().starts_with(sb.home.path()),
+        sb.provider.plist_path().starts_with(sb.home.path()),
         "plist path {} escaped the sandbox",
-        provider.plist_path().display()
+        sb.provider.plist_path().display()
     );
 }
 
@@ -104,9 +71,9 @@ fn probe_home_override_is_honoured() {
 /// filesystem: nothing → plist present and recognised as ours → nothing.
 #[test]
 fn plist_is_written_confirmed_and_removed() {
-    let sb = sandboxed_home();
+    let sb = sandbox();
     let plist = &sb.plist;
-    let provider = MacLaunchAgentProvider::for_current_exe().expect("provider");
+    let provider = &sb.provider;
 
     assert!(!plist.exists());
     assert!(
@@ -142,9 +109,9 @@ fn plist_is_written_confirmed_and_removed() {
 /// post-condition "no launch agent" already holds.
 #[test]
 fn removing_an_absent_plist_is_success() {
-    let sb = sandboxed_home();
+    let sb = sandbox();
     let plist = &sb.plist;
-    let provider = MacLaunchAgentProvider::for_current_exe().expect("provider");
+    let provider = &sb.provider;
 
     assert!(!plist.exists());
     assert!(
@@ -159,7 +126,7 @@ fn removing_an_absent_plist_is_success() {
 /// `is_enabled` would confirm a state we never wrote.
 #[test]
 fn a_foreign_plist_at_our_path_is_not_reported_as_enabled() {
-    let sb = sandboxed_home();
+    let sb = sandbox();
     let plist = &sb.plist;
     std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
     std::fs::write(
@@ -168,9 +135,8 @@ fn a_foreign_plist_at_our_path_is_not_reported_as_enabled() {
     )
     .unwrap();
 
-    let provider = MacLaunchAgentProvider::for_current_exe().expect("provider");
     assert!(
-        !provider.is_enabled().unwrap(),
+        !sb.provider.is_enabled().unwrap(),
         "a plist labelled com.example.other is not our agent"
     );
 }
@@ -179,10 +145,10 @@ fn a_foreign_plist_at_our_path_is_not_reported_as_enabled() {
 /// Ignored by default and it must stay that way, for two independent reasons:
 ///
 ///   * `enable()` bootstraps a real job into the developer's live login
-///     session — `HOME` cannot redirect launchd's per-user domain, which is
-///     keyed by uid — and `RunAtLoad` makes launchd execute the program named
-///     in the plist the moment it loads. Under a redirected `HOME` that
-///     program is the *test binary*.
+///     session — a sandboxed home cannot redirect launchd's per-user domain,
+///     which is keyed by uid — and `RunAtLoad` makes launchd execute the
+///     program named in the plist the moment it loads. Here that program is
+///     the *test binary*.
 ///   * `disable()` boots the label out of that same live domain, which
 ///     terminates a Nudge the developer actually has running.
 ///
@@ -190,13 +156,13 @@ fn a_foreign_plist_at_our_path_is_not_reported_as_enabled() {
 /// `nudge --autostart-selftest` is the supported way to exercise this path; it
 /// restores whatever state it found.
 #[test]
-#[ignore = "bootstraps into the live launchd gui/<uid> domain (HOME cannot redirect it), \
+#[ignore = "bootstraps into the live launchd gui/<uid> domain (a sandboxed home cannot redirect it), \
             RunAtLoad makes launchd exec the program, and bootout would kill a running \
             Nudge; use `nudge --autostart-selftest` instead"]
 fn launchctl_registration_round_trip() {
-    let sb = sandboxed_home();
+    let sb = sandbox();
     let plist = &sb.plist;
-    let provider = MacLaunchAgentProvider::for_current_exe().expect("provider");
+    let provider = &sb.provider;
 
     let initial = provider.is_enabled().expect("is_enabled");
     assert!(!initial, "test HOME should have started clean");
@@ -218,7 +184,7 @@ fn launchctl_registration_round_trip() {
     // claim a state the OS actually has.
     let mut config = Config::default();
     let saved = std::cell::RefCell::new(None::<Config>);
-    apply_autostart(&provider, &mut config, true, |c| {
+    apply_autostart(provider, &mut config, true, |c| {
         *saved.borrow_mut() = Some(c.clone());
         Ok(())
     })
@@ -227,7 +193,7 @@ fn launchctl_registration_round_trip() {
     assert!(config.autostart);
     assert_eq!(saved.borrow().as_ref().map(|c| c.autostart), Some(true));
 
-    apply_autostart(&provider, &mut config, false, |c| {
+    apply_autostart(provider, &mut config, false, |c| {
         *saved.borrow_mut() = Some(c.clone());
         Ok(())
     })

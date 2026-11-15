@@ -158,22 +158,31 @@ pub enum RegisterError {
     /// §5 accepts the combination but this platform has no key code for it —
     /// `F21`–`F24`. Refused rather than guessed: a guessed code registers
     /// happily and then never fires.
-    Unmappable(String),
+    Unbindable(String),
     /// An exclusive holder already has it. Only reachable from the probe;
     /// the app's own binding is never exclusive.
     Exclusive,
+    /// The call reported success and handed back no reference — nothing to
+    /// unregister later, so it is not treated as a binding.
+    NoReference,
     Os(OSStatus),
 }
 
 impl std::fmt::Display for RegisterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RegisterError::Unmappable(key) => write!(
+            RegisterError::Unbindable(key) => write!(
                 f,
-                "macOS has no key code for \"{key}\" — see design-spec §5"
+                "macOS cannot bind \"{key}\" — it has no key code for it (see design-spec §5)"
             ),
             RegisterError::Exclusive => {
                 write!(f, "another application holds this combination exclusively")
+            }
+            RegisterError::NoReference => {
+                write!(
+                    f,
+                    "RegisterEventHotKey returned success without a reference"
+                )
             }
             RegisterError::Os(status) => write!(f, "OSStatus {status}"),
         }
@@ -186,15 +195,41 @@ impl std::fmt::Display for RegisterError {
 /// ([`assess`]), and taking it here would let a detection concern cost the
 /// user their hotkey.
 pub fn register(hk: &Hotkey) -> Result<Registration, RegisterError> {
-    let code = keycode::keycode_for(hk.key.as_str())
-        .ok_or_else(|| RegisterError::Unmappable(hk.key.as_str().to_string()))?;
+    // Refuse before installing anything: a key with no code leaves no
+    // handler behind.
+    let key = carbon_key(hk).ok_or_else(|| unbindable(hk))?;
     install_press_handler();
-    let reference = register_raw(
-        code,
-        keycode::carbon_modifiers(hk.modifiers),
-        BINDING_ID,
-        K_EVENT_HOT_KEY_NO_OPTIONS,
-    )?;
+    bind_key(hk, key, BINDING_ID, K_EVENT_HOT_KEY_NO_OPTIONS)
+}
+
+/// The Carbon key code and modifier bits for `hk`; `None` when the platform
+/// has no key code for the key (`F21`–`F24`), which both [`bind`] and
+/// [`assess`] report as unbindable rather than guess.
+fn carbon_key(hk: &Hotkey) -> Option<(u16, u32)> {
+    let code = keycode::keycode_for(hk.key.as_str())?;
+    Some((code, keycode::carbon_modifiers(hk.modifiers)))
+}
+
+/// One registration under our signature: translate, call, wrap. The binding
+/// the app runs on, the probe's exclusive registration and the probe inside
+/// [`assess`] all come through here, so what a `Registration` is — and that
+/// dropping it is what unregisters — is decided once.
+fn bind(hk: &Hotkey, id: u32, options: u32) -> Result<Registration, RegisterError> {
+    let key = carbon_key(hk).ok_or_else(|| unbindable(hk))?;
+    bind_key(hk, key, id, options)
+}
+
+fn unbindable(hk: &Hotkey) -> RegisterError {
+    RegisterError::Unbindable(hk.key.as_str().to_string())
+}
+
+fn bind_key(
+    hk: &Hotkey,
+    (code, carbon_mods): (u16, u32),
+    id: u32,
+    options: u32,
+) -> Result<Registration, RegisterError> {
+    let reference = register_raw(code, carbon_mods, id, options)?;
     Ok(Registration {
         reference,
         hotkey: hk.clone(),
@@ -210,18 +245,7 @@ pub fn register(hk: &Hotkey) -> Result<Registration, RegisterError> {
 /// what decides whether source 2 of the conflict report is worth having.
 #[allow(dead_code)] // the probe is an example binary; the app never calls this
 pub fn register_exclusive(hk: &Hotkey) -> Result<Registration, RegisterError> {
-    let code = keycode::keycode_for(hk.key.as_str())
-        .ok_or_else(|| RegisterError::Unmappable(hk.key.as_str().to_string()))?;
-    let reference = register_raw(
-        code,
-        keycode::carbon_modifiers(hk.modifiers),
-        PROBE_ID,
-        K_EVENT_HOT_KEY_EXCLUSIVE,
-    )?;
-    Ok(Registration {
-        reference,
-        hotkey: hk.clone(),
-    })
+    bind(hk, PROBE_ID, K_EVENT_HOT_KEY_EXCLUSIVE)
 }
 
 fn register_raw(
@@ -246,7 +270,7 @@ fn register_raw(
     };
     match status {
         0 if !reference.is_null() => Ok(reference),
-        0 => Err(RegisterError::Os(0)),
+        0 => Err(RegisterError::NoReference),
         EVENT_HOT_KEY_EXISTS_ERR => Err(RegisterError::Exclusive),
         other => Err(RegisterError::Os(other)),
     }
@@ -334,8 +358,9 @@ pub enum HotkeyStatus {
     /// conflict because the settings window is a separate process and would
     /// otherwise report the app's own binding as somebody else's.
     HeldByNudge,
-    /// §5 accepts it but this platform cannot bind it at all.
-    Unregistrable(String),
+    /// §5 accepts it but this platform cannot bind it at all — the same
+    /// refusal [`register`] makes, reported before any binding is tried.
+    Unbindable(String),
 }
 
 impl std::fmt::Display for HotkeyStatus {
@@ -353,9 +378,7 @@ impl std::fmt::Display for HotkeyStatus {
                  application gets the keystroke first"
             ),
             HotkeyStatus::HeldByNudge => write!(f, "already bound by the running Nudge"),
-            HotkeyStatus::Unregistrable(key) => {
-                write!(f, "macOS cannot bind \"{key}\" (see design-spec §5)")
-            }
+            HotkeyStatus::Unbindable(key) => RegisterError::Unbindable(key.clone()).fmt(f),
         }
     }
 }
@@ -381,10 +404,9 @@ impl std::fmt::Display for HotkeyStatus {
 /// only the process that binds can ever report it: our own non-exclusive
 /// binding refuses our own probe, and is invisible to anybody else's.
 pub fn assess(hk: &Hotkey) -> HotkeyStatus {
-    let Some(code) = keycode::keycode_for(hk.key.as_str()) else {
-        return HotkeyStatus::Unregistrable(hk.key.as_str().to_string());
+    let Some((code, carbon_mods)) = carbon_key(hk) else {
+        return HotkeyStatus::Unbindable(hk.key.as_str().to_string());
     };
-    let carbon_mods = keycode::carbon_modifiers(hk.modifiers);
 
     // Source 1: the system's own table. First because it is the one that
     // costs nothing and catches ⌘Space.
@@ -393,13 +415,11 @@ pub fn assess(hk: &Hotkey) -> HotkeyStatus {
         return HotkeyStatus::HeldBySystem(row);
     }
 
-    // Source 2: an exclusive registration, immediately dropped.
-    match register_raw(code, carbon_mods, PROBE_ID, K_EVENT_HOT_KEY_EXCLUSIVE) {
-        Ok(reference) => {
-            let status = unsafe { UnregisterEventHotKey(reference) };
-            if status != 0 {
-                eprintln!("[nudge] conflict probe could not unregister: OSStatus {status}");
-            }
+    // Source 2: an exclusive registration, immediately dropped — and dropping
+    // is unregistering, the same way the app's own binding goes away.
+    match bind(hk, PROBE_ID, K_EVENT_HOT_KEY_EXCLUSIVE) {
+        Ok(probe) => {
+            drop(probe);
             HotkeyStatus::Free
         }
         Err(RegisterError::Exclusive) => {
@@ -444,12 +464,12 @@ mod tests {
             let hk = hotkey::parse(&format!("Ctrl+{token}")).expect("must parse");
             assert_eq!(
                 register(&hk).err(),
-                Some(RegisterError::Unmappable((*token).to_string())),
+                Some(RegisterError::Unbindable((*token).to_string())),
                 "{token}"
             );
             assert_eq!(
                 assess(&hk),
-                HotkeyStatus::Unregistrable((*token).to_string()),
+                HotkeyStatus::Unbindable((*token).to_string()),
                 "{token}"
             );
         }

@@ -1,5 +1,12 @@
 use std::time::Duration;
 
+use crate::config::{self, IntervalError};
+
+/// [`config::DEFAULT_INTERVAL_MINUTES`] as the popup's timer sees it.
+fn default_interval() -> Duration {
+    Duration::from_secs_f64(config::DEFAULT_INTERVAL_MINUTES * 60.0)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TriggerSource {
     Timer,
@@ -19,8 +26,9 @@ pub enum Action {
 /// The full plan for closing the popup, computed in one place from the spec
 /// §4 truth table. `decide_close` returns this; the caller (`NudgeApp::
 /// hide_popup`) is a thin executor that performs exactly the I/O the plan
-/// dictates — write the journal iff `write_journal`, reset the timer iff
-/// `reset_timer` is `Some`, clear the text fields iff `clear_form`.
+/// dictates — write the journal iff `journal_minutes` is `Some`,
+/// reset the timer iff `reset_timer` is `Some`, clear the text fields iff
+/// `clear_form`.
 ///
 /// Folding the four old `should_*` predicates + interval parsing into one
 /// outcome makes spec §4 a single coherent decision instead of four
@@ -30,10 +38,10 @@ pub enum Action {
 /// the right test surface.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CloseOutcome {
-    /// Append a journal entry for this close. Only Submit with at least one
-    /// non-empty text field; the empty-Submit path is "change interval
-    /// without journaling".
-    pub write_journal: bool,
+    /// Append a journal entry for this close, recording this many minutes as
+    /// the next interval. Only Submit with at least one non-empty text field;
+    /// the empty-Submit path is "change interval without journaling".
+    pub journal_minutes: Option<f64>,
     /// Reset the timer to this interval, or `None` to leave it ticking.
     /// `Some` whenever the popup was timer-fired (its deadline is already in
     /// the past — not rescheduling would refire instantly) or the user hit
@@ -71,7 +79,7 @@ pub fn decide_close(
             if action == Action::Submit {
                 return Err(e);
             }
-            Duration::from_secs(10 * 60)
+            default_interval()
         }
     };
 
@@ -79,38 +87,22 @@ pub fn decide_close(
     // reschedule; otherwise Submit (user chose a new interval) resets too.
     let reset = matches!(source, TriggerSource::Timer) || matches!(action, Action::Submit);
 
-    // Submit writes only if at least one free-text field is non-empty.
+    // Submit writes only if at least one free-text field is non-empty, and
+    // what it records is the interval the timer is about to be reset to.
     let write_journal =
         action == Action::Submit && !(doing.trim().is_empty() && bullshit.trim().is_empty());
 
     Ok(CloseOutcome {
-        write_journal,
+        journal_minutes: write_journal.then(|| interval.as_secs_f64() / 60.0),
         reset_timer: reset.then_some(interval),
         // Only Submit clears the form; Esc and Switch preserve it.
         clear_form: matches!(action, Action::Submit),
     })
 }
 
-/// Error returned by `parse_interval` when the user typed a number that is
-/// invalid per spec (`next_interval_minutes` must be finite and > 0).
-#[derive(Debug, Clone, PartialEq)]
-pub struct IntervalError {
-    pub input: String,
-}
-
-impl std::fmt::Display for IntervalError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Interval must be a positive number of minutes (got \"{}\")",
-            self.input
-        )
-    }
-}
-
 /// Parse the minutes field into a Duration.
 ///
-/// - Empty / whitespace / unparseable text → default of 10 minutes (user
+/// - Empty / whitespace / unparseable text → the default interval (user
 ///   didn't provide an explicit number, so we fall back silently).
 /// - Parsed number ≤ 0 or non-finite → `Err(IntervalError)` — the user
 ///   explicitly typed something invalid and should be told, not silently
@@ -119,9 +111,9 @@ impl std::fmt::Display for IntervalError {
 pub fn parse_interval(text: &str) -> Result<Duration, IntervalError> {
     let trimmed = text.trim();
     let Ok(minutes) = trimmed.parse::<f64>() else {
-        return Ok(Duration::from_secs(10 * 60));
+        return Ok(default_interval());
     };
-    if !minutes.is_finite() || minutes <= 0.0 {
+    if !config::valid_interval_minutes(minutes) {
         return Err(IntervalError {
             input: trimmed.to_string(),
         });
@@ -218,7 +210,7 @@ mod tests {
         assert_eq!(
             o,
             CloseOutcome {
-                write_journal: true,
+                journal_minutes: Some(5.0),
                 reset_timer: Some(five_min()),
                 clear_form: true,
             }
@@ -237,7 +229,7 @@ mod tests {
             Some(five_min()),
             "timer-fired Esc must reset"
         );
-        assert!(!o.write_journal);
+        assert_eq!(o.journal_minutes, None);
         assert!(!o.clear_form);
     }
 
@@ -246,7 +238,7 @@ mod tests {
         // Same structural reason as the Dismiss case.
         let o = decide_close(TriggerSource::Timer, Action::SwitchAway, "", "", "5").unwrap();
         assert_eq!(o.reset_timer, Some(five_min()));
-        assert!(!o.write_journal);
+        assert_eq!(o.journal_minutes, None);
         assert!(!o.clear_form);
     }
 
@@ -257,7 +249,7 @@ mod tests {
         // form is preserved.
         let o = decide_close(TriggerSource::Manual, Action::Dismiss, "doing", "x", "5").unwrap();
         assert_eq!(o.reset_timer, None, "manual Esc must not reschedule");
-        assert!(!o.write_journal);
+        assert_eq!(o.journal_minutes, None);
         assert!(!o.clear_form);
     }
 
@@ -265,7 +257,7 @@ mod tests {
     fn manual_switch_away_leaves_timer_alone() {
         let o = decide_close(TriggerSource::Manual, Action::SwitchAway, "doing", "", "5").unwrap();
         assert_eq!(o.reset_timer, None);
-        assert!(!o.write_journal);
+        assert_eq!(o.journal_minutes, None);
         assert!(!o.clear_form);
     }
 
@@ -275,7 +267,7 @@ mod tests {
         // explicitly chose a new interval.
         let o = decide_close(TriggerSource::Manual, Action::Submit, "doing", "", "5").unwrap();
         assert_eq!(o.reset_timer, Some(five_min()));
-        assert!(o.write_journal);
+        assert!(o.journal_minutes.is_some());
         assert!(o.clear_form);
     }
 
@@ -287,7 +279,7 @@ mod tests {
         for (doing, bullshit) in [("", ""), ("   ", "\t\n")] {
             let o =
                 decide_close(TriggerSource::Manual, Action::Submit, doing, bullshit, "5").unwrap();
-            assert!(!o.write_journal, "empty Submit must not write");
+            assert_eq!(o.journal_minutes, None, "empty Submit must not write");
             assert_eq!(o.reset_timer, Some(five_min()), "but it still resets");
             assert!(o.clear_form);
         }
@@ -298,7 +290,10 @@ mod tests {
         for (doing, bullshit) in [("x", ""), ("", "y"), ("x", "y")] {
             let o =
                 decide_close(TriggerSource::Manual, Action::Submit, doing, bullshit, "5").unwrap();
-            assert!(o.write_journal, "Submit with content must write");
+            assert!(
+                o.journal_minutes.is_some(),
+                "Submit with content must write"
+            );
         }
     }
 
@@ -321,7 +316,7 @@ mod tests {
         // timer-fired source that means it resets to 10 minutes.
         let o = decide_close(TriggerSource::Timer, Action::Dismiss, "doing", "", "-5").unwrap();
         assert_eq!(o.reset_timer, Some(Duration::from_secs(10 * 60)));
-        assert!(!o.write_journal);
+        assert_eq!(o.journal_minutes, None);
     }
 
     #[test]

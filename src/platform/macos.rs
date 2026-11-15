@@ -960,14 +960,9 @@ fn reload_config(state: &mut ReloadState) {
                 // the OS chose.
                 state.registered = None;
                 note_own_hotkey(None);
-                let (parsed, invalid) = new_cfg.resolved_hotkey();
-                if invalid {
-                    eprintln!(
-                        "[nudge] config reload: hotkey \"{to}\" is unparseable, leaving unbound"
-                    );
-                } else {
-                    state.registered = try_register_hotkey(&parsed);
-                }
+                state.registered = new_cfg
+                    .hotkey_or_unbound()
+                    .and_then(|hk| try_register_hotkey(&hk));
             }
             ConfigChange::Interval => eprintln!(
                 "[nudge] config reload: default_interval_minutes {} → {} \

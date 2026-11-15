@@ -19,9 +19,9 @@
 //! direct.
 
 use crate::autostart::{AutostartError, AutostartProvider, apply_autostart};
-use crate::config::{Config, ConfigError, SpriteConfig};
+use crate::config::{self, Config, ConfigError, IntervalError, SpriteConfig};
 use crate::hotkey::{self, Hotkey};
-use crate::recorder::{self, EdgeSource, Effect, Input, Recorder};
+use crate::recorder::{self, EdgeSource, Effect, Input, Recorder, Verdict};
 use eframe::egui;
 use std::path::Path;
 
@@ -99,23 +99,20 @@ impl SettingsForm {
         }
     }
 
-    /// Parse `interval_text` into a finite-positive f64, with the same
-    /// forgiveness as [`Config::resolved_interval_minutes`].
-    pub fn parsed_interval(&self) -> Result<f64, IntervalParseError> {
+    /// Parse `interval_text` into a valid interval, see
+    /// [`parse_interval_minutes`].
+    pub fn parsed_interval(&self) -> Result<f64, IntervalError> {
         parse_interval_minutes(&self.interval_text)
     }
 
     /// Whether any field differs from the file — what greys `Save` and gates
-    /// [`SettingsApp::save`] (§9).
+    /// [`SettingsApp::save`] (§9). "The file" is the form [`from_config`]
+    /// would build from the baseline, so there is one mapping from a config
+    /// to field text and this is a comparison against it, not a second copy.
+    ///
+    /// [`from_config`]: Self::from_config
     pub fn is_dirty(&self) -> bool {
-        self.hotkey != self.original.hotkey
-            || self.interval_text != format_interval(self.original.default_interval_minutes)
-            || self.autostart != self.original.autostart
-            || self.sprite_enabled != self.original.sprite.enabled
-            || self.sprite_path != self.original.sprite.path
-            || self.sprite_x_text != self.original.sprite.x.to_string()
-            || self.sprite_y_text != self.original.sprite.y.to_string()
-            || self.card_width_text != self.original.sprite.card_width.to_string()
+        *self != Self::from_config(self.original.clone())
     }
 
     /// The hotkey as last saved — what every cancelling path in the recorder
@@ -183,15 +180,7 @@ impl SettingsForm {
     /// user reads back is the stored text — the canonical hotkey spelling
     /// rather than however they typed it.
     pub fn mark_clean(&mut self, saved: Config) {
-        self.hotkey = saved.hotkey.clone();
-        self.interval_text = format_interval(saved.default_interval_minutes);
-        self.autostart = saved.autostart;
-        self.sprite_enabled = saved.sprite.enabled;
-        self.sprite_path = saved.sprite.path.clone();
-        self.sprite_x_text = saved.sprite.x.to_string();
-        self.sprite_y_text = saved.sprite.y.to_string();
-        self.card_width_text = saved.sprite.card_width.to_string();
-        self.original = saved;
+        *self = Self::from_config(saved);
     }
 
     /// Drive the autostart checkbox through the transactional rule. On
@@ -209,16 +198,11 @@ impl SettingsForm {
         F: FnOnce(&Config) -> Result<(), ConfigError>,
     {
         // The transactional rule mutates a Config-shaped buffer. We feed it
-        // a snapshot of "current persisted view" (interval + hotkey from the
-        // original baseline, autostart from the form's current bit) so a
+        // the baseline with only the autostart bit taken from the form, so a
         // successful toggle persists ONLY the autostart change — the other
         // fields aren't half-saved without the user clicking Save.
-        let mut staged = Config {
-            hotkey: self.original.hotkey.clone(),
-            default_interval_minutes: self.original.default_interval_minutes,
-            autostart: self.autostart,
-            sprite: self.original.sprite.clone(),
-        };
+        let mut staged = self.original.clone();
+        staged.autostart = self.autostart;
         apply_autostart(provider, &mut staged, desired, persist)?;
         // Provider + persist both succeeded; reflect into the form + baseline.
         self.autostart = desired;
@@ -232,7 +216,7 @@ impl SettingsForm {
 /// input verbatim.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SettingsValidationError {
-    Interval(IntervalParseError),
+    Interval(IntervalError),
     Hotkey(hotkey::ParseError),
     /// The sprite row's numbers; each carries the trimmed input.
     SpriteX(String),
@@ -263,37 +247,17 @@ impl std::fmt::Display for SettingsValidationError {
 
 impl std::error::Error for SettingsValidationError {}
 
-/// Parse error for the default-interval field — mirrors the spec rule from
-/// [`Config::resolved_interval_minutes`]: must be a finite, strictly positive
-/// number. Whitespace tolerated.
-#[derive(Debug, Clone, PartialEq)]
-pub struct IntervalParseError {
-    pub input: String,
-}
-
-impl std::fmt::Display for IntervalParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Interval must be a positive number of minutes (got: \"{}\")",
-            hotkey::echoed(&self.input)
-        )
-    }
-}
-
-impl std::error::Error for IntervalParseError {}
-
-/// Parse the literal interval text exactly the way the main app's
-/// `Config::resolved_interval_minutes` does: finite, > 0. Unlike the
-/// popup's interval parser, we DON'T fall back silently on empty / unparseable —
-/// the settings UI is the place to surface the error, not to paper over it.
-pub fn parse_interval_minutes(text: &str) -> Result<f64, IntervalParseError> {
+/// Parse the literal interval text against [`config::valid_interval_minutes`].
+/// Whitespace tolerated. Unlike the popup's interval parser, we DON'T fall
+/// back silently on empty / unparseable — the settings UI is the place to
+/// surface the error, not to paper over it.
+pub fn parse_interval_minutes(text: &str) -> Result<f64, IntervalError> {
     let trimmed = text.trim();
-    let n: f64 = trimmed.parse().map_err(|_| IntervalParseError {
+    let n: f64 = trimmed.parse().map_err(|_| IntervalError {
         input: trimmed.to_string(),
     })?;
-    if !n.is_finite() || n <= 0.0 {
-        return Err(IntervalParseError {
+    if !config::valid_interval_minutes(n) {
+        return Err(IntervalError {
             input: trimmed.to_string(),
         });
     }
@@ -404,17 +368,18 @@ impl HotkeyRecorder {
         }
         self.was_focused = focused;
 
-        let edges = match self.source.as_mut() {
-            Some(source) => source.drain(),
+        // Classified by the source, before the table sees it: whether a key
+        // is bindable is decided outside the table and handed in already
+        // answered.
+        let verdicts: Vec<Verdict> = match self.source.as_mut() {
+            Some(source) => source
+                .drain()
+                .into_iter()
+                .map(|e| source.classify(e))
+                .collect(),
             None => return effects,
         };
-        for edge in edges {
-            // Classified by the source, before the table sees it: whether a
-            // key is bindable is decided outside the table and handed in
-            // already answered.
-            let Some(verdict) = self.source.as_ref().map(|s| s.classify(edge)) else {
-                break;
-            };
+        for verdict in verdicts {
             effects.push(self.feed(&Input::Press(verdict)));
         }
         effects
@@ -591,10 +556,15 @@ impl SettingsApp {
     /// Apply everything the recorder produced this frame.
     fn apply_recorder_effects(&mut self, focused: bool) {
         for effect in self.recorder.pump(focused) {
-            if apply_effect(&effect, &mut self.form) {
-                // A capture answers whatever the banner was complaining about.
-                self.banner = None;
-            }
+            self.apply_recorder_effect(&effect);
+        }
+    }
+
+    /// The one place a recorder effect reaches the window: the field through
+    /// [`apply_effect`], and the banner, which a capture answers.
+    fn apply_recorder_effect(&mut self, effect: &Effect) {
+        if apply_effect(effect, &mut self.form) {
+            self.banner = None;
         }
     }
 
@@ -893,9 +863,7 @@ impl eframe::App for SettingsApp {
                             if ui.button(label).clicked() {
                                 let input = if armed { Input::Cancel } else { Input::Record };
                                 let effect = self.recorder.feed(&input);
-                                if effect == Effect::Restore {
-                                    self.form.hotkey = self.form.saved_hotkey().to_string();
-                                }
+                                self.apply_recorder_effect(&effect);
                             }
                         }
                     });
