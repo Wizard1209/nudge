@@ -334,7 +334,6 @@ impl NudgeApp {
     /// Send submissions to `sink` instead of this build's journal. The
     /// kittest tier's hook, so a Submit can be driven without writing into
     /// the developer's own Documents folder.
-    #[allow(dead_code)]
     pub fn with_journal_sink(mut self, sink: JournalSink) -> Self {
         self.journal = sink;
         self
@@ -352,7 +351,6 @@ impl NudgeApp {
     /// Paint already-decoded pixels over the card. The kittest tier's hook,
     /// where the sprite comes from fixture bytes rather than a file.
     #[cfg(not(target_arch = "wasm32"))]
-    #[allow(dead_code)]
     pub fn with_sprite(
         mut self,
         sprite: crate::sprite_png::DecodedSprite,
@@ -363,9 +361,8 @@ impl NudgeApp {
     }
 
     /// Park a sprite change as the config watcher would. The kittest tier's
-    /// hook; the bin crate's changes arrive through the platform seam.
+    /// hook; the app's own changes arrive through the platform seam.
     #[cfg(not(target_arch = "wasm32"))]
-    #[allow(dead_code)]
     pub fn set_pending_sprite(&mut self, cfg: SpriteConfig) {
         self.pending_sprite = Some(cfg);
     }
@@ -391,8 +388,7 @@ impl NudgeApp {
     }
 
     /// Lay the popup out on this screen instead of asking the window for
-    /// one. The kittest tier's hook; the bin crate has no caller.
-    #[allow(dead_code)]
+    /// one. The kittest tier's hook; the app reads its own screen.
     pub fn with_screen_geometry(mut self, geometry: ScreenGeometry) -> Self {
         self.geometry_override = Some(geometry);
         self

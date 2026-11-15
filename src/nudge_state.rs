@@ -70,7 +70,7 @@ pub fn decide_close(
     minutes_text: &str,
 ) -> Result<CloseOutcome, IntervalError> {
     // Parse the interval. A parse error means the user typed an explicit
-    // non-positive / non-finite number. On Submit that is a validation error
+    // number the interval rule refuses. On Submit that is a validation error
     // (caller keeps the popup open). On Esc / Switch we silently fall back to
     // the default so the popup still closes.
     let interval = match parse_interval(minutes_text) {
@@ -104,7 +104,8 @@ pub fn decide_close(
 ///
 /// - Empty / whitespace / unparseable text → the default interval (user
 ///   didn't provide an explicit number, so we fall back silently).
-/// - Parsed number ≤ 0 or non-finite → `Err(IntervalError)` — the user
+/// - A number [`config::valid_interval_minutes`] refuses — ≤ 0, NaN, or
+///   past [`config::MAX_INTERVAL_MINUTES`] → `Err(IntervalError)` — the user
 ///   explicitly typed something invalid and should be told, not silently
 ///   clamped (journal would otherwise record a number that doesn't match
 ///   what the user intended).
@@ -289,6 +290,22 @@ mod tests {
         let o = decide_close(TriggerSource::Timer, Action::Dismiss, "doing", "", "-5").unwrap();
         assert_eq!(o.reset_timer, Some(Duration::from_secs(10 * 60)));
         assert_eq!(o.journal_minutes, None);
+    }
+
+    #[test]
+    fn an_interval_too_large_to_arm_is_refused_on_submit_and_falls_back_on_leave() {
+        let err =
+            decide_close(TriggerSource::Timer, Action::Submit, "doing", "", "1e20").unwrap_err();
+        assert_eq!(err.input, "1e20");
+        for action in [Action::SwitchAway, Action::Dismiss] {
+            let o = decide_close(TriggerSource::Timer, action, "doing", "", "1e20").unwrap();
+            assert_eq!(
+                o.reset_timer,
+                Some(Duration::from_secs(10 * 60)),
+                "{action:?} closes on the 10-minute default"
+            );
+            assert_eq!(o.journal_minutes, None);
+        }
     }
 
     #[test]

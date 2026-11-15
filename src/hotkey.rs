@@ -35,14 +35,12 @@ impl Modifiers {
     /// The set as the number the recorded keystreams store
     /// (`tests/fixtures/keystreams`): written by the macOS recorder, read
     /// back by the replay tier.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub const fn bits(self) -> u8 {
         self.0
     }
 
     /// The inverse of [`bits`](Self::bits); `None` for a number with a bit
     /// that is not one of the four.
-    #[allow(dead_code)] // only the replay tier reads keystreams, through the lib
     pub const fn from_bits(bits: u8) -> Option<Self> {
         let all = Self::CTRL.0 | Self::ALT.0 | Self::SHIFT.0 | Self::WIN.0;
         if bits & !all == 0 {
@@ -264,9 +262,7 @@ pub fn from_parts(modifiers: Modifiers, token: &str) -> Result<Hotkey, ParseErro
 /// tables against each other is the defect this whole feature exists to
 /// remove, and a list nobody can enumerate is how that defect hides.
 ///
-/// Test-only — the `dead_code` allow is for the binary's copy of this module,
-/// where nothing calls it.
-#[allow(dead_code)]
+/// Test-only, so far.
 pub fn all_key_tokens() -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(80);
     for ch in 'A'..='Z' {

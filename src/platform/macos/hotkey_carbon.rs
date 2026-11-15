@@ -243,7 +243,6 @@ fn bind_key(
 /// process asks [`assess`] about it: that is the only way to find out whether
 /// the exclusive mode arbitrates across processes at all, and the answer is
 /// what decides whether source 2 of the conflict report is worth having.
-#[allow(dead_code)] // the probe is an example binary; the app never calls this
 pub fn register_exclusive(hk: &Hotkey) -> Result<Registration, RegisterError> {
     bind(hk, PROBE_ID, K_EVENT_HOT_KEY_EXCLUSIVE)
 }

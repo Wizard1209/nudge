@@ -421,7 +421,6 @@ impl SettingsHost {
     /// the tests, from every test thread at once. The browser build and the
     /// headless tests start from this and override what they need; the
     /// native binary has no caller.
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub fn headless(provider: Box<dyn AutostartProvider>) -> Self {
         Self {
             provider,
@@ -1202,6 +1201,20 @@ mod tests {
         for bad in ["", "abc", "0", "-5", "NaN", "Infinity"] {
             assert!(
                 parse_interval_minutes(bad).is_err(),
+                "{bad:?} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_interval_minutes_holds_the_interval_bound() {
+        assert_eq!(parse_interval_minutes("1000000").unwrap(), 1_000_000.0);
+        for bad in ["1000000.0000001", "2e17", "1e20"] {
+            assert_eq!(
+                parse_interval_minutes(bad),
+                Err(IntervalError {
+                    input: bad.to_string()
+                }),
                 "{bad:?} should be rejected"
             );
         }

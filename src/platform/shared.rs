@@ -331,6 +331,22 @@ mod tests {
     }
 
     #[test]
+    fn the_longest_interval_arms_and_counts_down() {
+        // What `NudgeApp::arm_timer` hands the platform for the longest
+        // interval the rule accepts, and what both backends then do with it.
+        let duration = crate::nudge_state::parse_interval("1000000").unwrap();
+        let now = Instant::now();
+        let countdown = ArmedTimer {
+            deadline: now + duration,
+            duration,
+        }
+        .observe(now);
+        assert_eq!(countdown.remaining, duration);
+        assert!(countdown.next_wake() <= Duration::from_secs(60));
+        assert_eq!(countdown.tooltip(), "~1000000 min");
+    }
+
+    #[test]
     fn wake_lands_on_the_next_tooltip_wording_change() {
         // 2m05s left: the tooltip flips "~3 min" → "~2 min" in 5s, the next
         // petal is further out, so the tooltip is what sets the alarm.

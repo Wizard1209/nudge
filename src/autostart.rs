@@ -421,13 +421,11 @@ impl MacLaunchAgentProvider {
 
     /// Where this provider writes its plist. Read by `tests/macos_autostart.rs`
     /// to check the sandbox; the binary reads it through [`Self::location`].
-    #[allow(dead_code)]
     pub fn plist_path(&self) -> &std::path::Path {
         &self.plist_path
     }
 
     /// The executable path this provider records in the plist. Same reader.
-    #[allow(dead_code)]
     pub fn program(&self) -> &std::path::Path {
         &self.program
     }

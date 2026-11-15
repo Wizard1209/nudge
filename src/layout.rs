@@ -31,7 +31,6 @@ pub const POPUP_SIZE: (u32, u32) = (520, 320);
 /// third, at natural eye level). Window height is irrelevant to the y anchor.
 // Only Windows still positions a box at creation; the macOS window is the
 // work area (`shield_layout`), and the tests tie the two paths together.
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub fn window_position(screen: (u32, u32), window: (u32, u32)) -> (i32, i32) {
     let (sw, sh) = (screen.0 as i32, screen.1 as i32);
     let ww = window.0 as i32;

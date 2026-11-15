@@ -70,7 +70,6 @@ pub const KEYS: &[(u16, &str)] = &[
 /// defines no `kVK_*` past `F20` and whether it would bind one has never been
 /// measured, so they are refused here rather than guessed at — a guessed code
 /// registers happily (registration validates nothing) and then never fires.
-#[allow(dead_code)] // named by the totality test; the app only reads `KEYS`
 pub const TOKENS_WITHOUT_A_KEY_CODE: &[&str] = &["F21", "F22", "F23", "F24"];
 
 /// Key codes that are not in the grammar but must be **refused by name**.

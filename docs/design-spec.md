@@ -207,10 +207,20 @@ answered.
 
 | Failure | Condition |
 |---|---|
-| Invalid interval | The minutes field is a number that is ≤ 0 or not finite. Empty, whitespace or non-numeric text is not a failure: it is not an explicit number, so it falls back to 10 minutes. |
+| Invalid interval | The minutes field is a number the interval rule below refuses: ≤ 0, not finite, or more than 1 000 000. Empty, whitespace or non-numeric text is not a failure: it is not an explicit number, so it falls back to 10 minutes. |
 | Journal write failed | The OS (or browser storage) refused the append. |
 
-`Leave` has no failure path: it never writes and never validates.
+The interval rule — more than 0 and at most 1 000 000 minutes — is the one
+rule for every interval the app takes in: this field, the settings window's
+Default interval (§9), `default_interval_minutes` in `config.json` and the
+journal's `next_interval_minutes`. The upper bound, a little under two
+years, is a fixed number rather than "whatever the clock can hold": that
+limit is different on every platform and on some shrinks with uptime, while
+a million minutes is longer than any interval anyone means and far short of
+all of them, so a number the rule accepts can always be armed.
+
+`Leave` has no failure path: it never writes and never validates. A minutes
+field the rule refuses sets the timer to the 10-minute default instead.
 
 ## 5. Tray (native builds only)
 
@@ -496,7 +506,7 @@ file while a hand-editing user reads the other.
 | Field | Type | What it does |
 |---|---|---|
 | Global hotkey | text | A string in the §5 grammar. See below. |
-| Default interval, with `min` after the field | text | A number, must be finite and positive; same rules as the minutes field of the popup in §3. |
+| Default interval, with `min` after the field | text | A number, more than 0 and at most 1 000 000; the interval rule of §4, the same as the popup's minutes field. |
 | Open at login / Launch with Windows | checkbox | Registers the app to launch at session start. The label names the platform's own mechanism, because that is what tells the user whether the setting applies to them. |
 | Sprite | checkbox, path with `Browse…`, X, Y, Card width | The `sprite` block of §10. X, Y and Card width must be whole numbers, Card width positive; an enabled sprite must pass the §10 PNG check or `Save` refuses it, naming the reason. |
 
@@ -639,7 +649,8 @@ consistency but have no active UI effect:
 
 - `default_interval_minutes` — the popup picks it up at startup and then
   owns its own "next nudge in" field; live-reload does not overwrite
-  whatever the user is currently typing.
+  whatever the user is currently typing. A value the §4 interval rule
+  refuses is not used: the popup starts on 10 minutes.
 - `autostart` — managed transactionally from the settings window (see
   above); the main app does not touch the registry and does not try to
   reconcile it against `config.json` — that is an adjacent concern.

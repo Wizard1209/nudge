@@ -88,7 +88,8 @@ fn validate_event(event: &JournalEvent) -> Result<(), JournalError> {
     }
     if !crate::config::valid_interval_minutes(event.next_interval_minutes) {
         return invalid(format!(
-            "next_interval_minutes must be > 0, got {}",
+            "next_interval_minutes must be {}, got {}",
+            crate::config::interval_rule_text(),
             event.next_interval_minutes
         ));
     }
@@ -299,6 +300,25 @@ mod tests {
         let mut e = test_event();
         e.next_interval_minutes = f64::NAN;
         assert!(validate_event(&e).is_err());
+    }
+
+    #[test]
+    fn rejects_an_interval_too_large_to_arm() {
+        for bad in [1e20, 2e17, crate::config::MAX_INTERVAL_MINUTES.next_up()] {
+            let mut e = test_event();
+            e.next_interval_minutes = bad;
+            let err = validate_event(&e).unwrap_err().to_string();
+            assert!(
+                err.contains("at most 1000000 minutes"),
+                "{bad}: the refusal names the bound, got {err:?}"
+            );
+        }
+        let mut e = test_event();
+        e.next_interval_minutes = crate::config::MAX_INTERVAL_MINUTES;
+        assert!(
+            validate_event(&e).is_ok(),
+            "the bound itself is an interval"
+        );
     }
 
     // === Serialization tests ===
