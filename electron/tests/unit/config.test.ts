@@ -1,5 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readdirSync } from "node:fs";
+import {
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  readFileSync,
+  mkdirSync,
+  existsSync,
+  readdirSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,6 +17,8 @@ import {
   diffConfig,
   normalize,
   DEFAULT_CONFIG,
+  configDirFor,
+  migrateLegacyConfig,
   type Config,
 } from "../../src/electron/config";
 
@@ -193,5 +203,61 @@ describe("saveConfig atomicity", () => {
     saveConfig(nested, DEFAULT_CONFIG);
     expect(existsSync(nested)).toBe(true);
     expect(readdirSync(join(dir, "a", "b"))).toEqual(["config.json"]);
+  });
+});
+
+describe("configDirFor", () => {
+  const docsNudge = "/docs/Nudge";
+  const appData = "/Users/u/Library/Application Support";
+
+  it("puts the config under appData/Nudge on darwin, not beside the journal", () => {
+    expect(configDirFor("darwin", docsNudge, appData)).toBe(join(appData, "Nudge"));
+  });
+
+  it("keeps the config beside the journal on win32", () => {
+    expect(configDirFor("win32", docsNudge, appData)).toBe(docsNudge);
+  });
+
+  it("keeps the config beside the journal on linux (the WSL bridge)", () => {
+    expect(configDirFor("linux", docsNudge, appData)).toBe(docsNudge);
+  });
+});
+
+describe("migrateLegacyConfig", () => {
+  let legacy: string;
+  let dest: string;
+
+  beforeEach(() => {
+    legacy = join(dir, "Documents", "Nudge", "config.json");
+    dest = join(dir, "AppSupport", "Nudge", "config.json");
+    mkdirSync(join(dir, "Documents", "Nudge"), { recursive: true });
+  });
+
+  it("moves the legacy file when the destination does not exist", () => {
+    writeFileSync(legacy, '{"hotkey":"Alt+J"}');
+    migrateLegacyConfig(legacy, dest);
+    expect(existsSync(legacy)).toBe(false);
+    expect(readFileSync(dest, "utf-8")).toBe('{"hotkey":"Alt+J"}');
+  });
+
+  it("leaves both files alone when the destination exists", () => {
+    writeFileSync(legacy, "old");
+    mkdirSync(join(dir, "AppSupport", "Nudge"), { recursive: true });
+    writeFileSync(dest, "new");
+    migrateLegacyConfig(legacy, dest);
+    expect(readFileSync(legacy, "utf-8")).toBe("old");
+    expect(readFileSync(dest, "utf-8")).toBe("new");
+  });
+
+  it("does nothing, and creates nothing, when there is no legacy file", () => {
+    migrateLegacyConfig(legacy, dest);
+    expect(existsSync(dest)).toBe(false);
+    expect(existsSync(join(dir, "AppSupport"))).toBe(false);
+  });
+
+  it("does nothing when legacy and destination are the same path", () => {
+    writeFileSync(legacy, "x");
+    migrateLegacyConfig(legacy, legacy);
+    expect(readFileSync(legacy, "utf-8")).toBe("x");
   });
 });
