@@ -86,20 +86,20 @@ describe("trayIcon / editElements", () => {
 });
 
 describe("trayIcon / buildTrayIcon", () => {
-  it("renders the full daisy at 36 px: opaque body, yellow centre, pink near the top tip", () => {
+  it("renders the full daisy at 36 px: opaque body, yellow centre, blue near the top tip", () => {
     const px = pixels(buildTrayIcon(0, 36), 36);
     expect(px.count((p) => p[3] > 0)).toBeGreaterThan(36 * 36 * 0.3);
     const [r, g, b, a] = px.at(18, 18);
     expect([a, r > 230, g > 170, b < 120]).toEqual([255, true, true, true]);
     // Near the tip of the top petal (petal-0, about 12 o'clock): the
-    // warmest pixel there is pink, not the white of the petal's body.
-    let pinkest = 0;
+    // bluest pixel there is blue, not the white of the petal's body.
+    let bluest = 0;
     for (let y = 1; y <= 4; y++)
       for (let x = 16; x <= 20; x++) {
-        const [pr, pg, , pa] = px.at(x, y);
-        if (pa > 128) pinkest = Math.max(pinkest, pr - pg);
+        const [pr, , pb, pa] = px.at(x, y);
+        if (pa > 128) bluest = Math.max(bluest, pb - pr);
       }
-    expect(pinkest).toBeGreaterThan(30);
+    expect(bluest).toBeGreaterThan(30);
   });
 
   it.each([16, 18, 20, 36])("renders a %i px square", (size) => {

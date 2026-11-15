@@ -455,9 +455,9 @@ mod tests {
         ((c + r * sin) as u32, (c - r * cos) as u32)
     }
 
-    fn is_petal([r, g, b, a]: [u8; 4]) -> bool {
-        // White to pink, mostly covered; the disc's yellow has b < 120.
-        a > 160 && r > 200 && b > 140 && g > 100
+    fn is_petal([_, _, b, a]: [u8; 4]) -> bool {
+        // White to blue at the tip, mostly covered; the disc's yellow has b < 120.
+        a > 160 && b > 140
     }
 
     #[test]
@@ -505,7 +505,7 @@ mod tests {
     }
 
     #[test]
-    fn full_daisy_at_36_px_is_yellow_white_and_pink() {
+    fn full_daisy_at_36_px_is_yellow_white_and_blue() {
         let size = 36;
         let buf = render(size, PETAL_COUNT, None);
         assert_eq!(buf.len(), (size * size * 4) as usize);
@@ -517,19 +517,19 @@ mod tests {
         );
 
         let top = petal_axes()[0];
-        // Just outside the disc (r 8.5 of 64): the white base.
+        // Just outside the disc (r 9 of 64): the white base.
         let (x, y) = on_axis(size, top, 11.0 / top.1);
         let [r, g, b, a] = rgba_at(&buf, size, x, y);
         assert!(
             a > 200 && r > 230 && g > 230 && b > 230,
             "base ({r},{g},{b},{a}) at ({x},{y})"
         );
-        // Near the tip: pink.
+        // Near the tip: blue.
         let (x, y) = on_axis(size, top, 0.93);
-        let [r, g, _, a] = rgba_at(&buf, size, x, y);
+        let [r, _, b, a] = rgba_at(&buf, size, x, y);
         assert!(
-            a > 60 && r as i32 - g as i32 > 40,
-            "tip ({r},{g},{a}) at ({x},{y})"
+            a > 60 && b as i32 - r as i32 > 40,
+            "tip ({r},{b},{a}) at ({x},{y})"
         );
     }
 
@@ -593,8 +593,8 @@ mod tests {
     #[test]
     fn render_output_is_pinned() {
         let cases: [(u8, u64); 2] = [
-            (PETAL_COUNT, 0xdc8f_39d5_9d0e_5cfc),
-            (9, 0x9bc4_aec4_7357_b9fa),
+            (PETAL_COUNT, 0x8318_abba_657c_1610),
+            (9, 0xd973_8681_fb22_92bd),
         ];
         for (petals, expected) in cases {
             let got = fnv1a64(&render(36, petals, None));
