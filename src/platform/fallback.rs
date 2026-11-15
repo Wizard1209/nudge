@@ -17,6 +17,8 @@ pub use super::shared::set_popup_visible;
 /// Nothing to wake: no thread and no tick acts on the shared state here.
 pub(super) fn wake() {}
 
+pub fn allow_evicted_file_downloads() {}
+
 pub fn start(_hotkey: Option<Hotkey>, _config_path: std::path::PathBuf, _initial: config::Config) {}
 
 pub fn start_on_event_loop(_ctx: &egui::Context) {}

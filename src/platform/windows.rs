@@ -40,6 +40,9 @@ pub(super) fn wake() {
     crate::tray_bridge::wake_tray_thread();
 }
 
+/// No-op: the launch-dependent policy the macOS arm overrides is macOS's own.
+pub fn allow_evicted_file_downloads() {}
+
 /// Start the OS-integration machinery: here, the tray thread, which also
 /// owns the global hotkey and the config-reload diff.
 pub fn start(hotkey: Option<Hotkey>, config_path: std::path::PathBuf, initial: config::Config) {
