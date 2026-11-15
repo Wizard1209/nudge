@@ -12,15 +12,18 @@ Release.
    commit you are about to tag.
 2. **Version** — `version` in `Cargo.toml` matches the tag (`v0.1.0` ↔
    `0.1.0`).
-3. **Windows-only ignored tests** — `scripts/native-tests.sh` runs
-   `native_render` (real window render + LLM vision judge); `perf_idle` (idle
-   CPU budget) is not in it and runs on its own:
-   `cargo test --target x86_64-pc-windows-gnu --test perf_idle -- --ignored --nocapture`.
-   These are local-only for now — CI has no Windows runner with a live
-   desktop. Skip only if they already ran on the same code recently.
+3. **Windows ignored tests** — run `scripts/native-tests-windows.sh`, which
+   drives `native_render` (real window render + LLM vision judge), `perf_idle`
+   (idle CPU budget) and `windows_native` (the popup's state machine, hotkey,
+   live reload and journal, observed from outside the app) inside the Windows
+   VM described in `docs/windows-vm.md`. Every test in them must pass. Pass
+   `GUEST_ENV="OPENAI_API_KEY=..."` for the vision judge to judge rather than
+   skip. On a Windows machine instead of a Mac, `scripts/native-tests.sh` runs
+   `native_render` from WSL. These stay out of CI: no hosted runner has a live
+   desktop.
 4. **macOS ignored tests** — run `scripts/native-tests-macos.sh`, which drives
    `tests/macos_native.rs` inside a Tart guest. Every test in it must pass.
-   They stay out of CI for the same reason as the Windows pair, plus one of
+   They stay out of CI for the same reason as the Windows ones, plus one of
    their own: Screen Recording and Accessibility are baked into a runner
    image ahead of time and cannot be granted during a job.
 

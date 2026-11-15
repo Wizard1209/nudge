@@ -45,6 +45,23 @@ SUITE=macos_hotkey_native scripts/native-tests-macos.sh
 GUEST_ENV="OPENAI_API_KEY=$OPENAI_API_KEY" scripts/native-tests-macos.sh -- vision_judge
 ```
 
+### Run the Windows native tests
+```sh
+# Drives tests/native_render.rs, tests/perf_idle.rs and tests/windows_native.rs
+# (the §4 state machine observed from outside: popup, timer, hotkey, live
+# reload, journal) against a real desktop inside a Windows 11 ARM64 VM under
+# UTM: cross-builds here, ships the binaries in, runs them in the logged-in
+# session, brings the logs back to target/native-tests-windows/<timestamp>/.
+# Building the VM, and what the runner assumes about it: docs/windows-vm.md.
+scripts/native-tests-windows.sh
+scripts/native-tests-windows.sh -- live_reload       # a filter for each binary
+SUITE=windows_native scripts/native-tests-windows.sh # one suite
+REPO=../other-checkout scripts/native-tests-windows.sh
+
+# On a Windows machine's own desktop, from WSL, the render tier alone:
+scripts/native-tests.sh
+```
+
 ### Build WASM (for e2e tests only)
 ```sh
 # Builds both popup (index.html) and settings (settings.html) into e2e/dist.

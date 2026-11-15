@@ -9,22 +9,21 @@
 //! which handles transparency and devicePixelRatio correctly — neither native
 //! regression reproduces there.
 //!
-//! This test launches the real binary, locates its window, and SCREEN-captures
-//! the window rect PLUS a margin of surrounding desktop via GDI
-//! `BitBlt`+`GetDIBits`. Screen capture reads the DWM-composited output, so it
-//! works for wgpu/GPU content (unlike `PrintWindow`, which returns black for
-//! GPU surfaces). It then asserts:
+//! This test screen-captures the monitor via GDI `BitBlt`+`GetDIBits` once
+//! before launching the real binary and once with its popup up. Screen capture
+//! reads the DWM-composited output, so it works for GPU content (unlike
+//! `PrintWindow`, which returns black for GPU surfaces). Spec §1 is what it
+//! holds the popup to:
 //!
-//!   1. The card is centered and fills most of the window (catches the
-//!      top-left/scale regression). Needs the test process per-monitor-DPI-aware
-//!      to read true physical pixels.
-//!   2. The window is transparent: each corner *inside* the window matches the
-//!      desktop *just outside* it. A correctly transparent overlay shows the
-//!      same thing inside and outside its edge; the broken opaque-black window
-//!      shows black inside while the desktop outside is unchanged. Comparing
-//!      inside-vs-outside (rather than inside-vs-absolute-black) makes this
-//!      independent of the wallpaper — even a solid black wallpaper won't
-//!      false-fail it, because then inside and outside are both black and equal.
+//!   1. The window covers the monitor's work area.
+//!   2. The card is about 480 pt wide, horizontally centred on the monitor,
+//!      with its top edge at 25% of the monitor's height plus 80 pt (catches
+//!      the top-left/scale regression). Needs the test process
+//!      per-monitor-DPI-aware to read true physical pixels.
+//!   3. The window is transparent: away from the card, the pixels with the
+//!      popup up match the desktop captured before it. The broken opaque-black
+//!      window shows black there over an unchanged desktop. Comparing against
+//!      the same spot before launch keeps this independent of the wallpaper.
 //!
 //! Why `#[ignore]`: needs a real desktop/GPU, Windows-only, and pops a window.
 //!
@@ -38,29 +37,27 @@ mod common;
 
 use std::path::PathBuf;
 use std::process::{Child, Command};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC,
-    DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, HGDIOBJ, ReleaseDC, SRCCOPY,
+    DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, GetMonitorInfoW, HGDIOBJ,
+    MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint, MonitorFromWindow, ReleaseDC, SRCCOPY,
     SelectObject,
 };
 use windows::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
 use windows::Win32::UI::HiDpi::{
-    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetWindowRect, GetWindowThreadProcessId, IsWindowVisible,
 };
 use windows::core::BOOL;
 
-/// Spawn → popup-visible settle. eframe init + tray bootstrap + foregrounding.
-const STARTUP_WAIT: Duration = Duration::from_secs(4);
-
-/// Desktop margin captured around the window, for the inside-vs-outside
-/// transparency comparison. The window is screen-centered, so there's room.
-const MARGIN: i32 = 24;
+/// Spawn → popup on screen and placed. eframe init + tray bootstrap +
+/// foregrounding, under x64 emulation in the test VM.
+const STARTUP_WAIT: Duration = Duration::from_secs(8);
 
 /// A pixel counts as "card" when its brightness is in this band: above the
 /// opaque-black surround / transparent-over-dark (~0) and the card's own dark
@@ -69,17 +66,34 @@ const MARGIN: i32 = 24;
 const CARD_BRIGHTNESS_LO: u32 = 12;
 const CARD_BRIGHTNESS_HI: u32 = 95;
 
-/// How much darker an inside-corner must be than the desktop just outside it
-/// before we call the window opaque. Opaque-black-over-bright-wallpaper gives a
-/// large gap; a transparent window (inside == outside) gives ~0.
-const OPAQUE_DARKER_THAN_OUTSIDE: f64 = 25.0;
+/// How much darker a spot of the window may be than the desktop was there
+/// before launch before we call the window opaque. Opaque-black-over-bright-
+/// wallpaper gives a large gap; a transparent window gives ~0.
+const OPAQUE_DARKER_THAN_DESKTOP: f64 = 25.0;
 
-/// Spawn nudge.exe with a throwaway config, wait for its popup, screen-capture
-/// the window plus `margin` px of surrounding desktop, kill the process, and
-/// return `(capture, window_w, window_h)`. Sets the test process per-monitor
-/// DPI-aware FIRST so GetWindowRect + the capture report true physical pixels
-/// (without it everything is virtualized to logical coords, hiding scale bugs).
-fn spawn_and_capture(margin: i32) -> (Capture, i32, i32) {
+/// Spec §2: the card is about 480 pt wide; §1: its top sits 80 pt below a
+/// quarter of the monitor's height.
+const CARD_WIDTH_PT: f64 = 480.0;
+const CARD_TOP_BELOW_QUARTER_PT: f64 = 80.0;
+
+/// The monitor before and after launch, and where the popup's window and its
+/// monitor are, all in physical pixels of the virtual screen.
+struct Shot {
+    before: Capture,
+    after: Capture,
+    monitor: RECT,
+    work: RECT,
+    window: RECT,
+    /// Physical pixels per point on the popup's monitor.
+    scale: f64,
+}
+
+/// Spawn nudge.exe with a throwaway config, wait for its popup to cover the
+/// work area (spec §1), screen-capture the monitor, and kill the process.
+/// Sets the test process per-monitor DPI-aware FIRST so GetWindowRect + the
+/// capture report true physical pixels (without it everything is virtualized
+/// to logical coords, hiding scale bugs).
+fn spawn_and_capture() -> Shot {
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
@@ -88,13 +102,13 @@ fn spawn_and_capture(margin: i32) -> (Capture, i32, i32) {
     // moment it loses focus again. On a desktop the user is actively using,
     // any keystroke or click between our spawn and our screenshot kills the
     // window, so a single fixed sleep is a coin flip (see the 2026-05-25
-    // autopsy). Instead: poll for the window and capture the instant it has
-    // had one settle-beat to paint, re-verify it survived the capture, and
+    // autopsy). Instead: poll for the placed window and capture the instant it
+    // has had one settle-beat to paint, re-verify it survived the capture, and
     // retry the whole spawn a bounded number of times.
     const ATTEMPTS: u32 = 4;
     for attempt in 1..=ATTEMPTS {
-        match try_spawn_and_capture(margin) {
-            Some(res) => return res,
+        match try_spawn_and_capture() {
+            Some(shot) => return shot,
             None => eprintln!(
                 "[native-render] attempt {attempt}/{ATTEMPTS}: popup hid before capture \
                  (focus-loss switch-away, spec §4) or never appeared — respawning"
@@ -107,10 +121,12 @@ fn spawn_and_capture(margin: i32) -> (Capture, i32, i32) {
     );
 }
 
-/// One spawn → poll-for-window → settle → capture → verify-survived cycle.
-/// `None` means the popup was never found within `STARTUP_WAIT` or vanished
-/// around the capture (focus-loss race) — caller decides whether to retry.
-fn try_spawn_and_capture(margin: i32) -> Option<(Capture, i32, i32)> {
+/// One spawn → poll-for-placed-window → settle → capture → verify-survived
+/// cycle. `None` means the popup was never found within `STARTUP_WAIT` or
+/// vanished around the capture (focus-loss race) — caller decides whether to
+/// retry. A window that is found but never covers the work area is a spec §1
+/// failure and panics here.
+fn try_spawn_and_capture() -> Option<Shot> {
     let tmp = tempfile::tempdir().expect("tempdir");
     let config_path = tmp.path().join("config.json");
     std::fs::write(
@@ -118,6 +134,9 @@ fn try_spawn_and_capture(margin: i32) -> Option<(Capture, i32, i32)> {
         r#"{"hotkey":"Ctrl+Shift+Space","default_interval_minutes":10.0}"#,
     )
     .expect("write throwaway config");
+
+    let (primary, _) = monitor_of(None);
+    let before = Capture::of(primary);
 
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_nudge"));
     let child = Command::new(&exe)
@@ -128,31 +147,50 @@ fn try_spawn_and_capture(margin: i32) -> Option<(Capture, i32, i32)> {
     let mut guard = ChildGuard(child);
     let pid = guard.0.id();
 
-    // Poll until the popup window exists (frame #1 is forced by the app, so
-    // this is fast — the budget only covers slow cold starts).
-    let poll_start = std::time::Instant::now();
-    let rect = loop {
-        if let Some((_hwnd, rect)) = find_app_window(pid) {
-            break rect;
-        }
-        if poll_start.elapsed() > STARTUP_WAIT {
-            let _ = guard.0.kill();
-            let _ = guard.0.wait();
+    // The window is created as a box and laid out over the work area once the
+    // app has its first frame (spec §1); what it looks like before that is not
+    // the popup this test is about.
+    let poll_start = Instant::now();
+    let mut seen = None;
+    let (hwnd, window, monitor, work) = loop {
+        if let Some((hwnd, rect)) = find_app_window(pid) {
+            let first = *seen.get_or_insert((poll_start.elapsed(), rect));
+            let (monitor, work) = monitor_of(Some(hwnd));
+            if covers(rect, work) {
+                if first.1 != rect {
+                    eprintln!(
+                        "[render-diag] window first seen at {:?} as {}x{}, placed over the work \
+                         area {:?} after spawn",
+                        first.0,
+                        first.1.right - first.1.left,
+                        first.1.bottom - first.1.top,
+                        poll_start.elapsed()
+                    );
+                }
+                break (hwnd, rect, monitor, work);
+            }
+            assert!(
+                poll_start.elapsed() < STARTUP_WAIT,
+                "the popup window is {:?}, the work area of its monitor {work:?}: spec §1 says the \
+                 window covers the work area while visible",
+                rect
+            );
+        } else if poll_start.elapsed() > STARTUP_WAIT {
             return None;
         }
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(20));
     };
+    // Monitor captured before launch must be the popup's.
+    assert_eq!(
+        (monitor.left, monitor.top, monitor.right, monitor.bottom),
+        (primary.left, primary.top, primary.right, primary.bottom),
+        "the popup opened on another monitor than the primary"
+    );
+    let scale = unsafe { GetDpiForWindow(hwnd) } as f64 / 96.0;
 
     // One settle-beat so the first frames finish painting, then capture.
     std::thread::sleep(Duration::from_millis(400));
-    let w = (rect.right - rect.left).max(1);
-    let h = (rect.bottom - rect.top).max(1);
-    let cap = Capture::take(
-        rect.left - margin,
-        rect.top - margin,
-        w + 2 * margin,
-        h + 2 * margin,
-    );
+    let after = Capture::of(monitor);
 
     // If the window didn't survive to this point, the pixels above may be
     // desktop-after-hide rather than the popup — discard and retry.
@@ -162,34 +200,44 @@ fn try_spawn_and_capture(margin: i32) -> Option<(Capture, i32, i32)> {
     let _ = guard.0.kill();
     let _ = guard.0.wait();
 
-    survived.then_some((cap, w, h))
+    survived.then_some(Shot {
+        before,
+        after,
+        monitor,
+        work,
+        window,
+        scale,
+    })
 }
 
-#[test]
-#[ignore = "needs a real desktop+GPU, Windows-only, pops a window; run via --ignored"]
-fn native_window_renders_card_centered_and_transparent() {
-    let (cap, w, h) = spawn_and_capture(MARGIN);
+/// The window covers `work`, give or take the strip an auto-hidden taskbar
+/// keeps on screen.
+fn covers(window: RECT, work: RECT) -> bool {
+    const STRIP: i32 = 2;
+    (window.left - work.left).abs() <= STRIP
+        && (window.top - work.top).abs() <= STRIP
+        && (window.right - work.right).abs() <= STRIP
+        && (window.bottom - work.bottom).abs() <= STRIP
+}
 
-    // Debug: dump the raw capture so we can eyeball what the brightness-band
-    // heuristic is actually measuring. Set NUDGE_DUMP_PNG to a path.
-    if let Ok(path) = std::env::var("NUDGE_DUMP_PNG") {
-        cap.save_png(&path);
-        eprintln!("[render-diag] wrote capture to {path}");
-    }
-
-    // The window occupies [MARGIN, MARGIN+w) x [MARGIN, MARGIN+h) in `cap`.
-    let win_x0 = MARGIN as usize;
-    let win_y0 = MARGIN as usize;
-    let (wu, hu) = (w as usize, h as usize);
-
-    // --- locate the card: bounding box of in-band pixels within the window ---
-    let (mut min_x, mut min_y, mut max_x, mut max_y) = (wu, hu, 0usize, 0usize);
-    let mut card_px = 0u64;
-    for y in 0..hu {
-        for x in 0..wu {
-            let b = cap.brightness(win_x0 + x, win_y0 + y);
-            if (CARD_BRIGHTNESS_LO..=CARD_BRIGHTNESS_HI).contains(&b) {
-                card_px += 1;
+/// The bounding box of card pixels in `shot.after`, in its own coordinates:
+/// inside the popup's window, in the card's brightness band, and changed from
+/// the desktop beneath. Outside the window is the taskbar, whose widgets
+/// change on their own.
+fn card_bbox(shot: &Shot) -> Option<(usize, usize, usize, usize, u64)> {
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (usize::MAX, usize::MAX, 0usize, 0usize);
+    let mut n = 0u64;
+    let (ox, oy) = (shot.monitor.left, shot.monitor.top);
+    let xs = (shot.window.left - ox).max(0) as usize
+        ..((shot.window.right - ox) as usize).min(shot.after.w);
+    let ys = (shot.window.top - oy).max(0) as usize
+        ..((shot.window.bottom - oy) as usize).min(shot.after.h);
+    for y in ys {
+        for x in xs.clone() {
+            let b = shot.after.brightness(x, y);
+            let was = shot.before.brightness(x, y);
+            if (CARD_BRIGHTNESS_LO..=CARD_BRIGHTNESS_HI).contains(&b) && b.abs_diff(was) > 10 {
+                n += 1;
                 min_x = min_x.min(x);
                 min_y = min_y.min(y);
                 max_x = max_x.max(x);
@@ -197,68 +245,96 @@ fn native_window_renders_card_centered_and_transparent() {
             }
         }
     }
-    assert!(
-        card_px > (wu * hu / 200) as u64,
-        "found almost no card pixels ({card_px}) in the {w}x{h} window — popup not visible / not rendering?"
-    );
+    (n > 0).then_some((min_x, min_y, max_x, max_y, n))
+}
 
-    let card_w = (max_x - min_x + 1) as f64;
-    let card_cx = (min_x + max_x) as f64 / 2.0;
-    let card_cy = (min_y + max_y) as f64 / 2.0;
-    let width_frac = card_w / w as f64;
-    let cx_off = (card_cx - w as f64 / 2.0).abs() / w as f64;
-    let cy_off = (card_cy - h as f64 / 2.0).abs() / h as f64;
+#[test]
+#[ignore = "needs a real desktop+GPU, Windows-only, pops a window; run via --ignored"]
+fn native_window_renders_card_centered_and_transparent() {
+    let shot = spawn_and_capture();
 
-    // --- transparency: inside-corner vs just-outside-the-window ---
-    // For each corner, sample a patch just inside the window edge and a patch in
-    // the desktop margin just outside it. Transparent → inside ≈ outside.
-    // Opaque-black-over-wallpaper → inside much darker than outside.
-    const P: usize = 12; // patch size
-    let inside = [
-        (win_x0 + 6, win_y0 + 6),                   // TL
-        (win_x0 + wu - 6 - P, win_y0 + 6),          // TR
-        (win_x0 + 6, win_y0 + hu - 6 - P),          // BL
-        (win_x0 + wu - 6 - P, win_y0 + hu - 6 - P), // BR
-    ];
-    let outside = [
-        (2, 2),
-        (win_x0 + wu + 2, 2),
-        (2, win_y0 + hu + 2),
-        (win_x0 + wu + 2, win_y0 + hu + 2),
-    ];
-    let mut max_gap = f64::MIN; // most-opaque corner (outside brighter than inside)
-    for i in 0..4 {
-        let inside_mean = cap.patch_mean(inside[i].0, inside[i].1, P);
-        let outside_mean = cap.patch_mean(outside[i].0, outside[i].1, P);
-        let gap = outside_mean - inside_mean;
-        max_gap = max_gap.max(gap);
-        eprintln!(
-            "[render-diag] corner[{i}] inside={inside_mean:.1} outside={outside_mean:.1} gap={gap:.1}"
-        );
+    // Debug: dump the raw capture so we can eyeball what the brightness-band
+    // heuristic is actually measuring. Set NUDGE_DUMP_PNG to a path.
+    if let Ok(path) = std::env::var("NUDGE_DUMP_PNG") {
+        shot.after.save_png(&path);
+        eprintln!("[render-diag] wrote capture to {path}");
     }
 
-    eprintln!("[render-diag] window {w}x{h}, card bbox=({min_x},{min_y})-({max_x},{max_y})");
+    let (mw, mh) = (shot.after.w as f64, shot.after.h as f64);
+    let s = shot.scale;
+    let w = &shot.window;
     eprintln!(
-        "[render-diag] card width_frac={width_frac:.2} (want >=0.55), center off x={cx_off:.2} y={cy_off:.2} (want small)"
-    );
-    eprintln!(
-        "[render-diag] worst corner opacity gap={max_gap:.1} (want < {OPAQUE_DARKER_THAN_OUTSIDE})"
+        "[render-diag] monitor {mw}x{mh}, work area {:?}, window {}x{} at ({},{}), scale {s}",
+        shot.work,
+        w.right - w.left,
+        w.bottom - w.top,
+        w.left,
+        w.top
     );
 
-    // 1. Card fills + centers (catches the top-left/scale regression).
-    assert!(
-        width_frac >= 0.55,
-        "card spans only {width_frac:.2} of window width — expected it to fill most of the window (scale/layout regression?)"
+    // --- locate the card ---
+    let Some((min_x, min_y, max_x, max_y, card_px)) = card_bbox(&shot) else {
+        panic!("found no card pixels on the monitor — popup not visible / not rendering?");
+    };
+    let card_w = (max_x - min_x + 1) as f64;
+    let card_cx = (min_x + max_x) as f64 / 2.0;
+    let want_top = mh * 0.25 + CARD_TOP_BELOW_QUARTER_PT * s;
+    eprintln!(
+        "[render-diag] card bbox=({min_x},{min_y})-({max_x},{max_y}), {card_px} px; \
+         width {card_w} (want {:.0}), centre x {card_cx} (want {:.1}), top {min_y} (want {want_top:.0})",
+        CARD_WIDTH_PT * s,
+        mw / 2.0 - 0.5
     );
     assert!(
-        cx_off < 0.12 && cy_off < 0.18,
-        "card center is off ({cx_off:.2},{cy_off:.2} of window) — expected centered, not shoved into a corner"
+        card_px > (CARD_WIDTH_PT * s * 60.0 * s) as u64,
+        "found almost no card pixels ({card_px}) — popup not visible / not rendering?"
     );
 
-    // 2. Transparent surround (catches the opaque-black window), wallpaper-independent.
+    // 1. Card at its size and place (catches the top-left/scale regression).
     assert!(
-        max_gap < OPAQUE_DARKER_THAN_OUTSIDE,
-        "a window corner is {max_gap:.1} darker than the desktop just outside it — the transparent overlay rendered as an opaque block (lost transparency)"
+        (card_w - CARD_WIDTH_PT * s).abs() <= 0.06 * CARD_WIDTH_PT * s,
+        "card is {card_w} px wide, expected about {:.0} ({CARD_WIDTH_PT} pt at scale {s}) — scale/layout regression?",
+        CARD_WIDTH_PT * s
+    );
+    assert!(
+        (card_cx - (mw / 2.0 - 0.5)).abs() <= 0.01 * mw,
+        "card centre x {card_cx} is off the monitor's centre {:.1} — expected centred, not shoved into a corner",
+        mw / 2.0 - 0.5
+    );
+    assert!(
+        (min_y as f64 - want_top).abs() <= 8.0 * s,
+        "card top {min_y} is not at 25% of the monitor height + {CARD_TOP_BELOW_QUARTER_PT} pt ({want_top:.0})"
+    );
+
+    // 2. Transparent surround (catches the opaque-black window), wallpaper-independent:
+    // spots of the window far from the card look like the desktop did before launch.
+    const P: usize = 12; // patch size
+    let (ox, oy) = (shot.monitor.left, shot.monitor.top);
+    let (wx0, wy0) = ((w.left - ox) as usize, (w.top - oy) as usize);
+    let (wx1, wy1) = ((w.right - ox) as usize, (w.bottom - oy) as usize);
+    let spots = [
+        (wx0 + 6, wy0 + 6),             // TL
+        (wx1 - 6 - P, wy0 + 6),         // TR
+        (wx0 + 6, wy1 - 6 - P),         // BL
+        (wx1 - 6 - P, wy1 - 6 - P),     // BR
+        ((wx0 + wx1) / 2, wy1 - 6 - P), // bottom middle, under the card
+    ];
+    let mut max_gap = f64::MIN;
+    for (i, &(x, y)) in spots.iter().enumerate() {
+        let now = shot.after.patch_mean(x, y, P);
+        let was = shot.before.patch_mean(x, y, P);
+        let gap = was - now;
+        max_gap = max_gap.max(gap);
+        eprintln!(
+            "[render-diag] spot[{i}] with popup={now:.1} desktop before={was:.1} gap={gap:.1}"
+        );
+    }
+    eprintln!(
+        "[render-diag] worst spot opacity gap={max_gap:.1} (want < {OPAQUE_DARKER_THAN_DESKTOP})"
+    );
+    assert!(
+        max_gap < OPAQUE_DARKER_THAN_DESKTOP,
+        "a spot of the window is {max_gap:.1} darker than the desktop was there — the transparent overlay rendered as an opaque block (lost transparency)"
     );
 }
 
@@ -293,8 +369,16 @@ Respond with ONLY a JSON object, no prose: \
 #[test]
 #[ignore = "needs a real desktop+GPU, Windows-only, pops a window, and an OPENAI_API_KEY + network; run via --ignored"]
 fn native_window_passes_llm_vision_judge() {
-    // No margin: hand the judge just the card window itself.
-    let (cap, _w, _h) = spawn_and_capture(0);
+    // Hand the judge the card and a margin of what is around it.
+    let shot = spawn_and_capture();
+    let (x0, y0, x1, y1, _) = card_bbox(&shot).expect("no card pixels to judge");
+    const MARGIN: usize = 40;
+    let cap = shot.after.crop(
+        x0.saturating_sub(MARGIN),
+        y0.saturating_sub(MARGIN),
+        (x1 + MARGIN).min(shot.after.w - 1),
+        (y1 + MARGIN).min(shot.after.h - 1),
+    );
 
     // Dump exactly what the judge sees, when NUDGE_DUMP_PNG is set.
     if let Ok(path) = std::env::var("NUDGE_DUMP_PNG") {
@@ -322,6 +406,21 @@ struct Capture {
 }
 
 impl Capture {
+    fn of(r: RECT) -> Capture {
+        Capture::take(r.left, r.top, r.right - r.left, r.bottom - r.top)
+    }
+
+    /// The inclusive pixel rectangle `(x0,y0)-(x1,y1)` of this capture.
+    fn crop(&self, x0: usize, y0: usize, x1: usize, y1: usize) -> Capture {
+        let (w, h) = (x1 - x0 + 1, y1 - y0 + 1);
+        let mut px = Vec::with_capacity(w * h * 4);
+        for y in y0..=y1 {
+            let row = (y * self.w + x0) * 4;
+            px.extend_from_slice(&self.px[row..row + w * 4]);
+        }
+        Capture { px, w, h }
+    }
+
     fn take(left: i32, top: i32, w: i32, h: i32) -> Capture {
         let (wu, hu) = (w.max(1) as usize, h.max(1) as usize);
         let mut px = vec![0u8; wu * hu * 4];
@@ -453,6 +552,26 @@ extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
         }
         BOOL(1) // keep enumerating
     }
+}
+
+/// The monitor `hwnd` is on (the primary for `None`): its whole rect and its
+/// work area.
+fn monitor_of(hwnd: Option<HWND>) -> (RECT, RECT) {
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    unsafe {
+        let m = match hwnd {
+            Some(h) => MonitorFromWindow(h, MONITOR_DEFAULTTOPRIMARY),
+            None => MonitorFromPoint(Default::default(), MONITOR_DEFAULTTOPRIMARY),
+        };
+        assert!(
+            GetMonitorInfoW(m, &mut info).as_bool(),
+            "GetMonitorInfoW failed"
+        );
+    }
+    (info.rcMonitor, info.rcWork)
 }
 
 /// The largest visible top-level window owned by `pid` — the eframe popup.
