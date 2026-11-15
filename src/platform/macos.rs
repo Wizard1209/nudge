@@ -76,6 +76,7 @@ use crate::screen_pick;
 
 mod activation;
 mod backdrop;
+mod dataless;
 pub mod front_window;
 pub mod hotkey_carbon;
 pub mod key_monitor;
@@ -86,6 +87,7 @@ pub mod symbolic;
 use activation::{hand_back_activation, remember_front_application};
 use backdrop::hide_card_backdrop;
 pub use backdrop::sync_card_backdrop;
+pub use dataless::allow_evicted_file_downloads;
 pub use settings_lock::acquire_settings_singleton;
 use status_item::StatusItem;
 

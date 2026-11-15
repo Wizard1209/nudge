@@ -138,6 +138,11 @@ fn main() -> eframe::Result {
     use app::NudgeApp;
     use eframe::egui;
 
+    // Before anything opens a file: the journal under Documents may be an
+    // iCloud file evicted to the cloud, and on macOS whether this process may
+    // download it depends on how it was started — see the function.
+    platform::allow_evicted_file_downloads();
+
     // Manual QA hook — runs the autostart lifecycle against the real OS
     // (registry on Windows, LaunchAgent on macOS) and exits before any GUI /
     // config work. A no-op stub on platforms with no real provider.
