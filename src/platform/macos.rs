@@ -173,6 +173,7 @@ struct ReloadState {
 /// Record what the OS integration should be, to be built once the event loop
 /// owns the main thread. Called from `main` before `eframe::run_native`.
 pub fn start(hotkey: Option<Hotkey>, config_path: PathBuf, initial: config::Config) {
+    shared::record_config_path(config_path.clone());
     *PENDING_START.lock().unwrap() = Some((hotkey, config_path, initial));
 }
 

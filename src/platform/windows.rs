@@ -46,6 +46,7 @@ pub fn allow_evicted_file_downloads() {}
 /// Start the OS-integration machinery: here, the tray thread, which also
 /// owns the global hotkey and the config-reload diff.
 pub fn start(hotkey: Option<Hotkey>, config_path: std::path::PathBuf, initial: config::Config) {
+    super::shared::record_config_path(config_path.clone());
     crate::tray_bridge::spawn_tray_thread(hotkey, config_path, initial);
 }
 

@@ -420,13 +420,25 @@ impl ConfigFile {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
+        Self::from_args_or(args, || {
+            migrate_legacy_config(&resolve_default_config_path())
+        })
+    }
+
+    /// [`Self::from_args`] with the default resolution — the legacy move
+    /// included — passed in, so a test can see whether it runs.
+    pub(crate) fn from_args_or<I, S>(args: I, default: impl FnOnce() -> std::path::PathBuf) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
         match parse_config_arg(args) {
             Some(path) => Self {
                 path,
                 overridden: true,
             },
             None => Self {
-                path: migrate_legacy_config(&resolve_default_config_path()),
+                path: default(),
                 overridden: false,
             },
         }
@@ -979,6 +991,39 @@ mod tests {
             assert!(
                 legacy.exists(),
                 "nothing was migrated, so nothing was moved"
+            );
+        }
+
+        #[test]
+        fn an_explicit_config_never_runs_the_move() {
+            // The settings process is started with the main process's path.
+            // Here that is the legacy file, as after a failed move: if the
+            // settings process moved it now, the two would run on different
+            // files.
+            let docs = tempfile::tempdir().unwrap();
+            let support = tempfile::tempdir().unwrap();
+            let legacy = seed(docs.path(), Some(r#"{"hotkey":"Alt+J"}"#));
+            let destination = seed(support.path(), None);
+            let given = legacy.to_str().unwrap();
+            let move_it = || move_config_file(&legacy, &destination, real_rename);
+
+            for args in [
+                vec![
+                    "--settings".to_owned(),
+                    "--config".to_owned(),
+                    given.to_owned(),
+                ],
+                vec!["--settings".to_owned(), format!("--config={given}")],
+            ] {
+                let file = ConfigFile::from_args_or(&args, move_it);
+                assert_eq!(file.path(), legacy, "{args:?}");
+                file.seed_default_if_missing().unwrap();
+            }
+
+            assert!(legacy.exists(), "the legacy file was moved");
+            assert!(
+                !destination.exists(),
+                "something was written at the destination"
             );
         }
 

@@ -497,7 +497,8 @@ hand-editing user reads the other. Where a rename is refused — Documents on
 another drive or a network share — the move copies the file, checks the copy
 and only then removes the original. If the move fails, that session runs on
 the old file and the next start tries again; no default is written to the new
-location, since its existence would end the retries.
+location, since its existence would end the retries. Only the app moves the
+file: the settings window opens whichever file the app is running on.
 
 ### Opening
 

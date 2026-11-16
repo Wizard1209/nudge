@@ -91,8 +91,9 @@ fn run_settings_ui() -> eframe::Result {
         return Ok(());
     };
 
-    // Load config from the same file the main process uses: a saved change
-    // reaches the running app through its file watcher.
+    // Load config from the same file the main process uses — it passes that
+    // file as `--config`, so nothing is resolved or moved here: a saved
+    // change reaches the running app through its file watcher.
     let config_file = config::ConfigFile::from_args(std::env::args().skip(1));
     let (cfg, err) = config_file.load();
     if let Some(e) = err {
