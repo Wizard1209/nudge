@@ -21,11 +21,11 @@
   let nextMinutes = $state("10");
   let visible = $state(true);
 
-  // Spec §4: first launch behaves like the timer just fired (initial
-  // trigger_source = "timer"). It flips to "manual" when the user opens
-  // the popup themselves (tray/pill click) and back to "timer" when the
-  // timer fires. Esc/Switch consult this to decide whether they have to
-  // restart the timer (only when the timer is already at zero).
+  // Spec §4: the browser mode opens on the popup as if the timer had just
+  // fired (initial trigger_source = "timer"). It flips to "manual" when the
+  // user opens the popup themselves (tray/pill click) and back to "timer"
+  // when the timer fires. Esc/Switch consult this to decide whether they
+  // have to restart the timer (only when the timer is already at zero).
   let triggerSource: TriggerSource = $state(INITIAL_TRIGGER_SOURCE);
 
   // Browser-mode timer state

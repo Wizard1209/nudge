@@ -19,13 +19,13 @@ describe("restartsTimer (§4 close → restart decision)", () => {
   });
 });
 
-// Spec §4: the first popup shown on launch behaves as if the timer had just
-// fired, so ANY way of closing it (Enter, Esc, Switch) arms the timer for the
-// next cycle. The bug: the app opened it as "manual", so Esc/Switch on the very
-// first popup left it with no timer at all — "the timer dies after first
+// Spec §4: the browser mode opens on a popup that behaves as if the timer had
+// just fired, so ANY way of closing it (Enter, Esc, Switch) arms the timer for
+// the next cycle. The bug: the app opened it as "manual", so Esc/Switch on the
+// very first popup left it with no timer at all — "the timer dies after first
 // launch".
-describe("first-launch rule (§4)", () => {
-  it("treats the first popup as a timer fire, so Esc/Switch arm the timer", () => {
+describe("browser mode's opening popup (§4)", () => {
+  it("treats the opening popup as a timer fire, so Esc/Switch arm the timer", () => {
     expect(INITIAL_TRIGGER_SOURCE).toBe("timer");
     expect(restartsTimer("dismiss", INITIAL_TRIGGER_SOURCE)).toBe(true);
     expect(restartsTimer("switch", INITIAL_TRIGGER_SOURCE)).toBe(true);
