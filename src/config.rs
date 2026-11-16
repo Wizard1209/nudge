@@ -793,6 +793,23 @@ mod tests {
         );
     }
 
+    /// The Windows root is Roaming AppData, not Documents, where OneDrive's
+    /// Known Folder Move would sync it between machines. `%APPDATA%` is read
+    /// straight from the environment so the oracle is not the code under test.
+    #[cfg(windows)]
+    #[test]
+    fn windows_config_lives_in_roaming_appdata() {
+        let path = resolve_default_config_path();
+        let appdata = std::path::PathBuf::from(std::env::var_os("APPDATA").expect("%APPDATA%"));
+        assert_eq!(path, appdata.join("Nudge").join("config.json"));
+        let docs = dirs::document_dir().expect("Documents known folder");
+        assert!(
+            !path.starts_with(&docs),
+            "config must not live under Documents, got {}",
+            path.display()
+        );
+    }
+
     #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
     mod migration_tests {
         use super::*;

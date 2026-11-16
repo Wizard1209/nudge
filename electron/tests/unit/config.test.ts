@@ -207,19 +207,9 @@ describe("saveConfig atomicity", () => {
 });
 
 describe("configDirFor", () => {
-  const docsNudge = "/docs/Nudge";
-  const appData = "/Users/u/Library/Application Support";
-
-  it("puts the config under appData/Nudge on darwin, not beside the journal", () => {
-    expect(configDirFor("darwin", docsNudge, appData)).toBe(join(appData, "Nudge"));
-  });
-
-  it("keeps the config beside the journal on win32", () => {
-    expect(configDirFor("win32", docsNudge, appData)).toBe(docsNudge);
-  });
-
-  it("keeps the config beside the journal on linux (the WSL bridge)", () => {
-    expect(configDirFor("linux", docsNudge, appData)).toBe(docsNudge);
+  it("puts the config under appData/Nudge, not beside the journal", () => {
+    const appData = "C:\\Users\\u\\AppData\\Roaming";
+    expect(configDirFor(appData)).toBe(join(appData, "Nudge"));
   });
 });
 
