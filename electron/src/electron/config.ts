@@ -1,5 +1,5 @@
 import { app } from "electron";
-import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { type Config, DEFAULT_CONFIG, normalize } from "../shared/config";
@@ -54,17 +54,72 @@ export function configDirFor(appData: string): string {
 }
 
 /**
- * Move a config left in the old location to the new one, once. Never copies;
- * if the destination exists, or there is nothing to move, nothing is touched.
+ * Move a config left in `<Documents>/Nudge` to `destination`, once, and
+ * return the file to run against. If the destination exists, or there is
+ * nothing to move, nothing is touched.
+ *
+ * A rename is tried first. Where it is refused — Documents on another drive
+ * or a network share — the file is copied next to the destination, checked
+ * byte for byte, renamed into place, and only then is the original removed.
+ * If any step fails, nothing is left at the destination and the legacy path
+ * is returned: this session runs on the old file and the next start tries
+ * again. `rename` is a parameter so a refused rename can be tested.
  */
-export function migrateLegacyConfig(legacy: string, destination: string): void {
-  if (legacy === destination || existsSync(destination) || !existsSync(legacy)) return;
+export function migrateLegacyConfig(
+  legacy: string,
+  destination: string,
+  rename: (from: string, to: string) => void = renameSync,
+): string {
+  if (legacy === destination || existsSync(destination) || !existsSync(legacy)) {
+    return destination;
+  }
   try {
     mkdirSync(dirname(destination), { recursive: true });
-    renameSync(legacy, destination);
+    try {
+      rename(legacy, destination);
+    } catch {
+      moveByCopy(legacy, destination, rename);
+    }
     console.error(`[nudge] moved config ${legacy} -> ${destination}`);
+    return destination;
   } catch (err) {
-    console.error(`[nudge] could not move config ${legacy} -> ${destination}: ${err}`);
+    console.error(
+      `[nudge] could not move config ${legacy} -> ${destination}: ${err}; using it where it is`,
+    );
+    return legacy;
+  }
+}
+
+/**
+ * Copy, verify, rename into place, then remove the original. If the original
+ * cannot be removed, the destination is already the live file (the next start
+ * finds it and leaves the original alone), so that is logged, not undone.
+ */
+function moveByCopy(
+  legacy: string,
+  destination: string,
+  rename: (from: string, to: string) => void,
+): void {
+  const bytes = readFileSync(legacy);
+  const tmp = destination + ".tmp";
+  try {
+    writeFileSync(tmp, bytes);
+    if (!readFileSync(tmp).equals(bytes)) throw new Error("the copy differs from the original");
+    rename(tmp, destination);
+  } catch (err) {
+    try {
+      rmSync(tmp, { force: true });
+    } catch {
+      // Whatever occupies the temp path is not ours to remove.
+    }
+    throw err;
+  }
+  try {
+    rmSync(legacy);
+  } catch (err) {
+    console.error(
+      `[nudge] config copied to ${destination}, but ${legacy} could not be removed (${err}); it is no longer read`,
+    );
   }
 }
 
@@ -73,7 +128,8 @@ let resolvedPath: string | null = null;
 /**
  * Absolute path to config.json (see {@link configDirFor}). On first call,
  * moves a config left in `<Documents>/Nudge` to the new location, so the move
- * happens before anything reads the file.
+ * happens before anything reads the file. If the move fails, this is the
+ * legacy path for the rest of the session.
  */
 export function getConfigPath(): string {
   if (resolvedPath) return resolvedPath;
@@ -82,7 +138,6 @@ export function getConfigPath(): string {
   const dir = process.env.NUDGE_DIR
     ? nudgeDir
     : configDirFor(app.getPath("appData"));
-  resolvedPath = join(dir, "config.json");
-  if (dir !== nudgeDir) migrateLegacyConfig(join(nudgeDir, "config.json"), resolvedPath);
+  resolvedPath = migrateLegacyConfig(join(nudgeDir, "config.json"), join(dir, "config.json"));
   return resolvedPath;
 }
