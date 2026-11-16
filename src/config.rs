@@ -316,27 +316,34 @@ fn legacy_config_path() -> Option<std::path::PathBuf> {
 /// outcome we wanted; on any other failure the caller carries on with an
 /// empty destination and gets a fresh default, which is recoverable by hand.
 #[cfg(not(target_arch = "wasm32"))]
-fn migrate_legacy_config(destination: &std::path::Path) {
-    let Some(legacy) = legacy_config_path() else {
-        return;
-    };
-    move_config_file(&legacy, destination);
+fn migrate_legacy_config(destination: &std::path::Path) -> std::path::PathBuf {
+    match legacy_config_path() {
+        Some(legacy) => {
+            move_config_file(&legacy, destination, |from, to| std::fs::rename(from, to))
+        }
+        None => destination.to_path_buf(),
+    }
 }
 
-/// The body of [`migrate_legacy_config`], with both paths passed in so it can
-/// be tested without a synthetic HOME.
+/// The body of [`migrate_legacy_config`], with both paths and the rename step
+/// passed in so it can be tested without a synthetic HOME or a second drive.
+/// Returns the file to run against.
 #[cfg(not(target_arch = "wasm32"))]
-fn move_config_file(legacy: &std::path::Path, destination: &std::path::Path) {
+fn move_config_file(
+    legacy: &std::path::Path,
+    destination: &std::path::Path,
+    rename: impl Fn(&std::path::Path, &std::path::Path) -> std::io::Result<()>,
+) -> std::path::PathBuf {
     if legacy == destination || destination.exists() || !legacy.exists() {
-        return;
+        return destination.to_path_buf();
     }
     if let Some(parent) = destination.parent()
         && let Err(e) = std::fs::create_dir_all(parent)
     {
         eprintln!("[nudge] cannot create {}: {e}", parent.display());
-        return;
+        return destination.to_path_buf();
     }
-    match std::fs::rename(legacy, destination) {
+    match rename(legacy, destination) {
         Ok(()) => eprintln!(
             "[nudge] moved config {} → {}",
             legacy.display(),
@@ -348,6 +355,7 @@ fn move_config_file(legacy: &std::path::Path, destination: &std::path::Path) {
             destination.display()
         ),
     }
+    destination.to_path_buf()
 }
 
 /// The config file a process runs against, resolved once at startup: the
@@ -376,14 +384,10 @@ impl ConfigFile {
                 path,
                 overridden: true,
             },
-            None => {
-                let path = resolve_default_config_path();
-                migrate_legacy_config(&path);
-                Self {
-                    path,
-                    overridden: false,
-                }
-            }
+            None => Self {
+                path: migrate_legacy_config(&resolve_default_config_path()),
+                overridden: false,
+            },
         }
     }
 
@@ -809,6 +813,96 @@ mod tests {
             path
         }
 
+        fn real_rename(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+            std::fs::rename(from, to)
+        }
+
+        /// What Windows answers when the two folders are on different drives
+        /// (os error 17), and Unix when they are on different volumes.
+        fn cross_device() -> std::io::Error {
+            std::io::Error::from(std::io::ErrorKind::CrossesDevices)
+        }
+
+        /// Everything in `dir`, recursively, so a stray temp file shows up.
+        fn files_under(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+            let mut found = Vec::new();
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    found.extend(files_under(&path));
+                } else {
+                    found.push(path);
+                }
+            }
+            found
+        }
+
+        #[test]
+        fn a_rename_refused_across_drives_moves_by_copying() {
+            let docs = tempfile::tempdir().unwrap();
+            let support = tempfile::tempdir().unwrap();
+            let body = r#"{"hotkey":"Alt+J","default_interval_minutes":25}"#;
+            let legacy = seed(docs.path(), Some(body));
+            let destination = seed(support.path(), None);
+            let refuse_the_original = |from: &std::path::Path, to: &std::path::Path| {
+                if from == legacy {
+                    Err(cross_device())
+                } else {
+                    real_rename(from, to)
+                }
+            };
+
+            let in_use = move_config_file(&legacy, &destination, refuse_the_original);
+
+            assert_eq!(in_use, destination);
+            assert!(
+                !legacy.exists(),
+                "a copy that keeps its source is not a move"
+            );
+            assert_eq!(std::fs::read_to_string(&destination).unwrap(), body);
+            assert_eq!(files_under(support.path()), vec![destination.clone()]);
+        }
+
+        #[test]
+        fn a_failed_move_runs_on_the_legacy_file_and_seeds_nothing() {
+            // Every rename fails, so the copy cannot be put into place either.
+            // Writing a default to the empty destination would make the next
+            // start skip the move for good and the user's settings would be
+            // lost; running on the old file keeps them.
+            let docs = tempfile::tempdir().unwrap();
+            let support = tempfile::tempdir().unwrap();
+            let body = r#"{"hotkey":"Alt+J"}"#;
+            let legacy = seed(docs.path(), Some(body));
+            let destination = seed(support.path(), None);
+
+            let in_use = move_config_file(&legacy, &destination, |_, _| Err(cross_device()));
+
+            assert_eq!(in_use, legacy, "this session reads and writes the old file");
+            let file = ConfigFile {
+                path: in_use,
+                overridden: false,
+            };
+            file.seed_default_if_missing().unwrap();
+            assert_eq!(file.load().0.hotkey, "Alt+J");
+            assert!(
+                !destination.exists(),
+                "no default may appear at the destination"
+            );
+            assert!(
+                files_under(support.path()).is_empty(),
+                "no temp file left behind"
+            );
+            assert_eq!(std::fs::read_to_string(&legacy).unwrap(), body);
+
+            // The next start tries again.
+            assert_eq!(
+                move_config_file(&legacy, &destination, real_rename),
+                destination
+            );
+            assert!(!legacy.exists());
+            assert_eq!(load_or_default(&destination).0.hotkey, "Alt+J");
+        }
+
         #[test]
         fn a_legacy_config_moves_and_leaves_nothing_behind() {
             let docs = tempfile::tempdir().unwrap();
@@ -816,8 +910,9 @@ mod tests {
             let legacy = seed(docs.path(), Some(r#"{"hotkey":"Alt+J"}"#));
             let destination = seed(support.path(), None);
 
-            move_config_file(&legacy, &destination);
+            let in_use = move_config_file(&legacy, &destination, real_rename);
 
+            assert_eq!(in_use, destination);
             assert!(!legacy.exists(), "the old file must not survive the move");
             let (cfg, err) = load_or_default(&destination);
             assert!(err.is_none(), "{err:?}");
@@ -834,8 +929,9 @@ mod tests {
             let legacy = seed(docs.path(), Some(r#"{"hotkey":"Alt+J"}"#));
             let destination = seed(support.path(), Some(r#"{"hotkey":"Ctrl+F9"}"#));
 
-            move_config_file(&legacy, &destination);
+            let in_use = move_config_file(&legacy, &destination, real_rename);
 
+            assert_eq!(in_use, destination);
             assert_eq!(load_or_default(&destination).0.hotkey, "Ctrl+F9");
             assert!(
                 legacy.exists(),
@@ -850,8 +946,9 @@ mod tests {
             let legacy = seed(docs.path(), None);
             let destination = seed(support.path(), None);
 
-            move_config_file(&legacy, &destination);
+            let in_use = move_config_file(&legacy, &destination, real_rename);
 
+            assert_eq!(in_use, destination);
             assert!(
                 !destination.exists(),
                 "a fresh install must reach first-run seeding, not a migrated empty file"
