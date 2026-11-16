@@ -30,6 +30,26 @@ use std::path::Path;
 /// dispatch (recognise) can't drift.
 pub const SETTINGS_ARG: &str = "--settings";
 
+/// The tray thread that opened this window, on Windows: where an update's
+/// quit request goes (spec §9 "Updates"). The tray adds it when it spawns the
+/// window; see `tray_bridge::settings_args`.
+pub const TRAY_THREAD_ARG: &str = "--tray-thread";
+
+/// The id after `--tray-thread`, when there is one and it is a number.
+pub fn parse_tray_thread_arg<I, S>(args: I) -> Option<u32>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut args = args.into_iter();
+    while let Some(a) = args.next() {
+        if a.as_ref() == TRAY_THREAD_ARG {
+            return args.next()?.as_ref().parse().ok();
+        }
+    }
+    None
+}
+
 /// Whether `--settings` appears anywhere in `args`. Used by the early
 /// dispatch in `main` to route into the settings UI before the popup
 /// codepath kicks in. Returns true on the first match; the rest of the args
@@ -412,6 +432,72 @@ pub struct SettingsHost {
     pub persist: PersistFn,
     pub sprite_check: SpriteCheckFn,
     pub conflict: ConflictFn,
+    /// The Updates group (§9). Absent from the browser build, which has no
+    /// exe to update.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub updates: UpdateHost,
+}
+
+/// The update check: GitHub's latest release, or the reason the row shows.
+/// Shared rather than boxed, because it runs on a worker thread.
+#[cfg(not(target_arch = "wasm32"))]
+pub type CheckFn = std::sync::Arc<dyn Fn() -> Result<crate::update::Release, String> + Send + Sync>;
+
+/// `Update`'s install of a release, through the hand-off; `Ok` once the new
+/// version has started. Shared for the same reason as [`CheckFn`].
+#[cfg(not(target_arch = "wasm32"))]
+pub type InstallFn =
+    std::sync::Arc<dyn Fn(&crate::update::Release) -> Result<(), String> + Send + Sync>;
+
+/// What the Updates row asks of the outside world: the check, `Update`'s
+/// install, and `Open release page`.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct UpdateHost {
+    /// The version the row names and the check compares against.
+    pub current: String,
+    pub action: crate::update::Action,
+    pub check: CheckFn,
+    pub install: InstallFn,
+    pub open_page: Box<dyn Fn(&str) + Send>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl UpdateHost {
+    /// A row with no network behind it: every check fails, so a test never
+    /// reaches GitHub.
+    pub fn offline() -> Self {
+        Self {
+            current: crate::update::CURRENT.to_string(),
+            action: crate::update::ACTION,
+            check: std::sync::Arc::new(|| Err("No update check in this build".to_string())),
+            install: std::sync::Arc::new(|_| Err("No update check in this build".to_string())),
+            open_page: Box::new(|_| {}),
+        }
+    }
+
+    /// The real one: GitHub, this platform's action, and on Windows the
+    /// install over the running exe with the hand-off to `tray_thread`.
+    pub fn native(tray_thread: Option<u32>) -> Self {
+        #[cfg(target_os = "windows")]
+        let install: InstallFn = std::sync::Arc::new(move |release| {
+            let exe =
+                std::env::current_exe().map_err(|e| format!("Could not replace Nudge: {e}"))?;
+            crate::update::install_release(release, &exe, tray_thread)
+        });
+        // Elsewhere the action opens the page; there is nothing to install.
+        #[cfg(not(target_os = "windows"))]
+        let install = {
+            let _ = tray_thread;
+            Self::offline().install
+        };
+        Self {
+            current: crate::update::CURRENT.to_string(),
+            action: crate::update::ACTION,
+            check: std::sync::Arc::new(crate::update::fetch_latest),
+            install,
+            open_page: Box::new(crate::update::open_page),
+        }
+    }
 }
 
 impl SettingsHost {
@@ -427,18 +513,22 @@ impl SettingsHost {
             persist: Box::new(|_cfg: &Config| Ok(())),
             sprite_check: Box::new(|_path: &Path| Ok(())),
             conflict: Box::new(|_hk| None),
+            #[cfg(not(target_arch = "wasm32"))]
+            updates: UpdateHost::offline(),
         }
     }
 
     /// The host the native settings process runs on: this machine's autostart
     /// provider, saves to `config_path` (the file the running app watches),
     /// the §10 PNG check on the named file, and the platform's conflict
-    /// report (§5). `Err` when the provider cannot be constructed — the
-    /// window is then refused rather than opened over a fake.
+    /// report (§5), and the update check (§9), whose Windows install asks
+    /// `tray_thread` to quit. `Err` when the provider cannot be constructed —
+    /// the window is then refused rather than opened over a fake.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn native(
         config_path: std::path::PathBuf,
         initial_autostart: bool,
+        tray_thread: Option<u32>,
     ) -> Result<Self, String> {
         let provider = crate::autostart::provider_for_current_exe(initial_autostart)?;
         Ok(Self {
@@ -448,6 +538,7 @@ impl SettingsHost {
                 crate::sprite_png::check_sprite_file(path).map_err(|e| e.to_string())
             }),
             conflict: Box::new(crate::platform::hotkey_conflict),
+            updates: UpdateHost::native(tray_thread),
         })
     }
 }
@@ -544,6 +635,14 @@ pub struct SettingsApp {
     /// When set, the next frame ends the eframe loop. On native this exits
     /// the dedicated settings process; on WASM it's a no-op (no process).
     quit_requested: bool,
+    /// The Updates row: its host, where its table stands, and the answer of
+    /// the job it is waiting on, if any.
+    #[cfg(not(target_arch = "wasm32"))]
+    updates: UpdateHost,
+    #[cfg(not(target_arch = "wasm32"))]
+    update_row: crate::update::Row,
+    #[cfg(not(target_arch = "wasm32"))]
+    update_job: Option<std::sync::mpsc::Receiver<crate::update::Input>>,
 }
 
 impl SettingsApp {
@@ -584,6 +683,8 @@ impl SettingsApp {
             persist,
             sprite_check,
             conflict,
+            #[cfg(not(target_arch = "wasm32"))]
+            updates,
         } = host;
         Self {
             form: SettingsForm::from_config(config),
@@ -595,6 +696,69 @@ impl SettingsApp {
             banner: None,
             saved: false,
             quit_requested: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            updates,
+            #[cfg(not(target_arch = "wasm32"))]
+            update_row: crate::update::Row::Idle,
+            #[cfg(not(target_arch = "wasm32"))]
+            update_job: None,
+        }
+    }
+
+    /// One input through the Updates row's table, and its effect run.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn feed_update(&mut self, input: crate::update::Input, ctx: &egui::Context) {
+        use crate::update::{Effect, Input};
+        let (row, effect) = crate::update::step(
+            &self.update_row,
+            input,
+            &self.updates.current,
+            self.updates.action,
+        );
+        self.update_row = row;
+        match effect {
+            Effect::Nothing => {}
+            Effect::Check => {
+                let check = std::sync::Arc::clone(&self.updates.check);
+                self.spawn_update_job(ctx, move || Input::Checked(check()));
+            }
+            Effect::Install(release) => {
+                let install = std::sync::Arc::clone(&self.updates.install);
+                self.spawn_update_job(ctx, move || Input::Installed(install(&release)));
+            }
+            Effect::OpenPage(url) => (self.updates.open_page)(&url),
+            Effect::Close => self.quit_requested = true,
+        }
+    }
+
+    /// Run `job` off the UI thread; its answer is fed back on the frame it
+    /// wakes.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn spawn_update_job(
+        &mut self,
+        ctx: &egui::Context,
+        job: impl FnOnce() -> crate::update::Input + Send + 'static,
+    ) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(job());
+            ctx.request_repaint();
+        });
+        self.update_job = Some(rx);
+    }
+
+    /// The answer of the job the row is waiting on, once it has one.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn poll_update_job(&mut self, ctx: &egui::Context) {
+        let answer = self.update_job.as_ref().map(|rx| rx.try_recv());
+        match answer {
+            Some(Ok(input)) => {
+                self.update_job = None;
+                self.feed_update(input, ctx);
+            }
+            Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => self.update_job = None,
+            _ => {}
         }
     }
 
@@ -668,7 +832,12 @@ impl SettingsApp {
 /// The window's inner size: the form at this width, measured — its last
 /// row's bottom plus the margin (`settings_form_adds_up_to_the_window` in
 /// tests/kittest_card.rs pins the sum).
-pub const WINDOW_SIZE: [f32; 2] = [560.0, 537.0];
+pub const WINDOW_SIZE: [f32; 2] = [560.0, 625.0];
+
+/// The Updates row's status, at most this wide: its longest reason is
+/// clipped, so the version and the button keep their places.
+#[cfg(not(target_arch = "wasm32"))]
+const UPDATE_STATUS_WIDTH: f32 = 270.0;
 
 /// The form's inset from the window's edge, every side.
 pub const MARGIN: i8 = 20;
@@ -718,6 +887,17 @@ fn group(ui: &mut egui::Ui, rows: impl FnOnce(&mut egui::Ui)) {
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             rows(ui);
+        });
+}
+
+/// A group's footnote: small, weak text under its box, wrapped at the form's
+/// width.
+fn footnote(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(FOOTNOTE_GAP);
+    egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(ROW_PAD, 0))
+        .show(ui, |ui| {
+            ui.add(egui::Label::new(egui::RichText::new(text).size(FOOTNOTE_SIZE).weak()).wrap());
         });
 }
 
@@ -885,6 +1065,12 @@ impl eframe::App for SettingsApp {
         let armed = self.recorder.is_armed();
         let mut autostart_toggle: Option<bool> = None;
         let mut save_clicked = false;
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut update_pressed = false;
+        // The answer of a check or an install that finished since the last
+        // frame, before the row is drawn with it.
+        #[cfg(not(target_arch = "wasm32"))]
+        self.poll_update_job(ctx);
 
         egui::Frame::new()
             .inner_margin(egui::Margin::same(MARGIN))
@@ -928,16 +1114,7 @@ impl eframe::App for SettingsApp {
                 // say — the prompt, or a refusal naming the key. Otherwise
                 // what may be typed, which is standing information rather
                 // than an error message: this is how a hotkey is set.
-                ui.add_space(FOOTNOTE_GAP);
-                let under = self.recorder.hint().unwrap_or(hotkey::VOCABULARY);
-                egui::Frame::new()
-                    .inner_margin(egui::Margin::symmetric(ROW_PAD, 0))
-                    .show(ui, |ui| {
-                        ui.add(
-                            egui::Label::new(egui::RichText::new(under).size(FOOTNOTE_SIZE).weak())
-                                .wrap(),
-                        );
-                    });
+                footnote(ui, self.recorder.hint().unwrap_or(hotkey::VOCABULARY));
                 ui.add_space(GROUP_GAP);
 
                 // Group 2: the interval and autostart.
@@ -1044,6 +1221,34 @@ impl eframe::App for SettingsApp {
                 });
                 ui.add_space(GROUP_GAP);
 
+                // Group 4: the running version and the update check — a
+                // button, never a background check, and a footnote that says
+                // where it looks (§9 "Updates"). The browser build has no exe
+                // to update and no group.
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let version = format!("Nudge {}", self.updates.current);
+                    group(ui, |ui| {
+                        row(ui, &version, "update", |ui| {
+                            let status = self.update_row.status();
+                            if !status.is_empty() {
+                                ui.scope(|ui| {
+                                    ui.set_max_width(UPDATE_STATUS_WIDTH);
+                                    ui.add(
+                                        egui::Label::new(egui::RichText::new(status).weak())
+                                            .truncate(),
+                                    );
+                                });
+                            }
+                            let (label, enabled) = self.update_row.button(self.updates.action);
+                            update_pressed =
+                                ui.add_enabled(enabled, egui::Button::new(label)).clicked();
+                        });
+                    });
+                    footnote(ui, crate::update::FOOTNOTE);
+                    ui.add_space(GROUP_GAP);
+                }
+
                 // The message line: reserved, so the window never changes
                 // size. What it says sits right above the buttons; empty, it
                 // is the gap before them. A sprite refusal is a message like
@@ -1095,6 +1300,10 @@ impl eframe::App for SettingsApp {
 
         if let Some(desired) = autostart_toggle {
             self.apply_autostart_toggle(desired);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if update_pressed {
+            self.feed_update(crate::update::Input::Press, ctx);
         }
 
         if self.form != before {
@@ -1482,6 +1691,18 @@ mod tests {
             !parse_settings_arg(["--settingsxxx"]),
             "must be an exact match — no prefix gimmicks"
         );
+    }
+
+    #[test]
+    fn the_tray_thread_is_the_number_after_its_flag() {
+        // §9 Updates: the tray says which thread an update's quit goes to.
+        assert_eq!(
+            parse_tray_thread_arg(["--settings", "--tray-thread", "4242"]),
+            Some(4242)
+        );
+        assert_eq!(parse_tray_thread_arg(["--settings"]), None);
+        assert_eq!(parse_tray_thread_arg(["--tray-thread"]), None);
+        assert_eq!(parse_tray_thread_arg(["--tray-thread", "x"]), None);
     }
 
     #[test]

@@ -17,6 +17,14 @@
   import { detectPlatform } from "../shared/platform";
   import { FakeProvider, applyAutostart } from "../shared/autostart";
   import {
+    UPDATE_FOOTNOTE,
+    buttonFor,
+    statusText,
+    updateStep,
+    type UpdateInput,
+    type UpdateState,
+  } from "../shared/updateCheck";
+  import {
     DEFAULT_CONFIG,
     normalize,
     type Config,
@@ -72,6 +80,11 @@
   let cardWidthText = $state(form.cardWidthText);
   let spriteError = $state("");
 
+  // §9 "Updates": the running version, and the row's state. Nothing is asked
+  // of the network until the button is pressed.
+  let version = $state("");
+  let update = $state<UpdateState>({ kind: "idle" });
+
   let recorder = $state<RecorderState>("idle");
   let banner = $state("");
   // §9: a save that reached the file says so, until the first edit after it.
@@ -97,6 +110,7 @@
   onMount(() => {
     if (!settingsApi) return;
     void settingsApi.getConfig().then(reseed);
+    void settingsApi.updateInfo().then((info) => (version = info.version));
     // In Electron the focus loss comes from the native window, not from the
     // page: `window`'s own blur is the browser sub-app's only signal, and it
     // is the one a test harness suppresses.
@@ -181,6 +195,24 @@
       case "hint":
         banner = hintText(effect.keyName, effect.reason, platform);
         break;
+    }
+  }
+
+  // --- The Updates row (§9) ---
+  //
+  // The table is `updateStep`'s; this runs its effects. The prototype is not
+  // the released binary and has nothing of its own to replace, so its action
+  // is the release page on every platform — the Rust app's Windows build is
+  // the one that installs.
+  async function updateInput(input: UpdateInput) {
+    if (!settingsApi) return;
+    const out = updateStep(update, input, version, "openPage");
+    update = out.state;
+    if (out.effect.kind === "check") {
+      const result = await settingsApi.checkUpdate();
+      await updateInput({ kind: "checked", result });
+    } else if (out.effect.kind === "openPage") {
+      await settingsApi.openRelease(out.effect.url);
     }
   }
 
@@ -485,6 +517,36 @@
         </div>
       </div>
     </div>
+
+    <!-- §9 "Updates": the running version at the left, the check's status and
+         its one button at the right; the footnote says where it looks and
+         when. Only where there is an app to update — not in the browser
+         sub-app. -->
+    {#if settingsApi}
+      <div>
+        <div class="rounded-[10px] border border-zinc-800 bg-zinc-900/50">
+          <div class="flex items-center justify-between gap-3 min-h-11 px-3">
+            <span data-testid="settings-version" class="text-sm">Nudge {version}</span>
+            <div class="flex items-center gap-3">
+              <span data-testid="settings-update-status" class="text-sm text-zinc-400">
+                {statusText(update)}
+              </span>
+              <button
+                data-testid="settings-update"
+                onclick={() => updateInput({ kind: "press" })}
+                disabled={!buttonFor(update, "openPage").enabled}
+                class="px-3 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-sm disabled:opacity-40"
+              >
+                {buttonFor(update, "openPage").label}
+              </button>
+            </div>
+          </div>
+        </div>
+        <p data-testid="settings-update-footnote" class="mt-2 px-3 text-xs text-zinc-500">
+          {UPDATE_FOOTNOTE}
+        </p>
+      </div>
+    {/if}
 
     <!-- §9: the message line is reserved — it keeps its height whether or
          not it has anything to say, so the window never changes size and

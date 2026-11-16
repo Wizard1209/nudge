@@ -24,8 +24,9 @@ use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{HWND, LPARAM, RECT};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP,
-    MAPVK_VK_TO_VSC, MapVirtualKeyW, SendInput, VIRTUAL_KEY, VK_CONTROL, VK_ESCAPE, VK_MENU,
-    VK_OEM_PERIOD, VK_RETURN, VK_SHIFT, VK_SPACE, VK_TAB,
+    MAPVK_VK_TO_VSC, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MapVirtualKeyW, RegisterHotKey,
+    SendInput, UnregisterHotKey, VIRTUAL_KEY, VK_CONTROL, VK_ESCAPE, VK_MENU, VK_OEM_PERIOD,
+    VK_RETURN, VK_SHIFT, VK_SPACE, VK_TAB,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId, IsWindowVisible,
@@ -536,9 +537,25 @@ fn live_reload_moves_the_hotkey() {
     app.rewrite_config(&config_json(label, 10.0));
     std::thread::sleep(Duration::from_secs(2));
 
+    // The test takes the old combination itself: that only succeeds once the
+    // app has let go of it, and the press then lands here instead of in the
+    // shell, which opens Search on an unbound Ctrl+Shift+Space over the
+    // taskbar and keeps the foreground from every later test.
+    const OLD_HOTKEY_ID: i32 = 1;
+    unsafe {
+        RegisterHotKey(
+            None,
+            OLD_HOTKEY_ID,
+            MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT,
+            u32::from(VK_SPACE.0),
+        )
+    }
+    .unwrap_or_else(|e| panic!("the app still holds Ctrl+Shift+Space after the reload: {e}"));
     press(HOTKEY_DEFAULT);
+    let shown = app.shown_by(Instant::now() + REACTION);
+    unsafe { UnregisterHotKey(None, OLD_HOTKEY_ID) }.expect("UnregisterHotKey");
     assert!(
-        app.shown_by(Instant::now() + REACTION).is_none(),
+        shown.is_none(),
         "the old hotkey still opens the popup after the config moved it to {label}"
     );
     app.summon(chord, &format!("the reloaded hotkey {label}"));

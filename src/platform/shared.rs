@@ -5,6 +5,10 @@
 //! different frames (macOS) and share no object. A backend supplies one
 //! thing on top: `super::wake`, called after a write it has to act on.
 
+// The fallback backend (a Linux dev host) runs no countdown, so most of this
+// is compiled there for the tests alone.
+#![cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(dead_code))]
+
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -225,21 +229,25 @@ pub(crate) fn clear_timer() {
 }
 
 /// Start the settings window: a second instance of this binary with
-/// `--settings`, pointed at this process's config file ([`settings_args`]).
-/// The two processes talk only through `config.json` (and the
-/// OS's autostart entry). A failed spawn is logged and otherwise ignored —
-/// settings are editable by hand (spec §5) — and `--settings` is
-/// single-instance in its own right, so repeat clicks cannot stack windows.
+/// `--settings`, pointed at this process's config file ([`settings_args`]),
+/// plus whatever `args` the backend adds. The two processes talk only
+/// through `config.json` (and the OS's autostart entry), except that on
+/// Windows the window can ask this app to quit for an update (spec §9
+/// "Updates") — which is what the Windows backend's `args` are for. A failed
+/// spawn is logged and otherwise ignored — settings are editable by hand
+/// (spec §5) — and `--settings` is single-instance in its own right, so
+/// repeat clicks cannot stack windows.
 ///
 /// What to do with the `Child` is the backend's: dropping it closes the
 /// handle on Windows, while on Unix an exited child stays a zombie until
 /// its parent waits.
-pub(crate) fn spawn_settings_process() -> Option<std::process::Child> {
+pub(crate) fn spawn_settings_process(args: &[String]) -> Option<std::process::Child> {
     let exe = std::env::current_exe()
         .map_err(|e| eprintln!("[nudge] could not locate own executable: {e}"))
         .ok()?;
     std::process::Command::new(exe)
         .args(settings_args(CONFIG_PATH.get().map(PathBuf::as_path)))
+        .args(args)
         .spawn()
         .map_err(|e| eprintln!("[nudge] could not open settings: {e}"))
         .ok()

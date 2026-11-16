@@ -147,6 +147,9 @@ GitHub-hosted runners and approved by hand before it is signed.
 Privacy policy: this program will not transfer any information to other
 networked systems unless specifically requested by the user or the person
 installing or operating it. The journal and the settings stay in local files.
+The only network request it makes is the update check in Settings, sent to
+GitHub when its button is pressed, plus the download of the new version if
+the user then presses `Update`.
 
 ## Settings
 
@@ -177,6 +180,14 @@ full: `docs/design-spec.md` §9.
 If another application or macOS itself already holds the combination, `Save`
 says so and saves it anyway — it is the shortcut the user asked for, and a
 taken one binds normally, it just never fires.
+
+The last row names the running version and has a `Check for updates` button:
+it asks github.com/Wizard1209/nudge for the latest release, and only when it
+is pressed — nothing checks in the background. When a newer one exists, on
+Windows `Update` downloads it, checks its SHA-256 against the release's
+digest (and refuses without one), puts it in place of the running exe and
+restarts Nudge; on macOS `Open release page` opens the release in the
+browser. Details: `docs/design-spec.md` §9 "Updates".
 
 ## Development: the Electron prototype
 

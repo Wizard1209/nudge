@@ -2258,7 +2258,7 @@ dependencies = [
 
 [[package]]
 name = "nudge"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "base64",
  "block2 0.5.1",
@@ -2280,6 +2280,7 @@ dependencies = [
  "raw-window-handle",
  "resvg",
  "rfd",
+ "ring",
  "roxmltree",
  "serde",
  "serde_json",

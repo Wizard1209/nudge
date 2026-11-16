@@ -507,7 +507,9 @@ file: the settings window opens whichever file the app is running on.
 - The settings UI is a **separate surface from the main app**. The popup,
   timer, tray icon, and global hotkey keep working while it is open; the
   two surfaces communicate exclusively through `config.json` (and the
-  Windows registry, for autostart) — no in-process channel.
+  Windows registry, for autostart) — no in-process channel. The one
+  exception is an update on Windows, which asks the running app to quit
+  (see Updates).
 - If the settings window is already open, another click does nothing — at
   most one settings instance exists at a time.
 
@@ -672,6 +674,68 @@ consistency but have no active UI effect:
 - `sprite` — applied the next time the popup is hidden (§10), never under
   the user's hands.
 
+### Updates
+
+The last group says which version is running — `Nudge 0.2.2` — and has one
+button that asks GitHub whether there is a newer one. Its footnote says where
+it looks and when: `Checks github.com/Wizard1209/nudge for new releases, only
+when pressed.`
+
+- **A button, never a background check.** The network is touched only when
+  the button is pressed — not at launch, not on a timer, not when the window
+  opens — and nothing else in the app makes a network request. The tray menu
+  has no update item.
+- The check is one request: `GET
+  https://api.github.com/repos/Wizard1209/nudge/releases/latest`. Newer means
+  the semver of its `tag_name`, `v` stripped, is greater than the running
+  version. An older or equal latest is up to date, and a tag that is not a
+  version is never an update.
+- The status sits left of the button:
+
+  | State | Status | Button |
+  |---|---|---|
+  | Before the first press | — | `Check for updates` |
+  | Checking | `Checking…` | `Check for updates`, greyed |
+  | Up to date | `Up to date` | `Check for updates` |
+  | A newer release | `0.3.0 available` | `Update` on Windows, `Open release page` on macOS |
+  | Updating (Windows) | `Updating…` | `Update`, greyed |
+  | Failed | the reason | `Check for updates` |
+
+  A reason is one short line: `Offline: could not reach GitHub`, `GitHub
+  refused the request (HTTP 403)`, `GitHub sent a reply Nudge cannot read`;
+  and for an update `The release has no Windows download`, `No checksum for
+  the Windows download`, `Download does not match its checksum`, `Could not
+  replace Nudge: …`, `Nudge did not quit; restart it to finish`. A result
+  that arrives in a state that did not ask for it changes nothing.
+- **macOS — `Open release page`** opens the release's page in the browser,
+  and the row stays as it is. The app does not replace itself there: its
+  signature is ad hoc and a downloaded bundle is quarantined, so a copy it
+  installed itself would not reliably start.
+- **Windows — `Update`** downloads the release's
+  `nudge-v<version>-x86_64-windows.exe` and installs it only if its SHA-256
+  equals the asset's `digest` in the release. A missing digest refuses the
+  update exactly as a mismatch does: an exe that replaces the running one is
+  installed only when it can be checked. Then, in this order:
+  1. The download is written next to the running exe, the running exe is
+     renamed to `<name>.old` — a running exe can be renamed but not
+     overwritten — and the download takes its path. If that last rename
+     fails, the old exe is put back.
+  2. The settings window asks the running app to quit and waits for its
+     process to end. The old app must be gone before the new one starts: a
+     process that starts while the old one holds the global hotkey cannot
+     register it.
+  3. It starts the exe at the same path and closes. Launch at login names
+     that path, so it needs no change.
+  4. The new app deletes `<name>.old` when it starts.
+
+  The settings window knows which app to ask because that app opened it: the
+  tray passes its own thread on the command line, and the request is a
+  message to that thread, which the tray handles like its `Quit`. A
+  settings window opened without one installs the update and says `Nudge did
+  not quit; restart it to finish`, rather than start a second app next to an
+  unknown first.
+- The browser build has no Updates group: it has no exe to update.
+
 ### Window chrome and layout
 
 - Standard OS title bar and frame (unlike the popup — this is not a
@@ -684,12 +748,13 @@ consistency but have no active UI effect:
   fields that are saved explicitly (hotkey, interval). An autostart change
   already applied is of course not rolled back — it was committed at the
   moment of the click.
-- The form is three groups of rows in rounded boxes, a hairline between
+- The form is four groups of rows in rounded boxes, a hairline between
   rows: the hotkey; the interval and autostart; the sprite (checkbox, PNG,
-  position). In every row the label sits at the left and the control at the
-  right edge — one left edge for every row's text and one right edge for
+  position); the version and its update check. In every row the label sits
+  at the left and the control at the right edge — one left edge for every row's text and one right edge for
   every row's last control, so the groups read as one form; the buttons end
-  where the boxes do. The hotkey vocabulary is a footnote under its group.
+  where the boxes do. The hotkey vocabulary is a footnote under its group,
+  and so is where the update check looks.
   Measured on the native build: the form is inset 20 pt from the window's
   edges; a box has a 10 pt corner radius and a 1 pt border, the same
   hairline as between its rows; a row is 44 pt tall, its text and controls
@@ -702,7 +767,7 @@ consistency but have no active UI effect:
   window never changes size. A message quotes at most the first 40
   characters of what was typed, so there is a longest message and the line
   holds it; a message is clipped to its line rather than the line growing.
-  On the native build the content is 560 × 537 pt; the banner's line is 64
+  On the native build the content is 560 × 625 pt; the banner's line is 64
   pt, 20 pt above and below it — the longest message, a bare key refused
   with the vocabulary after it, is four rows of 13 pt text at the form's
   width.

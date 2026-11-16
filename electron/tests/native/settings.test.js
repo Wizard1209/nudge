@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { launchApp, settingsState, openSettingsWindow } from './fixtures/electron.js';
 
 // Bug 1: "everything in a gray frame, and on first open only half is visible."
@@ -88,6 +89,7 @@ describe('settings window — no gray flash, content fully painted', () => {
       'settings-sprite-x',
       'settings-sprite-y',
       'settings-card-width',
+      'settings-update',
       'settings-save',
       'settings-cancel',
     ]) {
@@ -115,6 +117,9 @@ describe('settings window — §9 layout', () => {
   // The hotkey vocabulary's platform is the host's (§5: one spelling per
   // platform), and so is the autostart row's name (§9).
   const AUTOSTART = process.platform === 'darwin' ? 'Open at login' : 'Launch with Windows';
+  // The Updates row names the running version: package.json's, which tracks
+  // Cargo.toml's.
+  const VERSION = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url))).version;
 
   // The three rounded boxes, each with its rows: a row's first element is
   // its label and its last element its control. Everything the layout tests
@@ -156,20 +161,22 @@ describe('settings window — §9 layout', () => {
     });
   }
 
-  // "The form is three groups of rows in rounded boxes, a hairline between
+  // "The form is four groups of rows in rounded boxes, a hairline between
   // rows: the hotkey; the interval and autostart; the sprite (checkbox, PNG,
-  // position)."
-  it('is three groups of rows in rounded boxes, a hairline between rows', async () => {
+  // position); the version and its update check."
+  it('is four groups of rows in rounded boxes, a hairline between rows', async () => {
     const settings = await openSettings();
     const groups = await readGroups(settings);
     expect(groups.map((g) => g.rows.map((r) => r.text))).toEqual([
       ['Global hotkey'],
       ['Default interval', AUTOSTART],
       ['Sprite', 'PNG', 'Position (pt)'],
+      [`Nudge ${VERSION}`],
     ]);
     // In that order, top to bottom.
     expect(groups[0].box.bottom).toBeLessThan(groups[1].box.top);
     expect(groups[1].box.bottom).toBeLessThan(groups[2].box.top);
+    expect(groups[2].box.bottom).toBeLessThan(groups[3].box.top);
     for (const g of groups) {
       expect(parseFloat(g.radius)).toBeGreaterThan(0);
       expect(parseFloat(g.borderWidth)).toBeGreaterThan(0);
@@ -186,7 +193,7 @@ describe('settings window — §9 layout', () => {
   it('puts the label at the left and the control at the right edge of every row', async () => {
     const settings = await openSettings();
     const rows = (await readGroups(settings)).flatMap((g) => g.rows);
-    expect(rows).toHaveLength(6);
+    expect(rows).toHaveLength(7);
     for (const row of rows) {
       expect(row.label.left, `${row.text}: label left`).toBeCloseTo(row.innerLeft, 0);
       expect(row.control.right, `${row.text}: control right`).toBeCloseTo(row.innerRight, 0);
@@ -360,5 +367,74 @@ describe('settings window — §9 layout', () => {
     });
     expect(fills.save).not.toBe('rgba(0, 0, 0, 0)');
     expect(fills.save).not.toBe(fills.cancel);
+  });
+});
+
+// §9 "Updates": a button, never a background check; the row says where it
+// looks; the result states, and the macOS action — the prototype's only one —
+// opening the release page. The check's answer is queued through the test
+// hook, so nothing here reaches the network.
+describe('settings window — §9 Updates', () => {
+  let app;
+  afterEach(async () => {
+    await app?.close();
+    app = undefined;
+  });
+
+  const release = (tag) => ({
+    tag_name: tag,
+    html_url: `https://github.com/Wizard1209/nudge/releases/tag/${tag}`,
+    assets: [],
+  });
+
+  async function openSettings() {
+    ({ app } = await launchApp());
+    return openSettingsWindow(app);
+  }
+
+  const status = (settings) =>
+    settings.locator('[data-testid="settings-update-status"]').innerText();
+  const button = (settings) => settings.locator('[data-testid="settings-update"]');
+
+  it('asks nothing until pressed, and says where it would look', async () => {
+    const settings = await openSettings();
+    expect(await status(settings)).toBe('');
+    expect(await button(settings).innerText()).toBe('Check for updates');
+    expect(await settings.locator('[data-testid="settings-update-footnote"]').innerText()).toBe(
+      'Checks github.com/Wizard1209/nudge for new releases, only when pressed.',
+    );
+  });
+
+  it('a newer release offers its page, and the button opens it', async () => {
+    const settings = await openSettings();
+    await app.evaluate((_e, r) => globalThis.__nudgeTest.queueCheck({ ok: true, release: r }), release('v99.0.0'));
+    await button(settings).click();
+    await settings.waitForFunction(() =>
+      document.querySelector('[data-testid="settings-update-status"]').innerText === '99.0.0 available');
+    expect(await button(settings).innerText()).toBe('Open release page');
+    await button(settings).click();
+    await settings.waitForTimeout(200);
+    expect(await app.evaluate(() => globalThis.__nudgeTest.openedReleases())).toEqual([
+      'https://github.com/Wizard1209/nudge/releases/tag/v99.0.0',
+    ]);
+  });
+
+  it('an older or equal release is up to date', async () => {
+    const settings = await openSettings();
+    await app.evaluate((_e, r) => globalThis.__nudgeTest.queueCheck({ ok: true, release: r }), release('v0.0.1'));
+    await button(settings).click();
+    await settings.waitForFunction(() =>
+      document.querySelector('[data-testid="settings-update-status"]').innerText === 'Up to date');
+    expect(await button(settings).innerText()).toBe('Check for updates');
+  });
+
+  it('a failed check shows its reason', async () => {
+    const settings = await openSettings();
+    await app.evaluate(() =>
+      globalThis.__nudgeTest.queueCheck({ ok: false, error: 'Offline: could not reach GitHub' }));
+    await button(settings).click();
+    await settings.waitForFunction(() =>
+      document.querySelector('[data-testid="settings-update-status"]').innerText ===
+      'Offline: could not reach GitHub');
   });
 });

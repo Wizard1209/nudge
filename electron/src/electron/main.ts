@@ -5,6 +5,7 @@ import {
   globalShortcut,
   ipcMain,
   screen,
+  shell,
   Tray,
   Menu,
   nativeImage,
@@ -13,6 +14,7 @@ import path from "node:path";
 import { watch, readFileSync, type FSWatcher } from "node:fs";
 import { dirname, basename } from "node:path";
 import { ulid } from "ulid";
+import { LATEST_URL, REPO, describeCheckFailure, type Release } from "../shared/updateCheck";
 import {
   writeEvent,
   getJournalPath,
@@ -358,7 +360,7 @@ function createTray() {
 // margins, the reserved message line included (§9: sized to the form, not
 // resizable, never scrolls). Measured on the rendered form — form bottom ==
 // height − 20 — so retune it if the markup changes.
-const SETTINGS_SIZE = { width: 560, height: 582 };
+const SETTINGS_SIZE = { width: 560, height: 672 };
 
 // Framed, standard-chrome window. Single instance: focus the existing one
 // rather than opening a second.
@@ -758,6 +760,68 @@ ipcMain.handle("settings:toggle-autostart", (_event, desired: boolean) => {
 
 ipcMain.on("settings:close", () => settingsWin?.close());
 
+// §9 "Updates": the one network request, made only when the row's button is
+// pressed. The prototype is not the released binary, so it has no exe of its
+// own to replace: its action opens the release page on every platform.
+// Unpackaged, `app.getVersion()` is Electron's own: the app is started from
+// dist/electron/, which has no package.json. The prototype's is two up.
+function appVersion(): string {
+  if (app.isPackaged) return app.getVersion();
+  return JSON.parse(readFileSync(path.join(__dirname, "../../package.json"), "utf8")).version;
+}
+
+ipcMain.handle("settings:update-info", () => ({ version: appVersion() }));
+
+// Native e2e affordance (NUDGE_E2E): the next check answers with this instead
+// of asking GitHub, so no test depends on the network or on what is released.
+type CheckResult = { ok: true; release: Release } | { ok: false; error: string };
+let queuedCheck: CheckResult | null = null;
+
+ipcMain.handle("settings:check-update", async () => {
+  if (process.env.NUDGE_E2E && queuedCheck !== null) {
+    const result = queuedCheck;
+    queuedCheck = null;
+    return result;
+  }
+  let res: Response;
+  try {
+    res = await fetch(LATEST_URL, {
+      headers: {
+        Accept: "application/vnd.github+json",
+        "User-Agent": `nudge/${appVersion()}`,
+      },
+    });
+  } catch {
+    return { ok: false as const, error: describeCheckFailure({ kind: "offline" }) };
+  }
+  if (!res.ok) {
+    return { ok: false as const, error: describeCheckFailure({ kind: "status", status: res.status }) };
+  }
+  try {
+    const body = (await res.json()) as Partial<Release>;
+    if (typeof body.tag_name !== "string" || typeof body.html_url !== "string") throw new Error();
+    const release: Release = {
+      tag_name: body.tag_name,
+      html_url: body.html_url,
+      assets: Array.isArray(body.assets) ? body.assets : [],
+    };
+    return { ok: true as const, release };
+  } catch {
+    return { ok: false as const, error: describeCheckFailure({ kind: "unreadable" }) };
+  }
+});
+
+// Under NUDGE_E2E the page is recorded rather than opened: a test run must not
+// start the user's browser.
+const openedReleases: string[] = [];
+
+ipcMain.handle("settings:open-release", (_event, url: string) => {
+  // Only a page of this repository: the URL came back from the network.
+  if (typeof url !== "string" || !url.startsWith(`https://${REPO}/`)) return;
+  if (process.env.NUDGE_E2E) openedReleases.push(url);
+  else void shell.openExternal(url);
+});
+
 // --- App lifecycle ---
 
 app.whenReady().then(async () => {
@@ -806,6 +870,10 @@ app.on("will-quit", () => {
 if (process.env.NUDGE_E2E) {
   (globalThis as Record<string, unknown>).__nudgeTest = {
     openSettings: () => openSettings(),
+    queueCheck: (result: CheckResult) => {
+      queuedCheck = result;
+    },
+    openedReleases: () => openedReleases,
     queueBrowsePick: (p: string) => {
       queuedBrowsePick = p;
     },
