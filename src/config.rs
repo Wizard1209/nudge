@@ -498,7 +498,9 @@ pub fn load_or_default(path: &std::path::Path) -> (Config, Option<ConfigError>) 
         }
     };
 
-    match serde_json::from_str::<Config>(&raw) {
+    // A UTF-8 byte order mark, as PowerShell 5.1 and older Notepad write it.
+    let json = raw.strip_prefix('\u{FEFF}').unwrap_or(&raw);
+    match serde_json::from_str::<Config>(json) {
         Ok(cfg) => (cfg, None),
         Err(e) => (
             Config::default(),
@@ -1019,6 +1021,21 @@ mod tests {
             let (cfg, err) = load_or_default(&path);
             assert_eq!(cfg, Config::default());
             assert!(matches!(err, Some(ConfigError::Parse { .. })));
+        }
+
+        #[test]
+        fn a_utf8_byte_order_mark_is_not_a_parse_error() {
+            // PowerShell 5.1's `Set-Content -Encoding UTF8` and older Notepad
+            // write one. Refusing the file would run the app on defaults and
+            // show them in the settings window, where Save writes them over
+            // the user's file.
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.json");
+            std::fs::write(&path, "\u{FEFF}{\"hotkey\":\"Alt+J\"}").unwrap();
+
+            let (cfg, err) = load_or_default(&path);
+            assert!(err.is_none(), "{err:?}");
+            assert_eq!(cfg.hotkey, "Alt+J");
         }
 
         #[test]
