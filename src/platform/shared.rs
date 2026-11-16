@@ -5,6 +5,10 @@
 //! different frames (macOS) and share no object. A backend supplies one
 //! thing on top: `super::wake`, called after a write it has to act on.
 
+// The fallback backend (a Linux dev host) runs no countdown, so most of this
+// is compiled there for the tests alone.
+#![cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(dead_code))]
+
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};

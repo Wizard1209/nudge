@@ -90,7 +90,7 @@ pub mod app;
 pub mod autostart;
 pub mod config;
 pub mod config_watcher;
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod daisy;
 pub mod hotkey;
 pub mod journal;
