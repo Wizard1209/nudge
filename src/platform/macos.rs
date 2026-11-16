@@ -684,7 +684,7 @@ static SETTINGS_CHILDREN: Mutex<Vec<std::process::Child>> = Mutex::new(Vec::new(
 /// unexamined. So we keep every `Child` and [`reap_settings_children`] waits on
 /// the exited ones from `tick`.
 fn spawn_settings_process() {
-    if let Some(child) = shared::spawn_settings_process() {
+    if let Some(child) = shared::spawn_settings_process(&[]) {
         SETTINGS_CHILDREN.lock().unwrap().push(child);
     }
 }

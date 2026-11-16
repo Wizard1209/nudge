@@ -48,6 +48,79 @@ pub fn allow_evicted_file_downloads() {}
 pub fn start(hotkey: Option<Hotkey>, config_path: std::path::PathBuf, initial: config::Config) {
     super::shared::record_config_path(config_path.clone());
     crate::tray_bridge::spawn_tray_thread(hotkey, config_path, initial);
+    remove_replaced_exe();
+}
+
+/// Delete the exe an update set aside (spec §9 "Updates"), off the main
+/// thread. The settings window that started this process is still running
+/// from that file for a moment after the start, and Windows refuses to
+/// delete an exe while it runs, so a refusal is retried for a few seconds.
+fn remove_replaced_exe() {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    std::thread::spawn(move || {
+        for _ in 0..40 {
+            match crate::update::remove_old(&exe) {
+                Ok(_) => return,
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(250)),
+            }
+        }
+        eprintln!(
+            "[nudge] could not remove {}",
+            crate::update::old_path(&exe).display()
+        );
+    });
+}
+
+/// How long [`hand_over`] waits for the old app to end.
+const QUIT_TIMEOUT_MS: u32 = 10_000;
+
+/// The second half of `Update` (spec §9 "Updates"), run by the settings window
+/// once the new exe is at `exe`: ask the tray at `tray_thread` to quit, wait
+/// for its process to end, and only then start `exe` — a process started
+/// while the old one still held the global hotkey could not register it.
+///
+/// A thread that no longer exists means its app is already gone, and the new
+/// one starts. No thread at all — a window opened by hand rather than from the
+/// tray — starts nothing: there may be an app this window does not know of.
+pub fn hand_over(exe: &std::path::Path, tray_thread: Option<u32>) -> Result<(), String> {
+    use ::windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use ::windows::Win32::System::Threading::{
+        GetProcessIdOfThread, OpenProcess, OpenThread, PROCESS_SYNCHRONIZE,
+        THREAD_QUERY_LIMITED_INFORMATION, WaitForSingleObject,
+    };
+    use ::windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW;
+
+    const NOT_QUIT: &str = "Nudge did not quit; restart it to finish";
+    let tid = tray_thread.ok_or(NOT_QUIT)?;
+    // SAFETY: plain handle calls on ids from the command line; every handle
+    // opened here is closed before return, and a stale id fails the open.
+    unsafe {
+        let process = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, false, tid)
+            .ok()
+            .and_then(|thread| {
+                let pid = GetProcessIdOfThread(thread);
+                let _ = CloseHandle(thread);
+                (pid != 0 && pid != std::process::id())
+                    .then(|| OpenProcess(PROCESS_SYNCHRONIZE, false, pid).ok())
+                    .flatten()
+            });
+        if let Some(process) = process {
+            let posted =
+                PostThreadMessageW(tid, crate::tray_bridge::WM_TRAY_QUIT, WPARAM(0), LPARAM(0))
+                    .is_ok();
+            let ended = posted && WaitForSingleObject(process, QUIT_TIMEOUT_MS) == WAIT_OBJECT_0;
+            let _ = CloseHandle(process);
+            if !ended {
+                return Err(NOT_QUIT.into());
+            }
+        }
+    }
+    std::process::Command::new(exe)
+        .spawn()
+        .map(drop)
+        .map_err(|e| format!("Could not start the new Nudge: {e}"))
 }
 
 /// No-op: `start` already built everything on its own thread, and none of it

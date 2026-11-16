@@ -57,6 +57,12 @@ static TRAY_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 /// of `MsgWaitForMultipleObjectsEx`. Value is opaque — we drain and ignore.
 const WM_TRAY_WAKE: u32 = WM_USER + 1;
 
+/// Posted by the settings window, from its own process, once an update is in
+/// place at this exe's path (spec §9 "Updates"): quit, exactly as the menu's
+/// `Quit` does, so the new exe can start and take the hotkey. The window
+/// learns this thread's id from its command line ([`settings_args`]).
+pub const WM_TRAY_QUIT: u32 = WM_USER + 2;
+
 // ---------- public API used by main / NudgeApp -----------------------------
 
 pub fn store_hwnd(hwnd: isize) {
@@ -327,7 +333,7 @@ fn tray_thread_main(hotkey: Option<Hotkey>, config_path: PathBuf, initial_config
             }
             if event.id == settings_id {
                 // Dropping the `Child` closes its handle; nothing to reap.
-                drop(shared::spawn_settings_process());
+                drop(shared::spawn_settings_process(&settings_args()));
             }
         },
     ));
@@ -467,10 +473,23 @@ fn wake_eframe() {
     }
 }
 
+/// What the settings window is told about this app: the tray thread an
+/// update's quit request goes to.
+fn settings_args() -> Vec<String> {
+    let tid = TRAY_THREAD_ID.load(Ordering::SeqCst);
+    vec![
+        crate::settings_app::TRAY_THREAD_ARG.to_string(),
+        tid.to_string(),
+    ]
+}
+
 fn drain_messages() {
     unsafe {
         let mut msg = MSG::default();
         while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+            if msg.message == WM_TRAY_QUIT {
+                std::process::exit(0);
+            }
             // WM_HOTKEY is posted to the thread message queue (no hwnd), so
             // we must handle it before DispatchMessageW — Dispatch would
             // drop it for lack of a target window. Same UX path as a tray

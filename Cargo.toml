@@ -163,6 +163,17 @@ notify = "8"
 # is hand-rolled. Already in the tree via eframe → egui-winit → arboard, so
 # this adds no crate to the build. The native capture tests use it too.
 image = { version = "0.25", default-features = false, features = ["png"] }
+# The Settings window's update check (spec §9 "Updates"): one GET to the
+# GitHub API when its button is pressed, and the Windows download after
+# `Update`. `tls` only — rustls with the webpki roots — and no gzip, cookies,
+# proxy or JSON helpers: the body is read as text and parsed with serde_json.
+# The dev-dependency below adds `json` for the vision judge, which only test
+# builds see. Not a new crate: it was in the lockfile for that judge.
+ureq = { version = "2", default-features = false, features = ["tls"] }
+# SHA-256 of that download, checked against the release's `digest` before it
+# replaces the running exe. Not a new crate either: rustls, under ureq, links
+# ring at this version for its own hashing.
+ring = "0.17"
 
 [dev-dependencies]
 tempfile = "3"

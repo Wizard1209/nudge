@@ -47,6 +47,9 @@ contextBridge.exposeInMainWorld("nudgeSettings", {
   toggleAutostart: (desired: boolean) =>
     ipcRenderer.invoke("settings:toggle-autostart", desired),
   close: () => ipcRenderer.send("settings:close"),
+  updateInfo: () => ipcRenderer.invoke("settings:update-info"),
+  checkUpdate: () => ipcRenderer.invoke("settings:check-update"),
+  openRelease: (url: string) => ipcRenderer.invoke("settings:open-release", url),
 
   // The native window lost focus. The hotkey recorder cancels on it.
   onWindowBlur: (callback: () => void) => {

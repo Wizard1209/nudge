@@ -76,7 +76,8 @@ fn run_autostart_selftest() -> ! {
 /// main app, constructs the autostart provider, and hands both to
 /// `SettingsApp`. The window is opaque, has decorations + taskbar entry,
 /// and lives in its own process. The two processes communicate only
-/// through config.json (and the registry for autostart).
+/// through config.json (and the registry for autostart) — except that on
+/// Windows an update asks the tray named by `--tray-thread` to quit.
 #[cfg(not(target_arch = "wasm32"))]
 fn run_settings_ui() -> eframe::Result {
     use eframe::egui;
@@ -103,16 +104,20 @@ fn run_settings_ui() -> eframe::Result {
     // Everything the window needs from the OS and the disk, in one place:
     // refused rather than opened over a fake when the autostart provider
     // cannot be constructed.
-    let host =
-        match settings_app::SettingsHost::native(config_file.path().to_path_buf(), cfg.autostart) {
-            Ok(h) => h,
-            Err(e) => {
-                eprintln!("[nudge-settings] cannot construct autostart provider: {e}");
-                return Err(eframe::Error::AppCreation(
-                    format!("cannot construct autostart provider: {e}").into(),
-                ));
-            }
-        };
+    let tray_thread = settings_app::parse_tray_thread_arg(std::env::args().skip(1));
+    let host = match settings_app::SettingsHost::native(
+        config_file.path().to_path_buf(),
+        cfg.autostart,
+        tray_thread,
+    ) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("[nudge-settings] cannot construct autostart provider: {e}");
+            return Err(eframe::Error::AppCreation(
+                format!("cannot construct autostart provider: {e}").into(),
+            ));
+        }
+    };
 
     // §9: sized to the form and not resizable — the form's height at this
     // width, its margins and the reserved message line included, so the

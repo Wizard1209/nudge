@@ -106,4 +106,6 @@ pub mod sprite_png;
 pub mod timer;
 #[cfg(target_os = "windows")]
 pub mod tray_bridge;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod update;
 pub mod word_jump;

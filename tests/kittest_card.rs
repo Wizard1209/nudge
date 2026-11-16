@@ -28,8 +28,10 @@ use nudge_web::config::Config;
 use nudge_web::journal::JournalEvent;
 use nudge_web::recorder::{self, EdgeSource, PhysicalKey, PressEdge, Verdict};
 use nudge_web::settings_app::{
-    MARGIN, PersistFn, SettingsApp, SettingsForm, SettingsHost, SpriteCheckFn, WINDOW_SIZE,
+    MARGIN, PersistFn, SettingsApp, SettingsForm, SettingsHost, SpriteCheckFn, UpdateHost,
+    WINDOW_SIZE,
 };
+use nudge_web::update::{self, Action, Release};
 
 // =============================================================================
 // NudgeApp — the spotlight card
@@ -1481,4 +1483,148 @@ fn settings_dims_the_sprite_rows_while_the_sprite_is_off() {
             .is_some_and(|s| !s.enabled && s.path.len() == "/art/s.png".len() + 1),
         "a dimmed field is still edited and saved: {saved:?}"
     );
+}
+
+// -----------------------------------------------------------------------------
+// §9 Updates — a button, never a background check; the result states; the
+// platform's action. The check and the install are fakes that record, so no
+// case reaches the network or touches an exe.
+// -----------------------------------------------------------------------------
+
+/// What the fakes behind the Updates row were asked to do.
+#[derive(Default)]
+struct UpdateCalls {
+    checks: usize,
+    installs: Vec<String>,
+    opened: Vec<String>,
+}
+
+type Shared<T> = std::sync::Arc<std::sync::Mutex<T>>;
+
+fn a_release(tag: &str) -> Release {
+    Release {
+        tag_name: tag.into(),
+        html_url: format!("https://github.com/Wizard1209/nudge/releases/tag/{tag}"),
+        assets: vec![],
+    }
+}
+
+/// A settings window whose check answers `answer` and whose install answers
+/// `installed`, both recorded, with `action` as this platform's.
+fn update_harness<'a>(
+    answer: Result<Release, String>,
+    installed: Result<(), String>,
+    action: Action,
+) -> (Harness<'a, SettingsApp>, Shared<UpdateCalls>) {
+    let calls: Shared<UpdateCalls> = Default::default();
+    let (c, i, o) = (calls.clone(), calls.clone(), calls.clone());
+    let updates = UpdateHost {
+        current: "0.2.2".into(),
+        action,
+        check: std::sync::Arc::new(move || {
+            c.lock().unwrap().checks += 1;
+            answer.clone()
+        }),
+        install: std::sync::Arc::new(move |r: &Release| {
+            i.lock().unwrap().installs.push(r.tag_name.clone());
+            installed.clone()
+        }),
+        open_page: Box::new(move |url: &str| o.lock().unwrap().opened.push(url.into())),
+    };
+    let provider: Box<dyn AutostartProvider> = Box::new(RecordingProvider::new(false));
+    let mut harness = Harness::builder()
+        .with_size(WINDOW_SIZE)
+        .build_eframe(move |cc| {
+            SettingsApp::new(
+                cc,
+                cfg("Alt+J", 7.0, false),
+                SettingsHost {
+                    updates,
+                    ..SettingsHost::headless(provider)
+                },
+            )
+        });
+    harness.run();
+    (harness, calls)
+}
+
+/// Run frames until `text` is on screen: the check and the install answer
+/// from a worker thread.
+fn settle_on(harness: &mut Harness<'_, SettingsApp>, text: &str) {
+    for _ in 0..200 {
+        harness.step();
+        if harness.query_by_label(text).is_some() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("{text:?} never appeared");
+}
+
+#[test]
+fn settings_update_row_names_the_version_and_asks_nothing_until_pressed() {
+    let (mut harness, calls) = update_harness(Ok(a_release("v0.3.0")), Ok(()), Action::Install);
+    for _ in 0..5 {
+        harness.step();
+    }
+    assert!(harness.query_by_label("Nudge 0.2.2").is_some());
+    assert!(harness.query_by_label(update::FOOTNOTE).is_some());
+    assert!(harness.query_by_label("Check for updates").is_some());
+    assert_eq!(
+        calls.lock().unwrap().checks,
+        0,
+        "opening the window asks nothing"
+    );
+}
+
+#[test]
+fn settings_update_check_offers_update_and_update_installs() {
+    let (mut harness, calls) = update_harness(Ok(a_release("v0.3.0")), Ok(()), Action::Install);
+    harness.get_by_label("Check for updates").click();
+    settle_on(&mut harness, "0.3.0 available");
+    assert_eq!(calls.lock().unwrap().checks, 1);
+
+    harness.get_by_label("Update").click();
+    settle_on(&mut harness, "Restarting…");
+    assert_eq!(calls.lock().unwrap().installs, ["v0.3.0"]);
+}
+
+#[test]
+fn settings_update_on_macos_opens_the_release_page() {
+    let (mut harness, calls) = update_harness(Ok(a_release("v0.3.0")), Ok(()), Action::OpenPage);
+    harness.get_by_label("Check for updates").click();
+    settle_on(&mut harness, "0.3.0 available");
+    harness.get_by_label("Open release page").click();
+    harness.run();
+    let calls = calls.lock().unwrap();
+    assert_eq!(
+        calls.opened,
+        ["https://github.com/Wizard1209/nudge/releases/tag/v0.3.0"]
+    );
+    assert!(calls.installs.is_empty());
+}
+
+#[test]
+fn settings_update_says_up_to_date_and_failures_in_the_row() {
+    let (mut harness, _) = update_harness(Ok(a_release("v0.2.2")), Ok(()), Action::Install);
+    harness.get_by_label("Check for updates").click();
+    settle_on(&mut harness, "Up to date");
+
+    let (mut harness, _) = update_harness(
+        Err("Offline: could not reach GitHub".into()),
+        Ok(()),
+        Action::Install,
+    );
+    harness.get_by_label("Check for updates").click();
+    settle_on(&mut harness, "Offline: could not reach GitHub");
+
+    let (mut harness, _) = update_harness(
+        Ok(a_release("v0.3.0")),
+        Err("Download does not match its checksum".into()),
+        Action::Install,
+    );
+    harness.get_by_label("Check for updates").click();
+    settle_on(&mut harness, "0.3.0 available");
+    harness.get_by_label("Update").click();
+    settle_on(&mut harness, "Download does not match its checksum");
 }

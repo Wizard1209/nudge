@@ -18,6 +18,7 @@ interface NudgeAPI {
 
 type NudgeConfig = import("../shared/config").Config;
 type SpriteView = import("../shared/sprite").SpriteView;
+type UpdateRelease = import("../shared/updateCheck").Release;
 
 interface NudgeSettingsAPI {
   getConfig: () => Promise<NudgeConfig>;
@@ -31,6 +32,14 @@ interface NudgeSettingsAPI {
   ) => Promise<{ ok: true } | { ok: false; error: string }>;
   /** Close the Settings window (Cancel / Save done). */
   close: () => void;
+  /** The running version, for the Updates row (§9). */
+  updateInfo: () => Promise<{ version: string }>;
+  /** The update check: GitHub's latest release, or why it could not be read. */
+  checkUpdate: () => Promise<
+    { ok: true; release: UpdateRelease } | { ok: false; error: string }
+  >;
+  /** Open a release page of this repository in the browser. */
+  openRelease: (url: string) => Promise<void>;
   /** Subscribe to the native window's focus loss; returns an unsubscribe. */
   onWindowBlur: (callback: () => void) => () => void;
 }

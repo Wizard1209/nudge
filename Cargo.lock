@@ -2280,6 +2280,7 @@ dependencies = [
  "raw-window-handle",
  "resvg",
  "rfd",
+ "ring",
  "roxmltree",
  "serde",
  "serde_json",
