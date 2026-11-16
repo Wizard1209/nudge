@@ -1,8 +1,8 @@
 //! On-disk user configuration: hotkey, default interval, autostart.
 //!
-//! Where it lives is per-platform, see [`resolve_default_config_path`]:
-//! `~/Library/Application Support/Nudge/` on macOS, next to the journal in
-//! `<Documents>/Nudge/` everywhere else. We chose JSON
+//! It lives in the OS's per-user app-settings folder, see
+//! [`resolve_default_config_path`]: `~/Library/Application Support/Nudge/`
+//! on macOS, `%APPDATA%\Nudge\` on Windows. We chose JSON
 //! over TOML so we don't add a parser dependency (serde_json is already in
 //! the tree for the journal). The file is the **source of truth** shared by
 //! the main process and the settings UI (`src/settings_app.rs`, spec §9):
@@ -268,28 +268,21 @@ pub fn config_path(root: &std::path::Path) -> std::path::PathBuf {
     root.join("Nudge").join("config.json")
 }
 
-/// Where the config lives when `--config` is not given.
+/// Where the config lives when `--config` is not given:
+/// `<config dir>/Nudge/config.json`, the config dir being the OS's per-user
+/// app-settings folder — `~/Library/Application Support` on macOS,
+/// `%APPDATA%` (Roaming AppData) on Windows.
 ///
-/// macOS pins it to `~/Library/Application Support/Nudge/config.json`. Two
-/// reasons it is not under Documents like the journal:
+/// Not Documents, where the journal is: the settings belong to one machine
+/// (autostart, the absolute `sprite.path`, a hotkey tuned to its keyboard),
+/// and Documents is synced — iCloud on macOS, OneDrive Known Folder Move on
+/// Windows. A synced config makes machines overwrite each other, and the file
+/// watcher reacts to edits the user did not make. On macOS Documents is also
+/// TCC-gated, so reading a config there would prompt for consent from a
+/// menu-bar agent with no window up.
 ///
-/// - Documents is one of the folders macOS puts behind TCC, so the first
-///   read prompts for consent — from a *menu-bar agent with no window up*,
-///   which is the worst possible moment to ask. Application Support is not
-///   gated.
-/// - Documents is iCloud-synced on most machines. A config file that syncs
-///   means two Macs fight over one hotkey, and the file watcher sees edits
-///   the user did not make.
-///
-/// The journal stays in Documents deliberately: it is the user's own data,
-/// they are meant to find and read it, and syncing it is a feature.
-///
-/// Windows keeps `<Documents>\Nudge\config.json` — there is no TCC there, the
-/// folder is not synced by default, and moving it would strand existing
-/// installs for no gain.
-///
-/// Neither root depends on where the binary was launched from, so a build in
-/// `target/`, a copy in `/Applications` and a DMG mount all read and write
+/// The root does not depend on where the binary was launched from, so a
+/// build in `target/`, an installed copy and a DMG mount all read and write
 /// the same file.
 #[cfg(not(target_arch = "wasm32"))]
 fn resolve_default_config_path() -> std::path::PathBuf {
@@ -301,21 +294,17 @@ fn resolve_default_config_path() -> std::path::PathBuf {
 /// the journal uses, so the app still starts with a file it can write.
 #[cfg(not(target_arch = "wasm32"))]
 fn config_root() -> std::path::PathBuf {
-    #[cfg(target_os = "macos")]
-    let root = dirs::data_dir(); // ~/Library/Application Support
-    #[cfg(not(target_os = "macos"))]
-    let root = dirs::document_dir();
-    root.unwrap_or_else(|| std::path::PathBuf::from("."))
+    dirs::config_dir().unwrap_or_else(|| std::path::PathBuf::from("."))
 }
 
-/// The pre-move location on macOS, `~/Documents/Nudge/config.json`.
-#[cfg(target_os = "macos")]
+/// Where earlier versions kept the config, `<Documents>/Nudge/config.json`.
+#[cfg(not(target_arch = "wasm32"))]
 fn legacy_config_path() -> Option<std::path::PathBuf> {
     dirs::document_dir().map(|d| config_path(&d))
 }
 
-/// Move a config left behind in `~/Documents/Nudge/` to the Application
-/// Support location, once, before anything reads it.
+/// Move a config left behind in `<Documents>/Nudge/` to the config root,
+/// once, before anything reads it.
 ///
 /// A copy would be worse than either doing nothing or moving: the settings
 /// window would write one file while a hand-editing user kept the other, and
@@ -326,7 +315,7 @@ fn legacy_config_path() -> Option<std::path::PathBuf> {
 /// nudge process leaves the file at the destination either way, which is the
 /// outcome we wanted; on any other failure the caller carries on with an
 /// empty destination and gets a fresh default, which is recoverable by hand.
-#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 fn migrate_legacy_config(destination: &std::path::Path) {
     let Some(legacy) = legacy_config_path() else {
         return;
@@ -336,7 +325,7 @@ fn migrate_legacy_config(destination: &std::path::Path) {
 
 /// The body of [`migrate_legacy_config`], with both paths passed in so it can
 /// be tested without a synthetic HOME.
-#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 fn move_config_file(legacy: &std::path::Path, destination: &std::path::Path) {
     if legacy == destination || destination.exists() || !legacy.exists() {
         return;
@@ -361,14 +350,10 @@ fn move_config_file(legacy: &std::path::Path, destination: &std::path::Path) {
     }
 }
 
-/// No-op off macOS: nothing moved, so there is nothing to migrate.
-#[cfg(all(not(target_os = "macos"), not(target_arch = "wasm32")))]
-fn migrate_legacy_config(_destination: &std::path::Path) {}
-
 /// The config file a process runs against, resolved once at startup: the
 /// `--config <path>` override from the command line, or the platform's
-/// default location — after the legacy `~/Documents` file has been moved
-/// there on macOS. An explicit override names exactly the file to use, so
+/// default location — after a legacy `<Documents>/Nudge` file has been moved
+/// there. An explicit override names exactly the file to use, so
 /// neither the legacy move nor first-run seeding happens beside it: a
 /// throwaway config for the perf test or a sandbox stays the one file that
 /// was named.
@@ -810,7 +795,7 @@ mod tests {
         );
     }
 
-    #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     mod migration_tests {
         use super::*;
 

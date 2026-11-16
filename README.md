@@ -73,12 +73,11 @@ Full contract: [docs/journal-spec.md](docs/journal-spec.md)
   1 000 000; anything else falls back to 10.
 - Journal: `<Documents>/Nudge/journal-rust.ndjson` — `%USERPROFILE%\Documents`
   on Windows, `~/Documents` on macOS.
-- Config: `%USERPROFILE%\Documents\Nudge\config.json` on Windows,
+- Config: `%APPDATA%\Nudge\config.json` on Windows,
   `~/Library/Application Support/Nudge/config.json` on macOS. Not next to
-  the journal there: Documents is TCC-gated and iCloud-synced, and a
-  menu-bar agent should not have to ask for consent to read its own
-  settings. A file left in `~/Documents/Nudge/` by an earlier version is
-  moved on first launch.
+  the journal: the settings belong to one machine, and Documents is synced
+  (OneDrive, iCloud). A file left in `<Documents>/Nudge/` by an earlier
+  version is moved on first launch.
 - Hotkey: **Ctrl+Shift+Space** (`⌃⇧Space`) — opens the popup manually from
   any focused window. Field `hotkey` in `config.json`: any modifiers plus
   one key. `Ctrl`/`⌃`, `Alt`/`Option`/`⌥`, `Shift`/`⇧`,
@@ -130,8 +129,9 @@ and it lives in the notification area.
    value on Windows and the LaunchAgent plist on macOS.
 2. Quit from the tray menu.
 3. Delete the exe, or `Nudge.app` from Applications.
-4. Optionally delete the data: `%USERPROFILE%\Documents\Nudge` on Windows;
-   `~/Documents/Nudge` and `~/Library/Application Support/Nudge` on macOS.
+4. Optionally delete the data: `%USERPROFILE%\Documents\Nudge` and
+   `%APPDATA%\Nudge` on Windows; `~/Documents/Nudge` and
+   `~/Library/Application Support/Nudge` on macOS.
 
 ## Code signing policy
 

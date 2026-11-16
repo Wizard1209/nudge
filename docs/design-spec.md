@@ -474,22 +474,26 @@ The settings window is a separate surface from the popup, with its own chrome
 | | Path |
 |---|---|
 | macOS | `~/Library/Application Support/Nudge/config.json` |
-| Windows | `%USERPROFILE%\Documents\Nudge\config.json` |
+| Windows | `%APPDATA%\Nudge\config.json` |
 
-Neither depends on where the binary was launched from, so a build tree, a
-copy in `/Applications` and a mounted DMG all read and write the same file.
+Both are the OS's per-user app-settings folder. Neither depends on where the
+binary was launched from, so a build tree, an installed copy and a mounted
+DMG all read and write the same file.
 
-macOS does not put it next to the journal, and both reasons are about
-Documents rather than about Application Support: that folder is TCC-gated, so
-the first read prompts for consent from a menu-bar agent with no window on
-screen, and it is iCloud-synced on most machines, which would have two Macs
-fighting over one hotkey and the file watcher (below) seeing edits nobody
-made. The journal stays there on purpose — it is the user's own data, meant
-to be found and read, and syncing it is a feature.
+The config is not next to the journal in Documents because the settings
+belong to one machine — autostart, the absolute `sprite.path`, a hotkey tuned
+to its keyboard — and Documents is synced: iCloud on macOS, OneDrive Known
+Folder Move on Windows. A synced config would have two machines overwriting
+each other and the file watcher (below) seeing edits nobody made here. On
+macOS Documents is also TCC-gated, so a read there would prompt for consent
+from a menu-bar agent with no window on screen. The journal stays in
+Documents on purpose — it is the user's own data, meant to be found and read,
+and syncing it is a feature.
 
-A config left in `~/Documents/Nudge/` by an earlier version is **moved**, once,
-before it is read. Copying instead would leave the settings window writing one
-file while a hand-editing user reads the other.
+A config left in `<Documents>/Nudge/` by an earlier version is **moved**,
+once, before it is read, and only when the new location has no `config.json`
+yet. Copying instead would leave the settings window writing one file while a
+hand-editing user reads the other.
 
 ### Opening
 

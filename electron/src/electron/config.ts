@@ -44,17 +44,13 @@ export function saveConfig(path: string, config: Config): void {
 }
 
 /**
- * Directory holding config.json. On macOS it is `<appData>/Nudge`
- * (`~/Library/Application Support/Nudge`), away from the TCC-gated, iCloud-synced
- * Documents folder; elsewhere (Windows, the WSL bridge) it is the shared
- * `<Documents>/Nudge` directory next to the journal.
+ * Directory holding config.json: `<appData>/Nudge`, the OS's per-user
+ * app-settings folder (`~/Library/Application Support/Nudge` on macOS,
+ * `%APPDATA%\Nudge` on Windows). Not `<Documents>/Nudge` beside the journal:
+ * the settings belong to one machine, and Documents is synced.
  */
-export function configDirFor(
-  platform: NodeJS.Platform,
-  nudgeDir: string,
-  appData: string,
-): string {
-  return platform === "darwin" ? join(appData, "Nudge") : nudgeDir;
+export function configDirFor(appData: string): string {
+  return join(appData, "Nudge");
 }
 
 /**
@@ -75,9 +71,9 @@ export function migrateLegacyConfig(legacy: string, destination: string): void {
 let resolvedPath: string | null = null;
 
 /**
- * Absolute path to config.json (see {@link configDirFor}). On first call on
- * macOS, moves a config left in `<Documents>/Nudge` to the new location, so the
- * move happens before anything reads the file.
+ * Absolute path to config.json (see {@link configDirFor}). On first call,
+ * moves a config left in `<Documents>/Nudge` to the new location, so the move
+ * happens before anything reads the file.
  */
 export function getConfigPath(): string {
   if (resolvedPath) return resolvedPath;
@@ -85,7 +81,7 @@ export function getConfigPath(): string {
   // NUDGE_DIR is the test override: everything stays inside it.
   const dir = process.env.NUDGE_DIR
     ? nudgeDir
-    : configDirFor(process.platform, nudgeDir, app.getPath("appData"));
+    : configDirFor(app.getPath("appData"));
   resolvedPath = join(dir, "config.json");
   if (dir !== nudgeDir) migrateLegacyConfig(join(nudgeDir, "config.json"), resolvedPath);
   return resolvedPath;
