@@ -304,17 +304,18 @@ fn legacy_config_path() -> Option<std::path::PathBuf> {
 }
 
 /// Move a config left behind in `<Documents>/Nudge/` to the config root,
-/// once, before anything reads it.
+/// once, before anything reads it, and return the file to run against.
 ///
-/// A copy would be worse than either doing nothing or moving: the settings
-/// window would write one file while a hand-editing user kept the other, and
-/// nothing on screen would say which one lost. So the old file is *renamed*,
-/// and the log line names both paths.
+/// It is a move, never a copy that stays behind: two live files would have
+/// the settings window writing one while a hand-editing user kept the other.
+/// A rename is tried first. Where it is refused — Documents on another drive
+/// or a network share — the file is copied next to the destination, checked
+/// byte for byte, renamed into place, and only then is the original removed.
 ///
-/// Everything here is best-effort and idempotent. Losing the race to another
-/// nudge process leaves the file at the destination either way, which is the
-/// outcome we wanted; on any other failure the caller carries on with an
-/// empty destination and gets a fresh default, which is recoverable by hand.
+/// If the move fails at any step, the destination stays empty and this
+/// session runs on the legacy file; the next start tries again. Seeding a
+/// default at the destination instead would end the retries and lose the
+/// settings for good.
 #[cfg(not(target_arch = "wasm32"))]
 fn migrate_legacy_config(destination: &std::path::Path) -> std::path::PathBuf {
     match legacy_config_path() {
@@ -327,7 +328,6 @@ fn migrate_legacy_config(destination: &std::path::Path) -> std::path::PathBuf {
 
 /// The body of [`migrate_legacy_config`], with both paths and the rename step
 /// passed in so it can be tested without a synthetic HOME or a second drive.
-/// Returns the file to run against.
 #[cfg(not(target_arch = "wasm32"))]
 fn move_config_file(
     legacy: &std::path::Path,
@@ -337,31 +337,72 @@ fn move_config_file(
     if legacy == destination || destination.exists() || !legacy.exists() {
         return destination.to_path_buf();
     }
-    if let Some(parent) = destination.parent()
-        && let Err(e) = std::fs::create_dir_all(parent)
-    {
-        eprintln!("[nudge] cannot create {}: {e}", parent.display());
-        return destination.to_path_buf();
+    let moved = destination
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| rename(legacy, destination))
+        .or_else(|_| move_by_copy(legacy, destination, &rename));
+    match moved {
+        Ok(()) => {
+            eprintln!(
+                "[nudge] moved config {} → {}",
+                legacy.display(),
+                destination.display()
+            );
+            destination.to_path_buf()
+        }
+        Err(e) => {
+            eprintln!(
+                "[nudge] could not move config {} → {}: {e}; using it where it is",
+                legacy.display(),
+                destination.display()
+            );
+            legacy.to_path_buf()
+        }
     }
-    match rename(legacy, destination) {
-        Ok(()) => eprintln!(
-            "[nudge] moved config {} → {}",
-            legacy.display(),
-            destination.display()
-        ),
-        Err(e) => eprintln!(
-            "[nudge] could not move config {} → {}: {e}",
-            legacy.display(),
-            destination.display()
-        ),
+}
+
+/// Copy, verify, rename into place, then remove the original. If the original
+/// cannot be removed, the destination is already the live file (the next
+/// start finds it and leaves the original alone), so that is logged rather
+/// than undone.
+#[cfg(not(target_arch = "wasm32"))]
+fn move_by_copy(
+    legacy: &std::path::Path,
+    destination: &std::path::Path,
+    rename: impl Fn(&std::path::Path, &std::path::Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let bytes = std::fs::read(legacy)?;
+    let mut tmp = destination.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = std::path::PathBuf::from(tmp);
+    let placed = std::fs::write(&tmp, &bytes)
+        .and_then(|()| std::fs::read(&tmp))
+        .and_then(|copied| {
+            if copied == bytes {
+                rename(&tmp, destination)
+            } else {
+                Err(std::io::Error::other("the copy differs from the original"))
+            }
+        });
+    if placed.is_err() {
+        let _ = std::fs::remove_file(&tmp);
     }
-    destination.to_path_buf()
+    placed?;
+    if let Err(e) = std::fs::remove_file(legacy) {
+        eprintln!(
+            "[nudge] config copied to {}, but {} could not be removed ({e}); it is no longer read",
+            destination.display(),
+            legacy.display()
+        );
+    }
+    Ok(())
 }
 
 /// The config file a process runs against, resolved once at startup: the
 /// `--config <path>` override from the command line, or the platform's
 /// default location — after a legacy `<Documents>/Nudge` file has been moved
-/// there. An explicit override names exactly the file to use, so
+/// there, or that legacy file itself if it could not be. An explicit override names exactly the file to use, so
 /// neither the legacy move nor first-run seeding happens beside it: a
 /// throwaway config for the perf test or a sandbox stays the one file that
 /// was named.

@@ -493,7 +493,11 @@ and syncing it is a feature.
 A config left in `<Documents>/Nudge/` by an earlier version is **moved**,
 once, before it is read, and only when the new location has no `config.json`
 yet. Copying instead would leave the settings window writing one file while a
-hand-editing user reads the other.
+hand-editing user reads the other. Where a rename is refused — Documents on
+another drive or a network share — the move copies the file, checks the copy
+and only then removes the original. If the move fails, that session runs on
+the old file and the next start tries again; no default is written to the new
+location, since its existence would end the retries.
 
 ### Opening
 
