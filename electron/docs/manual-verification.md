@@ -41,7 +41,7 @@ headless CI/WSL environment. Verify them by hand on a Windows build
 
 ## Config file watcher → live re-register (§9)
 
-- [ ] Hand-edit `config.json` (`~/Library/Application Support/Nudge/config.json` on macOS, `<Documents>/Nudge/config.json` on Windows), change only the
+- [ ] Hand-edit `config.json` (`~/Library/Application Support/Nudge/config.json` on macOS, `%APPDATA%\Nudge\config.json` on Windows), change only the
       `hotkey`, save → the **old** combo stops working and the **new** one opens
       the popup, without restarting the app (≤ ~1s).
 - [ ] Edit only `default_interval_minutes` or `autostart` → no live effect

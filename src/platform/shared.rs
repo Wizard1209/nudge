@@ -5,8 +5,10 @@
 //! different frames (macOS) and share no object. A backend supplies one
 //! thing on top: `super::wake`, called after a write it has to act on.
 
-use std::sync::Mutex;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::config::SpriteConfig;
@@ -133,6 +135,11 @@ static CONFIG_RELOAD_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// older one still waiting.
 static PENDING_SPRITE: Mutex<Option<SpriteConfig>> = Mutex::new(None);
 
+/// The config file this process runs on, as `main` resolved it — the
+/// destination, or the legacy file when the move to it failed (spec §9).
+/// Recorded by the backend's `start`; the settings window is pointed at it.
+static CONFIG_PATH: OnceLock<PathBuf> = OnceLock::new();
+
 // ---------- what the app reads and writes ----------------------------------
 
 pub fn take_tray_clicked() -> bool {
@@ -218,7 +225,8 @@ pub(crate) fn clear_timer() {
 }
 
 /// Start the settings window: a second instance of this binary with
-/// `--settings`. The two processes talk only through `config.json` (and the
+/// `--settings`, pointed at this process's config file ([`settings_args`]).
+/// The two processes talk only through `config.json` (and the
 /// OS's autostart entry). A failed spawn is logged and otherwise ignored —
 /// settings are editable by hand (spec §5) — and `--settings` is
 /// single-instance in its own right, so repeat clicks cannot stack windows.
@@ -231,10 +239,27 @@ pub(crate) fn spawn_settings_process() -> Option<std::process::Child> {
         .map_err(|e| eprintln!("[nudge] could not locate own executable: {e}"))
         .ok()?;
     std::process::Command::new(exe)
-        .arg("--settings")
+        .args(settings_args(CONFIG_PATH.get().map(PathBuf::as_path)))
         .spawn()
         .map_err(|e| eprintln!("[nudge] could not open settings: {e}"))
         .ok()
+}
+
+/// Record the config file this process runs on, for the settings window.
+pub(crate) fn record_config_path(path: PathBuf) {
+    let _ = CONFIG_PATH.set(path);
+}
+
+/// `--settings`, and `--config <path>` naming this process's config file: the
+/// settings process opens exactly that file and never resolves or moves one
+/// itself. Resolving on its own, it could move a legacy file this process
+/// failed to move, and the two would then run on different files.
+fn settings_args(config_path: Option<&Path>) -> Vec<OsString> {
+    let mut args = vec![OsString::from(crate::settings_app::SETTINGS_ARG)];
+    if let Some(path) = config_path {
+        args.extend(["--config".into(), path.into()]);
+    }
+    args
 }
 
 /// Park a sprite change for the app to apply while hidden (spec §10).
@@ -245,6 +270,23 @@ pub(crate) fn park_sprite(cfg: SpriteConfig) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_settings_process_opens_the_file_this_process_runs_on() {
+        // The legacy file, as after a failed move, with a space in it as in
+        // a Windows user name.
+        let in_use = Path::new("/Users/Jane Doe/Documents/Nudge/config.json");
+        let args: Vec<String> = settings_args(Some(in_use))
+            .into_iter()
+            .map(|a| a.into_string().unwrap())
+            .collect();
+
+        assert!(crate::settings_app::parse_settings_arg(&args), "{args:?}");
+        let file = crate::config::ConfigFile::from_args_or(&args, || {
+            panic!("the settings process resolved the config itself: {args:?}")
+        });
+        assert_eq!(file.path(), in_use);
+    }
 
     // A 10-minute interval throughout: 12 petals, one every 50s, drift capped
     // at 250ms.

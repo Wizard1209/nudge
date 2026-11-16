@@ -7,9 +7,10 @@ import {
   mkdirSync,
   existsSync,
   readdirSync,
+  renameSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import {
   loadConfig,
@@ -207,19 +208,9 @@ describe("saveConfig atomicity", () => {
 });
 
 describe("configDirFor", () => {
-  const docsNudge = "/docs/Nudge";
-  const appData = "/Users/u/Library/Application Support";
-
-  it("puts the config under appData/Nudge on darwin, not beside the journal", () => {
-    expect(configDirFor("darwin", docsNudge, appData)).toBe(join(appData, "Nudge"));
-  });
-
-  it("keeps the config beside the journal on win32", () => {
-    expect(configDirFor("win32", docsNudge, appData)).toBe(docsNudge);
-  });
-
-  it("keeps the config beside the journal on linux (the WSL bridge)", () => {
-    expect(configDirFor("linux", docsNudge, appData)).toBe(docsNudge);
+  it("puts the config under appData/Nudge, not beside the journal", () => {
+    const appData = "C:\\Users\\u\\AppData\\Roaming";
+    expect(configDirFor(appData)).toBe(join(appData, "Nudge"));
   });
 });
 
@@ -235,22 +226,76 @@ describe("migrateLegacyConfig", () => {
 
   it("moves the legacy file when the destination does not exist", () => {
     writeFileSync(legacy, '{"hotkey":"Alt+J"}');
-    migrateLegacyConfig(legacy, dest);
+    expect(migrateLegacyConfig(legacy, dest)).toBe(dest);
     expect(existsSync(legacy)).toBe(false);
     expect(readFileSync(dest, "utf-8")).toBe('{"hotkey":"Alt+J"}');
+  });
+
+  // What Windows answers when the two folders are on different drives, and
+  // Unix when they are on different volumes.
+  const crossDevice = () => Object.assign(new Error("EXDEV: cross-device link"), { code: "EXDEV" });
+  const refuseTheOriginal = (from: string, to: string) => {
+    if (from === legacy) throw crossDevice();
+    renameSync(from, to);
+  };
+
+  it("moves by copying when the rename is refused across drives", () => {
+    const body = '{"hotkey":"Alt+J","default_interval_minutes":25}';
+    writeFileSync(legacy, body);
+
+    expect(migrateLegacyConfig(legacy, dest, refuseTheOriginal)).toBe(dest);
+
+    expect(existsSync(legacy), "a copy that keeps its source is not a move").toBe(false);
+    expect(readFileSync(dest, "utf-8")).toBe(body);
+    expect(readdirSync(dirname(dest)), "no temp file left behind").toEqual(["config.json"]);
+  });
+
+  it("runs on the legacy file and writes nothing when the copy cannot be put in place", () => {
+    // Every rename fails, so the checked copy cannot be renamed into place
+    // either. A file at the destination would end the retries for good.
+    const body = '{"hotkey":"Alt+J"}';
+    writeFileSync(legacy, body);
+
+    expect(
+      migrateLegacyConfig(legacy, dest, () => {
+        throw crossDevice();
+      }),
+      "this session reads and writes the old file",
+    ).toBe(legacy);
+
+    expect(readFileSync(legacy, "utf-8")).toBe(body);
+    expect(existsSync(dest)).toBe(false);
+    expect(readdirSync(dirname(dest)), "no temp file left behind").toEqual([]);
+
+    // The next start tries again.
+    expect(migrateLegacyConfig(legacy, dest)).toBe(dest);
+    expect(existsSync(legacy)).toBe(false);
+    expect(readFileSync(dest, "utf-8")).toBe(body);
+  });
+
+  it("runs on the legacy file and writes no config when the copy fails", () => {
+    const body = '{"hotkey":"Alt+J"}';
+    writeFileSync(legacy, body);
+    // A directory where the temp copy goes makes writing the copy fail.
+    mkdirSync(dest + ".tmp", { recursive: true });
+
+    expect(migrateLegacyConfig(legacy, dest, refuseTheOriginal)).toBe(legacy);
+
+    expect(readFileSync(legacy, "utf-8")).toBe(body);
+    expect(existsSync(dest)).toBe(false);
   });
 
   it("leaves both files alone when the destination exists", () => {
     writeFileSync(legacy, "old");
     mkdirSync(join(dir, "AppSupport", "Nudge"), { recursive: true });
     writeFileSync(dest, "new");
-    migrateLegacyConfig(legacy, dest);
+    expect(migrateLegacyConfig(legacy, dest)).toBe(dest);
     expect(readFileSync(legacy, "utf-8")).toBe("old");
     expect(readFileSync(dest, "utf-8")).toBe("new");
   });
 
   it("does nothing, and creates nothing, when there is no legacy file", () => {
-    migrateLegacyConfig(legacy, dest);
+    expect(migrateLegacyConfig(legacy, dest)).toBe(dest);
     expect(existsSync(dest)).toBe(false);
     expect(existsSync(join(dir, "AppSupport"))).toBe(false);
   });
