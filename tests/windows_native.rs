@@ -1,7 +1,8 @@
 //! The spec §4 state machine, observed on Windows from outside the app.
 //!
 //! Each test launches the built `nudge.exe` with `--config` pointing at a
-//! temporary file and then sees it only the way a user would: whether its
+//! temporary file — launch is Waiting, so the first popup is the first
+//! deadline's — and then sees it only the way a user would: whether its
 //! window is on screen and holds the foreground, what the journal on disk
 //! says, and when the popup comes back. Input is synthetic (`SendInput`), the
 //! hotkey included. Nothing from the crate is imported, so the file builds
@@ -33,7 +34,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::BOOL;
 
-/// From spawn to a visible popup, cold start under x64 emulation included.
+/// What launch adds to the first interval before its popup is visible, cold
+/// start under x64 emulation included.
 const LAUNCH_BUDGET: Duration = Duration::from_secs(15);
 /// From a key press to the window it acts on being shown or hidden.
 const REACTION: Duration = Duration::from_secs(3);
@@ -125,6 +127,31 @@ impl App {
 
     fn hidden_by(&self, deadline: Instant) -> Option<Instant> {
         poll_until(deadline, || !self.is_shown())
+    }
+
+    /// When the popup was first seen on screen and still there a frame
+    /// later. eframe shows its window after the first frame it paints and
+    /// launch hides it again in that frame, so one sample can catch an empty
+    /// window.
+    fn stays_shown_by(&self, deadline: Instant) -> Option<Instant> {
+        poll_until(deadline, || {
+            self.is_shown() && {
+                std::thread::sleep(FRAME);
+                self.is_shown()
+            }
+        })
+    }
+
+    /// The first popup: launch is Waiting, so it is the first deadline's,
+    /// `minutes` (the configured interval) after the app has started. Waited
+    /// for as one that stays, past the window launch shows and hides.
+    fn first_popup(&self, minutes: f64) -> Instant {
+        let within = LAUNCH_BUDGET + secs(minutes);
+        self.stays_shown_by(Instant::now() + within)
+            .unwrap_or_else(|| {
+                panic!("first deadline: the popup did not appear within {within:?}")
+            });
+        self.wait_ready(REACTION, "first deadline")
     }
 
     /// Wait for the popup to be up and to hold the keyboard, then give the
@@ -362,13 +389,23 @@ fn expect_back(app: &App, from: Instant, interval: Duration, what: &str) -> Inst
 
 // ---------- the tests -----------------------------------------------------------------
 
-/// Asking·Timer is the initial state: launch shows the popup, holding the
+/// Waiting is the initial state: launch shows nothing, and the popup comes
+/// with the first deadline, the configured interval later, holding the
 /// keyboard.
 #[test]
 #[ignore = "drives a real desktop; run in the Windows VM via scripts/native-tests-windows.sh"]
-fn launch_shows_the_popup_with_the_keyboard() {
-    let app = App::launch(&config_json("Ctrl+Shift+Space", 10.0));
-    app.wait_ready(LAUNCH_BUDGET, "launch");
+fn launch_waits_and_the_first_deadline_shows_the_popup_with_the_keyboard() {
+    // 21 s: longer than a cold start, so a popup shown at launch would be on
+    // screen inside it.
+    const MINUTES: f64 = 0.35;
+    let app = App::launch(&config_json("Ctrl+Shift+Space", MINUTES));
+    let launched = Instant::now();
+    assert!(
+        app.stays_shown_by(launched + secs(MINUTES) - EARLY)
+            .is_none(),
+        "the popup came up before the first deadline: launch is Waiting (spec §4)"
+    );
+    app.first_popup(MINUTES);
     assert!(app.is_shown() && app.has_foreground());
 }
 
@@ -378,13 +415,13 @@ fn launch_shows_the_popup_with_the_keyboard() {
 #[ignore = "drives a real desktop; run in the Windows VM via scripts/native-tests-windows.sh"]
 fn esc_from_a_timer_popup_rearms_it_from_the_minutes_field() {
     let app = App::launch(&config_json("Ctrl+Shift+Space", 0.05));
-    app.wait_ready(LAUNCH_BUDGET, "launch");
+    app.first_popup(0.05);
     // Third row, whole text replaced: 0.15 min = 9 s against the config's 3 s.
     press_then_frame(&[VK_TAB]);
     press_then_frame(&[VK_TAB]);
     press_then_frame(&[VK_CONTROL, VIRTUAL_KEY(b'A' as u16)]);
     type_text("0.15");
-    let hidden = app.leave("Esc from the launch popup");
+    let hidden = app.leave("Esc from the first popup");
     expect_back(&app, hidden, secs(0.15), "after Esc from a timer popup");
 }
 
@@ -396,7 +433,7 @@ fn esc_from_a_timer_popup_rearms_it_from_the_minutes_field() {
 fn submit_with_text_writes_one_journal_line_and_rearms() {
     let journal = Journal::isolate();
     let app = App::launch(&config_json("Ctrl+Shift+Space", 0.1));
-    app.wait_ready(LAUNCH_BUDGET, "launch");
+    app.first_popup(0.1);
     type_text("writing tests");
     press_then_frame(&[VK_TAB]);
     type_text("no");
@@ -412,7 +449,7 @@ fn submit_with_text_writes_one_journal_line_and_rearms() {
     assert_eq!(e["implementation"], "rust", "{e}");
     assert_eq!(
         e["trigger_source"], "timer",
-        "the launch popup is a timer one: {e}"
+        "the first deadline's popup is a timer one: {e}"
     );
     assert_eq!(e["doing"], "writing tests", "{e}");
     assert_eq!(e["bullshit"], "no", "{e}");
@@ -447,7 +484,7 @@ fn submit_with_text_writes_one_journal_line_and_rearms() {
 fn submit_with_empty_answers_writes_nothing_and_rearms() {
     let journal = Journal::isolate();
     let app = App::launch(&config_json("Ctrl+Shift+Space", 0.1));
-    app.wait_ready(LAUNCH_BUDGET, "launch");
+    app.first_popup(0.1);
     type_text("   ");
     let hidden = app.submit("Enter with blank answers");
     expect_back(&app, hidden, secs(0.1), "after an empty Submit");
@@ -466,8 +503,8 @@ fn submit_with_empty_answers_writes_nothing_and_rearms() {
 fn hotkey_summons_while_waiting_and_esc_keeps_the_deadline() {
     let interval = secs(0.2);
     let app = App::launch(&config_json("Ctrl+Shift+Space", 0.2));
-    app.wait_ready(LAUNCH_BUDGET, "launch");
-    let armed = app.leave("Esc from the launch popup");
+    app.first_popup(0.2);
+    let armed = app.leave("Esc from the first popup");
 
     std::thread::sleep(Duration::from_secs(3));
     app.summon(HOTKEY_DEFAULT, "hotkey while waiting");
@@ -496,8 +533,8 @@ fn hotkey_summons_while_waiting_and_esc_keeps_the_deadline() {
 fn a_deadline_passed_behind_a_manual_popup_fires_when_it_is_left() {
     let interval = secs(0.1);
     let app = App::launch(&config_json("Ctrl+Shift+Space", 0.1));
-    app.wait_ready(LAUNCH_BUDGET, "launch");
-    let armed = app.leave("Esc from the launch popup");
+    app.first_popup(0.1);
+    let armed = app.leave("Esc from the first popup");
 
     std::thread::sleep(Duration::from_millis(1500));
     app.summon(HOTKEY_DEFAULT, "hotkey while waiting");
@@ -526,9 +563,15 @@ fn a_deadline_passed_behind_a_manual_popup_fires_when_it_is_left() {
 #[ignore = "drives a real desktop; run in the Windows VM via scripts/native-tests-windows.sh"]
 fn live_reload_moves_the_hotkey() {
     let journal = Journal::isolate();
-    let app = App::launch(&config_json("Ctrl+Shift+Space", 10.0));
-    app.wait_ready(LAUNCH_BUDGET, "launch");
-    app.leave("Esc from the launch popup");
+    let app = App::launch(&config_json("Ctrl+Shift+Space", 0.05));
+    app.first_popup(0.05);
+    // Ten minutes in the field, so the Leave re-arms a timer that cannot
+    // fire during the test.
+    press_then_frame(&[VK_TAB]);
+    press_then_frame(&[VK_TAB]);
+    press_then_frame(&[VK_CONTROL, VIRTUAL_KEY(b'A' as u16)]);
+    type_text("10");
+    app.leave("Esc from the first popup");
 
     app.summon(HOTKEY_DEFAULT, "the configured hotkey, before the reload");
     app.leave("Esc from the summoned popup");
@@ -581,7 +624,7 @@ fn a_manual_open_at_the_deadline_does_not_stop_the_nudges() {
     const ROUNDS: usize = 40;
     let interval = secs(MINUTES);
     let app = App::launch(&config_json("Ctrl+Shift+Space", MINUTES));
-    app.wait_ready(LAUNCH_BUDGET, "launch");
+    app.first_popup(MINUTES);
 
     // When, after a Leave, the timer's popup appears.
     let mut fire = Vec::new();

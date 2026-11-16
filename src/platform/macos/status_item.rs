@@ -93,8 +93,8 @@ impl StatusItem {
             button,
             _target: target,
         };
-        // Refreshed by `tick` as soon as a timer is armed. Until then the
-        // launch popup is up, so nobody reads this placeholder.
+        // Refreshed by `tick` as soon as a timer is armed, which the app's
+        // first frame does (spec §4: launch arms the interval).
         this.set_frame(daisy::PETAL_COUNT, None);
         this.set_tooltip("Nudge");
         Ok(this)

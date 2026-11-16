@@ -185,8 +185,8 @@ pub struct NudgeApp {
     bullshit: String,
     next_minutes: String,
     focus_first: bool,
-    /// `true` until the first `ui()` has adopted the native window and
-    /// presented the launch popup.
+    /// `true` until the first `ui()` has adopted the native window and put
+    /// the app in Waiting.
     first_frame: bool,
 
     // Shared state
@@ -216,6 +216,10 @@ pub struct NudgeApp {
     /// it directly (`set_pending_sprite`).
     #[cfg(not(target_arch = "wasm32"))]
     pending_sprite: Option<SpriteConfig>,
+    /// A Deadline handed to this app alone (`deliver_deadline`), taken by the
+    /// next `ui()` like the platform's timer edge.
+    #[cfg(not(target_arch = "wasm32"))]
+    deadline_delivered: bool,
     /// The screen the popup is laid out on, injected by the kittest tier,
     /// which has no OS window; the real window reads its own screen
     /// (`platform::screen_geometry`).
@@ -283,12 +287,11 @@ impl NudgeApp {
         // Force frame #1 ourselves. When the process starts without window
         // activation (autostart at logon, spawn from a background shell) the
         // OS delivers no input events to the fresh window, and the event
-        // loop never paints on its own: the window sits as a transparent
-        // never-rendered overlay, `ui()` never runs, so the window is never
-        // adopted by the platform (its Show/hotkey wakeups need it) and the frozen
-        // first-launch timer can never be started by closing the popup.
-        // Observed live on Windows: launch unfocused → no frame until the
-        // first real input event hits the window.
+        // loop never paints on its own: `ui()` never runs, so the window is
+        // never adopted by the platform (its Show/hotkey wakeups need it)
+        // and the launch interval is never armed. Observed live on Windows:
+        // launch unfocused → no frame until the first real input event hits
+        // the window.
         cc.egui_ctx.request_repaint();
 
         Self {
@@ -297,18 +300,13 @@ impl NudgeApp {
             next_minutes: default_minutes.to_string(),
             focus_first: true,
             first_frame: true,
-            // Spec §4: timer is frozen until the user closes the popup for
-            // the first time (Submit / Esc / Switch). hide_popup → arm_timer
-            // unfreezes it with the interval the user chose.
+            // The browser build opens on the popup (spec §4), so its timer
+            // stays frozen until the first close arms it.
             #[cfg(target_arch = "wasm32")]
             timer: Timer::frozen(),
             journal: journal::default_sink(),
             trigger_source: TriggerSource::Timer,
-            // Born hidden. The launch popup is NOT a special constructor
-            // state: the first frame performs a regular show_popup
-            // transition (see `ui`), so "visible" has exactly one entry
-            // point and the show side effects (foreground grab, arming)
-            // can't be skipped by construction.
+            // Born hidden; the first frame makes it Waiting (see `ui`).
             popup_visible: false,
             error_message: None,
             card_rect: None,
@@ -316,6 +314,8 @@ impl NudgeApp {
             retired_textures: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             pending_sprite: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            deadline_delivered: false,
             geometry_override: None,
             placed: None,
             #[cfg(target_os = "macos")]
@@ -365,6 +365,15 @@ impl NudgeApp {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn set_pending_sprite(&mut self, cfg: SpriteConfig) {
         self.pending_sprite = Some(cfg);
+    }
+
+    /// The interval elapsed (spec §4 Deadline), for this app alone. The
+    /// kittest tier's hook: what raises it in the running app is the
+    /// platform's countdown, which is process-wide and runs on a thread or a
+    /// tick the harness does not have.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn deliver_deadline(&mut self) {
+        self.deadline_delivered = true;
     }
 
     /// Apply the parked sprite change if the popup is hidden (spec §10
@@ -629,9 +638,6 @@ impl NudgeApp {
 
     /// Close the popup (spec §4): execute the close decision, take the
     /// window off screen, start the next interval if the decision says so.
-    // `ctx` is only needed to hide the native window; the browser build has
-    // none.
-    #[cfg_attr(target_arch = "wasm32", expect(unused_variables))]
     fn hide_popup(&mut self, ctx: &egui::Context, action: Action) {
         // The entire spec §4 close decision lives in `decide_close`; this
         // method is its executor. The only thing we resolve here that the
@@ -677,6 +683,17 @@ impl NudgeApp {
             self.doing.clear();
             self.bullshit.clear();
         }
+        // `Some(interval)` ⇒ start the next interval; `None` ⇒ leave the live
+        // timer ticking (manual Esc / Switch).
+        self.enter_waiting(ctx, outcome.reset_timer);
+    }
+
+    /// Enter Waiting (spec §4): take the window off screen and, given an
+    /// interval, arm it. Every close ends here, and so does launch.
+    // `ctx` is only needed to hide the native window; the browser build has
+    // none.
+    #[cfg_attr(target_arch = "wasm32", expect(unused_variables))]
+    fn enter_waiting(&mut self, ctx: &egui::Context, interval: Option<std::time::Duration>) {
         self.focus_first = true;
         self.popup_visible = false;
         self.armed = false;
@@ -690,9 +707,7 @@ impl NudgeApp {
         #[cfg(not(target_arch = "wasm32"))]
         self.withdraw_window(ctx);
 
-        // `Some(interval)` ⇒ start the next interval; `None` ⇒ leave the live
-        // timer ticking (manual Esc / Switch).
-        if let Some(interval) = outcome.reset_timer {
+        if let Some(interval) = interval {
             self.arm_timer(interval);
         }
 
@@ -1055,14 +1070,16 @@ impl eframe::App for NudgeApp {
             #[cfg(not(target_arch = "wasm32"))]
             crate::platform::adopt_window(frame);
 
-            // Spec §1/§4: present the launch popup. The app is constructed
-            // hidden, so this is the one and only entry into the visible
-            // state — the same show_popup transition as timer/tray/hotkey
-            // opens, with the same side effects (force_foreground so the
-            // popup gets keyboard focus even when the launcher — autostart
-            // at logon — didn't hand us foreground, then arm the
-            // focus-loss check). Runs after `adopt_window` because the
-            // Windows foreground dance needs the handle it stores.
+            // Spec §4: the machine starts in Waiting, armed for the default
+            // interval, on every launch. eframe puts the window on screen
+            // after this first frame; `enter_waiting` takes it off again.
+            // Runs after `adopt_window`, whose handle the Windows hide needs.
+            #[cfg(not(target_arch = "wasm32"))]
+            self.enter_waiting(ctx, Some(nudge_state::launch_interval(&self.next_minutes)));
+            // The browser build is a harness for the card, with no OS that
+            // launches it: it opens on the popup as if the interval had
+            // elapsed.
+            #[cfg(target_arch = "wasm32")]
             self.show_popup(ctx, TriggerSource::Timer);
 
             self.first_frame = false;
@@ -1078,7 +1095,9 @@ impl eframe::App for NudgeApp {
                 self.show_popup(ctx, TriggerSource::Manual);
             }
 
-            if crate::platform::take_timer_fired() && !self.popup_visible {
+            let deadline =
+                crate::platform::take_timer_fired() | std::mem::take(&mut self.deadline_delivered);
+            if deadline && !self.popup_visible {
                 self.show_popup(ctx, TriggerSource::Timer);
             }
         }

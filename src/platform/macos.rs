@@ -183,9 +183,9 @@ pub fn start(hotkey: Option<Hotkey>, config_path: PathBuf, initial: config::Conf
 pub fn start_on_event_loop(ctx: &egui::Context) {
     *WAKE_CTX.lock().unwrap() = Some(ctx.clone());
 
-    // The launch popup is a show like any other (spec §1, "on every trigger
-    // alike"), and this runs before its first frame — so before
-    // `show_popup` makes Nudge the frontmost application.
+    // The first frame places the window before anything shows it: give it
+    // the screen a show would pick (spec §1), read while the user's
+    // application is still the frontmost one.
     if let Some(mtm) = MainThreadMarker::new() {
         choose_screen(mtm);
     }

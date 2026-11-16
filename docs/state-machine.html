@@ -362,7 +362,7 @@ footer code{background:none;color:var(--dim);padding:0}
     <button class="ev" data-ev="submit">SUBMIT<small>Enter</small></button>
     <button class="ev" data-ev="leave">LEAVE<small>Esc · клик мимо · потеря фокуса</small></button>
    </div>
-   <p class="why" id="why">Старт — <b>ASKING · TIMER</b>: первый запуск показывает попап так, будто интервал уже вышел. Это не особый случай, это точка входа машины.</p>
+   <p class="why" id="why">Старт — <b>WAITING</b>: любой запуск — вручную, при входе в систему, после обновления — начинается здесь, с таймером на интервал из конфига. Первый попап приносит первый DEADLINE.</p>
 
    <div class="trace"><div class="tbar">ПРОТОКОЛ<button class="rst" data-ev="reset">сбросить стенд</button></div><ol id="trace"></ol></div>
   </div>
@@ -409,13 +409,13 @@ footer code{background:none;color:var(--dim);padding:0}
   const val = (id) => $(id).value;
 
   function reset() {
-    st = "ASK_T";           // spec §4: Asking·Timer is the initial state
+    st = "WAITING";         // spec §4: Waiting is the initial state
     journal = [];
     log = [];
     $("f-doing").value = "пишу спеку";
     $("f-bs").value = "";
     $("f-min").value = "10";
-    say("Старт — <b>ASKING · TIMER</b>: первый запуск показывает попап так, будто интервал уже вышел. Это не особый случай, это точка входа машины.");
+    say("Старт — <b>WAITING</b>: любой запуск — вручную, при входе в систему, после обновления — начинается здесь, с таймером на интервал из конфига. Первый попап приносит первый DEADLINE.");
     render();
   }
 

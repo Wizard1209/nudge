@@ -114,8 +114,9 @@ const DRIFT_FRAME: Duration = Duration::from_millis(33);
 /// spin.
 const MIN_WAKE: Duration = Duration::from_millis(20);
 
-/// `None` when no timer is armed — before the first close (spec §4 freezes
-/// the timer until then) and between an expiry and the reset that follows.
+/// `None` when no timer is armed — before the app's first frame arms the
+/// launch interval (spec §4), and between an expiry and the reset that
+/// follows.
 static TIMER: Mutex<Option<ArmedTimer>> = Mutex::new(None);
 
 /// Edge flags: raised by the backend when it has revealed the popup, taken
@@ -125,8 +126,8 @@ static TRAY_CLICKED: AtomicBool = AtomicBool::new(false);
 static TIMER_FIRED: AtomicBool = AtomicBool::new(false);
 
 /// `true` while the popup is on screen: the backend neither counts down nor
-/// animates then. Starts `true` because the app opens with the launch popup.
-static POPUP_VISIBLE: AtomicBool = AtomicBool::new(true);
+/// animates then. Starts `false`: the app launches in Waiting (spec §4).
+static POPUP_VISIBLE: AtomicBool = AtomicBool::new(false);
 
 /// Set by the `config_watcher` callback, off any backend thread, when
 /// `config.json` changes on disk; taken by the backend on its next pass.
@@ -203,7 +204,9 @@ pub(crate) fn take_config_reload_requested() -> bool {
     CONFIG_RELOAD_REQUESTED.swap(false, Ordering::SeqCst)
 }
 
-pub(crate) fn armed_timer() -> Option<ArmedTimer> {
+/// The armed interval, if any. Public for the kittest tier, which reads what
+/// launch and each close armed.
+pub fn armed_timer() -> Option<ArmedTimer> {
     *TIMER.lock().unwrap()
 }
 
