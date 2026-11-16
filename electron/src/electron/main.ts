@@ -37,7 +37,6 @@ import { displayFor } from "../shared/display";
 import { parseHotkey, hotkeyToAccelerator } from "../shared/hotkey";
 import {
   restartsTimer,
-  INITIAL_TRIGGER_SOURCE,
   type TriggerSource,
   type CloseAction,
 } from "../shared/nudgeFlow";
@@ -97,7 +96,8 @@ let timerId: ReturnType<typeof setTimeout> | null = null;
 let deadlineOwed = false;
 let timerStartMs = 0;
 let timerIntervalMs = 0;
-let lastTriggerSource: TriggerSource = INITIAL_TRIGGER_SOURCE;
+// Set by every show; nothing closes a popup that was not shown.
+let lastTriggerSource: TriggerSource = "timer";
 
 // --- Config / hotkey / autostart ---
 
@@ -304,7 +304,7 @@ function parseMinutes(value: unknown): number {
 // --- Tray ---
 
 function elapsedSinceTimerStart(): number {
-  // Before the first close the timer is idle — daisy renders fully on stem.
+  // Before launch arms the timer — daisy renders fully on stem.
   if (timerStartMs === 0) return 0;
   return Date.now() - timerStartMs;
 }
@@ -851,10 +851,9 @@ app.whenReady().then(async () => {
   screen.on("display-metrics-changed", () => {
     if (win?.isVisible()) positionCard(screen.getDisplayMatching(win.getBounds()));
   });
-  // First-launch rule (spec §4): show popup immediately, start timer only
-  // after the first close (Enter / Esc / Switch). Tray tooltip stays on the
-  // default interval until then.
-  win?.once("ready-to-show", () => showNudge(INITIAL_TRIGGER_SOURCE));
+  // Spec §4: every launch starts in Waiting, the timer armed for the
+  // configured interval; the first popup is the first deadline's.
+  startTimer(configuredMinutes());
 });
 
 app.on("will-quit", () => {

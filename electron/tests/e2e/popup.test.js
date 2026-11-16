@@ -456,12 +456,12 @@ describe('popup visual', () => {
     });
 });
 
-describe('first-launch rule: the timer survives any first close (§4)', () => {
+describe('browser mode opening popup: the timer survives any first close (§4)', () => {
     // The bug this guards: the first auto-shown popup was opened as "manual",
     // so closing it with Esc/Switch never armed the timer — "the timer dies
-    // after first launch". Per §4 the first popup behaves like a timer fire, so
-    // every close path must arm the timer. (Electron-only in production, but the
-    // shared INITIAL_TRIGGER_SOURCE drives both surfaces; this exercises it.)
+    // after first launch". The browser mode opens on a popup that behaves like
+    // a timer fire (§4), so every close path must arm the timer. The Electron
+    // app itself launches in Waiting and opens nothing at launch.
 
     let browser;
     let page;
