@@ -53,6 +53,8 @@ fn a_card_arms_when_focus_arrives_and_closes_when_it_leaves() {
     let mut harness = Harness::builder()
         .with_step_dt(1.0 / 60.0)
         .build_eframe(|cc| NudgeApp::new(cc, 10.0));
+    // Launch is Waiting (spec §4); a status-item click opens the card.
+    nudge_web::platform::request_manual_open();
 
     // Phase 1 — the card is up but the window is not key yet. That is the
     // normal state right after a reveal: `activateIgnoringOtherApps` is a
@@ -60,7 +62,7 @@ fn a_card_arms_when_focus_arrives_and_closes_when_it_leaves() {
     // answered. A snapshot taken in `show_popup` reads exactly this.
     set_focused(&mut harness, false);
     harness.run_steps(5);
-    assert_eq!(fields(&harness), 3, "the launch card is up");
+    assert_eq!(fields(&harness), 3, "the card is up");
 
     // …and it must stay up. An unarmed card is never closed by the absence of
     // a focus it has not been given yet — the bug this would introduce is a

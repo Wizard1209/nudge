@@ -30,16 +30,24 @@ use nudge_web::app::NudgeApp;
 /// only way the card ever came back was the timer.
 #[test]
 fn a_manual_trigger_brings_a_dismissed_card_back() {
-    // Ten minutes, so the interval timer cannot be what reopens the card and
+    // Ten minutes, so the interval timer cannot be what opens the card and
     // pass this test for the wrong reason.
     let mut harness = Harness::builder()
         .with_step_dt(1.0 / 60.0)
         .build_eframe(|cc| NudgeApp::new(cc, 10.0));
     harness.run();
     assert_eq!(
+        harness.query_all_by_role(Role::TextInput).count(),
+        0,
+        "launch is Waiting: no card (spec §4)"
+    );
+
+    nudge_web::platform::request_manual_open();
+    harness.run();
+    assert_eq!(
         harness.get_all_by_role(Role::TextInput).count(),
         3,
-        "launch popup is up"
+        "a status-item click / hotkey press opens the card"
     );
 
     harness.key_press(egui::Key::Escape);

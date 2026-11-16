@@ -101,6 +101,9 @@ fn a_sprite_change_while_visible_waits_for_hide() {
         .with_pixels_per_point(PPP)
         .build_eframe(|cc| NudgeApp::new(cc, 10.0).with_screen_geometry(g1()));
     harness.run();
+    // Launch is Waiting (spec §4): open the card first.
+    manual_open();
+    harness.run();
     assert_eq!(first_field(&harness).min, pos2(495.0, 286.0));
     assert_eq!(sprite_textures(&harness), vec![]);
 
@@ -155,6 +158,9 @@ fn a_sprite_replaced_while_hidden_is_freed_on_a_painted_frame() {
         .with_step_dt(1.0 / 60.0)
         .build_eframe(|cc| NudgeApp::new(cc, 10.0).with_screen_geometry(g1()));
     harness.run();
+    // Launch is Waiting (spec §4): open the card first.
+    manual_open();
+    harness.run();
 
     // A sprite applied at a close, and uploaded by the next open.
     harness.state_mut().set_pending_sprite(green(-41));
@@ -202,6 +208,9 @@ fn a_sprite_change_that_fails_the_check_turns_the_sprite_off() {
         .with_size(vec2(1470.0, 833.0))
         .with_pixels_per_point(PPP)
         .build_eframe(|cc| NudgeApp::new(cc, 10.0).with_screen_geometry(g1()));
+    harness.run();
+    // Launch is Waiting (spec §4): open the card first.
+    manual_open();
     harness.run();
     harness.state_mut().set_pending_sprite(green(-41));
     harness.key_press(egui::Key::Escape);

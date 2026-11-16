@@ -258,6 +258,10 @@ fn main() -> eframe::Result {
             .with_resizable(false)
             .with_transparent(true)
             .with_taskbar(false)
+            // eframe shows the window after the first frame even though
+            // launch is Waiting (§4); winit then shows it without taking the
+            // foreground. Only that first show: later ones activate as usual.
+            .with_active(false)
             .with_title("Nudge")
     };
     // macOS: same chrome as Windows minus the two Win32-shaped calls.

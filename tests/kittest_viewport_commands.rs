@@ -4,8 +4,8 @@
 //! and none looks at the `ViewportCommand`s a frame emits. Those are what
 //! actually order the native window in and out and size it, so a hide that
 //! stopped hiding, or a show that stopped placing, would leave the card tests
-//! green. This file pins the commands of an `Esc` and of a manual reveal, one
-//! frame at a time. The reveal is raised where the OS raises it, so on macOS
+//! green. This file pins the commands of a manual reveal and of an `Esc`, one
+//! frame at a time, starting from launch, which is Waiting (spec §4). The reveal is raised where the OS raises it, so on macOS
 //! it is `App::logic` that orders the window in, as it is for the timer.
 //!
 //! The expected lists are exact on purpose: a change to how the popup is
@@ -122,10 +122,14 @@ fn hide_and_show_emit_exactly_these_viewport_commands() {
     let _seam = seam();
     let mut harness = harness();
 
-    // The launch frame — placement plus the launch show — is not observable:
-    // the builder runs it and then `run_ok`s to a stable frame before handing
-    // the harness over, and `output()` keeps only the last frame's commands.
-    // What is left is the launch popup, up and placed.
+    // The launch frames — placement, then the hide into Waiting — are not
+    // observable: the builder runs them and then `run_ok`s to a stable frame
+    // before handing the harness over, and `output()` keeps only the last
+    // frame's commands. What is left is Waiting, the window off screen.
+    assert_eq!(one_frame(&mut harness), vec![], "a hidden frame is quiet");
+
+    manual_open();
+    assert_eq!(one_frame(&mut harness), reveal(), "first reveal frame");
     assert_eq!(one_frame(&mut harness), vec![], "a visible frame is quiet");
 
     // Esc: the hide orders the window out — on macOS a frame late, after
@@ -158,6 +162,8 @@ fn hide_and_show_emit_exactly_these_viewport_commands() {
 fn an_open_in_the_frame_after_a_close_stays_open() {
     let _seam = seam();
     let mut harness = harness();
+    manual_open();
+    assert_eq!(one_frame(&mut harness), reveal(), "first reveal frame");
     assert_eq!(one_frame(&mut harness), vec![], "a visible frame is quiet");
 
     harness.key_down(egui::Key::Escape);

@@ -30,7 +30,7 @@
 //!
 //! One environmental precondition they do not check for themselves: no other
 //! `nudge` may be running. Each test launches its own, and a leftover instance
-//! makes the launch popup fail to appear at all.
+//! holds the hotkey that opens its popup.
 //!
 //! # Running
 //!
@@ -79,7 +79,8 @@ use core_graphics::window::{
     kCGWindowOwnerPID,
 };
 
-/// Wall-clock allowance for eframe to create and present its first frame.
+/// Wall-clock allowance for eframe to create its window and run its first
+/// frame, which puts the app in Waiting (spec §4).
 /// Measured at well under 2s on an M4; the margin is for a loaded machine.
 const STARTUP_GRACE: Duration = Duration::from_secs(5);
 
@@ -120,6 +121,7 @@ const SPRITE_GREEN: &[u8] = include_bytes!("../electron/tests/e2e/fixtures/sprit
 const SPRITE_FILE: &str = "sprite.png";
 
 impl SandboxedApp {
+    /// Launch, then open the popup with the hotkey (see [`Self::summon`]).
     fn launch() -> Self {
         let home = tempfile::tempdir().expect("temp HOME");
         std::fs::create_dir_all(home.path().join("Documents")).expect("Documents");
@@ -130,32 +132,61 @@ impl SandboxedApp {
             .expect("spawn nudge — run `cargo build --bin nudge` first");
 
         std::thread::sleep(STARTUP_GRACE);
-        Self { child, home }
+        let app = Self { child, home };
+        app.summon();
+        app
     }
 
-    /// Like `launch`, but seeds `config.json` with the given interval
-    /// *before* the binary is spawned, instead of letting the app write its
-    /// own first-run default. Pre-seeding avoids a race with the app's own
-    /// first-run write, and is what lets a 3s interval (0.05 min) drive the
+    /// Launch with `config.json` seeded with the given interval *before* the
+    /// binary is spawned, instead of letting the app write its own first-run
+    /// default, and leave it in Waiting: the popup comes with the first
+    /// deadline. Pre-seeding avoids a race with the app's own first-run
+    /// write, and is what lets a 3s interval (0.05 min) drive the
     /// reappearance test instead of waiting out a real-world default.
     fn launch_with_interval(minutes: f64) -> Self {
-        Self::launch_with_config(&format!(
-            r#"{{"hotkey": "Ctrl+Shift+Space", "default_interval_minutes": {minutes}, "autostart": false}}"#
-        ))
+        Self::launch_inner(
+            &format!(
+                r#"{{"hotkey": "Ctrl+Shift+Space", "default_interval_minutes": {minutes}, "autostart": false}}"#
+            ),
+            false,
+        )
     }
 
     /// Like `launch`, but with this `config.json` in place before the binary
     /// is spawned. The green sprite fixture is written into HOME first, and
     /// `{sprite}` in `config` stands for its absolute path.
     fn launch_with_config(config: &str) -> Self {
-        Self::launch_inner(config, false)
+        let app = Self::launch_inner(config, false);
+        app.summon();
+        app
     }
 
     /// The same, with stderr captured so a test can assert on what the app
     /// logged. Read it with [`SandboxedApp::stderr_after_exit`], which kills
     /// the child first — the pipe is never drained while the process runs.
     fn launch_with_config_logging(config: &str) -> Self {
-        Self::launch_inner(config, true)
+        let app = Self::launch_inner(config, true);
+        app.summon();
+        app
+    }
+
+    /// Open the popup with the hotkey, as a user does after a launch. Launch
+    /// is Waiting (spec §4) — asserted here, since every test passes through
+    /// it — and the tests that need the card take it from this open.
+    fn summon(&self) {
+        assert!(
+            !popup_visible(self.pid()),
+            "the popup is on screen after launch — spec §4 starts in Waiting"
+        );
+        press_chord(
+            VK_SPACE,
+            CGEventFlags::CGEventFlagControl | CGEventFlags::CGEventFlagShift,
+        );
+        assert!(
+            wait_until(Duration::from_secs(3), || popup_visible(self.pid())),
+            "the hotkey did not open the popup — harness problem (PostEvent grant?), \
+             not what the test is about"
+        );
     }
 
     /// `nudge --settings`: the settings window alone, no popup process beside
@@ -415,6 +446,16 @@ fn window_rect(pid: u32) -> Option<WindowInfo> {
 /// `kCGWindowIsOnscreen` flag is set.
 fn popup_visible(pid: u32) -> bool {
     window_rect(pid).is_some_and(|w| w.on_screen)
+}
+
+/// The popup on screen now and still a quarter second later. eframe orders
+/// its window in after the first frame it paints and launch orders it out a
+/// frame later, so a single sample at launch can catch that empty window.
+fn popup_stays_visible(pid: u32) -> bool {
+    popup_visible(pid) && {
+        std::thread::sleep(Duration::from_millis(250));
+        popup_visible(pid)
+    }
 }
 
 /// Synthesise the Esc keystroke that dismisses the popup — the macOS
@@ -860,10 +901,15 @@ fn popup_reappears_after_the_interval() {
 
     let app = SandboxedApp::launch_with_interval(0.05);
 
+    // Launch is Waiting (spec §4): the first popup is the first deadline's,
+    // and may still be on its way after the startup grace.
     assert!(
-        popup_visible(app.pid()),
-        "startup popup never appeared — harness problem, not a port problem"
+        wait_until(INTERVAL * 2, || popup_visible(app.pid())),
+        "the first deadline never showed the popup — the interval timer does not \
+         fire from launch"
     );
+    // A few frames' grace, so the Esc below lands on a popup that has the keyboard.
+    std::thread::sleep(Duration::from_millis(500));
 
     dismiss_with_escape();
     // Give the app a moment to process the keystroke and hide the window
@@ -1206,12 +1252,12 @@ fn left_clicking_the_status_item_opens_the_popup() {
     let app = SandboxedApp::launch();
     assert!(
         popup_visible(app.pid()),
-        "the launch popup never appeared — harness problem, not a status-item problem"
+        "the popup never appeared — harness problem, not a status-item problem"
     );
     press_escape();
     assert!(
         wait_until(Duration::from_secs(3), || !popup_visible(app.pid())),
-        "Esc did not dismiss the launch popup — synthetic input is not reaching the app"
+        "Esc did not dismiss the popup — synthetic input is not reaching the app"
     );
 
     let centre = status_item_centre();
@@ -1242,12 +1288,12 @@ fn right_clicking_the_status_item_shows_the_menu() {
     let app = SandboxedApp::launch();
     assert!(
         popup_visible(app.pid()),
-        "the launch popup never appeared — harness problem, not a status-item problem"
+        "the popup never appeared — harness problem, not a status-item problem"
     );
     press_escape();
     assert!(
         wait_until(Duration::from_secs(3), || !popup_visible(app.pid())),
-        "Esc did not dismiss the launch popup — synthetic input is not reaching the app"
+        "Esc did not dismiss the popup — synthetic input is not reaching the app"
     );
 
     assert!(
@@ -1352,12 +1398,12 @@ fn choosing_show_nudge_from_the_status_item_menu_opens_the_popup() {
     let app = SandboxedApp::launch();
     assert!(
         popup_visible(app.pid()),
-        "the launch popup never appeared — harness problem, not a status-item problem"
+        "the popup never appeared — harness problem, not a status-item problem"
     );
     press_escape();
     assert!(
         wait_until(Duration::from_secs(3), || !popup_visible(app.pid())),
-        "Esc did not dismiss the launch popup — synthetic input is not reaching the app"
+        "Esc did not dismiss the popup — synthetic input is not reaching the app"
     );
 
     let centre = status_item_centre();
@@ -1432,7 +1478,7 @@ fn submitting_appends_one_journal_line() {
     let app = SandboxedApp::launch();
     assert!(
         popup_visible(app.pid()),
-        "the launch popup never appeared — nothing to type into, so a red here is a \
+        "the popup never appeared — nothing to type into, so a red here is a \
          harness problem rather than a submit-path problem"
     );
     assert!(
@@ -1511,8 +1557,8 @@ fn capture_scale(img: &image::RgbaImage, window: &WindowInfo) -> f64 {
 /// The visibility check is not defensive noise. A `-l` capture of a window the
 /// app has ordered out succeeds and returns a correctly-sized, entirely
 /// transparent frame, so without it the commonest environment fault — a
-/// leftover `nudge` from an earlier run, which suppresses the launch popup of
-/// every instance after it (see the module header) — arrives at the assertions
+/// leftover `nudge` from an earlier run, which holds the hotkey every instance
+/// after it is opened with (see the module header) — arrives at the assertions
 /// disguised as "the card rendered nothing".
 fn capture_card(app: &SandboxedApp) -> (WindowInfo, image::RgbaImage) {
     let window = window_rect(app.pid()).expect("no nudge window found");
@@ -2151,7 +2197,7 @@ fn popup_reappears_at_its_place_after_a_reveal_desktop_sweep() {
     let app = SandboxedApp::launch();
     assert!(
         popup_visible(app.pid()),
-        "launch popup never appeared — harness problem, not a placement problem"
+        "the popup never appeared — harness problem, not a placement problem"
     );
     dismiss_with_escape();
     assert!(
@@ -2279,7 +2325,7 @@ fn popup_takes_the_display_of_the_frontmost_window() {
     let app = SandboxedApp::launch();
     assert!(
         popup_visible(app.pid()),
-        "launch popup never appeared — harness problem, not a placement problem"
+        "the popup never appeared — harness problem, not a placement problem"
     );
     dismiss_with_escape();
     assert!(
@@ -2369,7 +2415,7 @@ fn closing_the_popup_hands_the_keyboard_back_to_the_app_that_had_it() {
     let app = SandboxedApp::launch();
     assert!(
         popup_visible(app.pid()),
-        "launch popup never appeared — harness problem, not an activation problem"
+        "the popup never appeared — harness problem, not an activation problem"
     );
     dismiss_with_escape();
     assert!(
@@ -2449,7 +2495,7 @@ fn a_click_beside_the_card_closes_the_popup_and_reaches_nothing() {
     let app = SandboxedApp::launch();
     assert!(
         popup_visible(app.pid()),
-        "launch popup never appeared — harness problem, not a shield problem"
+        "the popup never appeared — harness problem, not a shield problem"
     );
     let shield = window_rect(app.pid()).expect("no nudge window found");
 
@@ -2530,7 +2576,7 @@ fn sprite_window_is_still_the_work_area() {
     eprintln!("window={:?} work={work:?}", window.rect);
     assert!(
         popup_visible(app.pid()),
-        "launch popup never appeared with a sprite configured"
+        "the popup never appeared with a sprite configured"
     );
     assert!(
         window.rect.same_as(&work),
@@ -2812,16 +2858,19 @@ fn sprite_change_applies_while_hidden_and_waits_while_visible() {
 /// a user produces by switching apps while it starts.
 ///
 /// Launched by launchd rather than spawned: a launchd job has no parent the
-/// window server can attribute the launch to, and that is the case in which
-/// the popup has been seen to come up centred and never become key — focus
-/// loss cannot close it (it never armed) and Esc goes to whichever app is
-/// in front.
+/// window server can attribute the launch to, and that is the case in which a
+/// popup shown at launch came up centred and never became key — focus loss
+/// cannot close it (it never armed) and Esc goes to whichever app is in
+/// front. Launch is Waiting (spec §4), so nothing may show while it starts;
+/// the first popup is the first deadline's, and it takes the keyboard.
 #[test]
 #[ignore = "needs a GUI session + PostEvent grant; run in the guest via scripts/native-tests-macos.sh"]
-fn launchd_start_under_activation_contention_still_yields_a_key_popup() {
+fn launchd_start_under_activation_contention_shows_nothing_until_a_key_popup_at_the_deadline() {
+    // 0.05 min: the first deadline, counted from the app's first frame.
+    const INTERVAL: Duration = Duration::from_secs(3);
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_sampler = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let job = LaunchdApp::bootstrap();
+    let job = LaunchdApp::bootstrap(0.05);
 
     let switcher = {
         let stop = stop.clone();
@@ -2857,16 +2906,25 @@ fn launchd_start_under_activation_contention_still_yields_a_key_popup() {
     let _cmd_up = ReleaseModifiers;
 
     let pid = job.wait_for_pid(Duration::from_secs(10));
-    let appeared = wait_until(Duration::from_secs(10), || popup_visible(pid));
+    let at_launch = wait_until(INTERVAL - Duration::from_secs(1), || {
+        popup_stays_visible(pid)
+    });
+    let appeared = at_launch || wait_until(Duration::from_secs(10), || popup_visible(pid));
     std::thread::sleep(Duration::from_millis(300));
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
     let presses = switcher.join().expect("switcher thread");
     assert!(
-        appeared,
-        "the launchd-started popup never appeared; stderr:\n{}",
+        !at_launch,
+        "a popup came on screen while the login item started — spec §4 starts in \
+         Waiting; stderr:\n{}",
         job.stderr()
     );
-    eprintln!("Cmd-Tab presses during launch: {presses}");
+    assert!(
+        appeared,
+        "the first deadline never showed the popup; stderr:\n{}",
+        job.stderr()
+    );
+    eprintln!("Cmd-Tab presses during launch and the first deadline: {presses}");
 
     std::thread::sleep(Duration::from_secs(1));
     stop_sampler.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -3014,8 +3072,9 @@ impl Drop for RevealDesktopGuard {
 }
 
 /// `nudge` started as a launchd job of the GUI domain, the way the login item
-/// starts it, under a label of its own and a throwaway HOME. Booted out and its
-/// plist removed when dropped, including on a panic.
+/// starts it, under a label of its own and a throwaway HOME whose config sets
+/// the interval. Booted out and its plist removed when dropped, including on a
+/// panic.
 struct LaunchdApp {
     label: String,
     domain: String,
@@ -3023,10 +3082,18 @@ struct LaunchdApp {
 }
 
 impl LaunchdApp {
-    fn bootstrap() -> Self {
+    fn bootstrap(interval_minutes: f64) -> Self {
         let home = tempfile::tempdir().expect("temp HOME");
         std::fs::create_dir_all(home.path().join("Documents")).expect("Documents");
         let config = home.path().join(CONFIG_SUBDIR).join("config.json");
+        std::fs::create_dir_all(home.path().join(CONFIG_SUBDIR)).expect("config dir");
+        std::fs::write(
+            &config,
+            format!(
+                r#"{{"hotkey": "Ctrl+Shift+Space", "default_interval_minutes": {interval_minutes}, "autostart": false}}"#
+            ),
+        )
+        .expect("seed config.json");
         let label = "com.wizard1209.nudge.test".to_string();
         let domain = format!("gui/{}", unsafe { getuid() });
         let plist = home.path().join(format!("{label}.plist"));

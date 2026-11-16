@@ -27,8 +27,8 @@
 
 pub(crate) mod shared;
 pub use shared::{
-    ArmedTimer, request_config_reload, set_timer_state, take_pending_sprite, take_timer_fired,
-    take_tray_clicked,
+    ArmedTimer, armed_timer, request_config_reload, set_timer_state, take_pending_sprite,
+    take_timer_fired, take_tray_clicked,
 };
 
 #[cfg(target_os = "windows")]

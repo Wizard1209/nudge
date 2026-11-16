@@ -3,8 +3,8 @@ use web_time::Instant;
 
 pub struct Timer {
     // None = frozen: timer never expires until `reset()` is called.
-    // Spec §4: on first launch the popup is up, and the timer only starts
-    // ticking after the first close (Submit / Esc / Switch).
+    // The browser build opens on the popup (spec §4), and its timer only
+    // starts ticking after the first close (Submit / Esc / Switch).
     deadline: Option<Instant>,
 }
 

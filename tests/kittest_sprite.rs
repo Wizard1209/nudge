@@ -56,6 +56,10 @@ fn harness<'a>(
         .with_pixels_per_point(PPP)
         .build_eframe(|cc| build(cc));
     harness.run();
+    // The app launches in Waiting (spec §4): the card is what the first
+    // Deadline opens.
+    harness.state_mut().deliver_deadline();
+    harness.run();
     harness
 }
 

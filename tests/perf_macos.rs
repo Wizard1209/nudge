@@ -7,15 +7,17 @@
 //! "Memory" column shows, and unlike `vmmap`'s header it counts graphics memory
 //! the process owns but has not mapped.
 //!
-//! One test, two sandboxed launches:
+//! One test, two sandboxed launches. Launch is Waiting (spec §4), so each
+//! popup is a timer's:
 //!
-//! * **steady** — a ten-minute interval, so nothing re-shows the popup:
-//!   (a) startup to on-screen, then hide; (b) 30 s of hidden samples —
-//!   footprint, CPU, wakeups — and the `footprint` category table.
-//! * **cycles** — a 21-second interval: hide, then let the timer re-show it
-//!   [`CYCLES`] times, hiding each one and sampling every hidden gap. The
-//!   last gap against the first re-show's is the leak guard; the
-//!   deadline-to-screen delay of each re-show is the show latency.
+//! * **steady** — a 45-second interval, longer than what is sampled after the
+//!   hide, so nothing re-shows the popup: (a) startup to the first deadline's
+//!   popup on screen, then hide; (b) 30 s of hidden samples — footprint, CPU,
+//!   wakeups — and the `footprint` category table.
+//! * **cycles** — a 21-second interval: hide the first popup, then let the
+//!   timer re-show it [`CYCLES`] times, hiding each one and sampling every
+//!   hidden gap. The last gap against the first re-show's is the leak guard;
+//!   the deadline-to-screen delay of each re-show is the show latency.
 //!
 //! Every run prints one `PERF_MACOS_JSON {...}` line on stdout, before any
 //! assertion, so a failing run still reports its numbers.
@@ -43,7 +45,7 @@
 //! Requirements: a logged-in, unlocked GUI session with no full-screen app in
 //! front, and no other `nudge` popup contending for activation while it runs.
 //! The test takes the keyboard away from the user every few seconds for about
-//! three minutes.
+//! four minutes.
 
 #![cfg(target_os = "macos")]
 
@@ -90,8 +92,8 @@ const BUDGET_HIDDEN_CPU_MS_PER_S: f64 = 25.0;
 /// tight enough to catch a re-show that waits for some unrelated wake.
 const BUDGET_SHOW_LATENCY_MS: f64 = 1500.0;
 
-/// Launch to first on-screen frame. `macos_native.rs` waits 5 s blind; this
-/// polls, so the ceiling only bounds a launch that never shows.
+/// What launch may add to the first interval before its popup is on screen.
+/// This polls, so the ceiling only bounds a launch that never shows.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// From the popup being on screen to it being key. The focus trigger only
@@ -108,9 +110,13 @@ const HIDE_TIMEOUT: Duration = Duration::from_secs(3);
 const SETTLE: Duration = Duration::from_secs(2);
 
 /// Hidden samples in the steady launch, one per second. Thirty matches the
-/// Windows idle test's window, which at a ten-minute interval holds several
-/// status-item refreshes.
+/// Windows idle test's window, which holds several status-item refreshes.
 const HIDDEN_SAMPLES: usize = 30;
+
+/// Interval of the steady launch, minutes: 45 s, so its first popup comes
+/// soon and the [`SETTLE`] plus [`HIDDEN_SAMPLES`] after the hide fit before
+/// the next.
+const STEADY_INTERVAL_MIN: f64 = 0.75;
 
 /// Interval of the cycles launch, minutes: 21 s, long enough for
 /// [`CYCLE_SETTLE`] and [`CYCLE_SAMPLES`] samples to fit between two shows.
@@ -134,13 +140,13 @@ const HOTKEY: &str = "Ctrl+Alt+Shift+F19";
 const MIB: f64 = 1024.0 * 1024.0;
 
 #[test]
-#[ignore = "macOS GUI session; ~3 min; takes the keyboard repeatedly — run by hand via --ignored"]
+#[ignore = "macOS GUI session; ~4 min; takes the keyboard repeatedly — run by hand via --ignored"]
 fn hidden_footprint_cpu_and_show_latency_stay_in_budget() {
     let steady = measure_steady();
     let cycles = measure_cycles();
 
-    // From the gap after the first re-show, not the launch's: every gap but
-    // that one follows a timer re-show, so only re-shows are compared.
+    // From the gap after the first re-show, not the first show's: every gap
+    // but that one follows a re-show, so only re-shows are compared.
     let after_first_reshow_mb = cycles.hidden_mb[1];
     let after_cycles_mb = *cycles.hidden_mb.last().expect("one gap per cycle");
     let growth = after_cycles_mb - after_first_reshow_mb;
@@ -217,19 +223,22 @@ struct Steady {
     unmapped_graphics_mb: Option<f64>,
 }
 
-/// Phases (a) and (b): one launch that is never re-shown.
+/// Phases (a) and (b): one launch, shown once by its first deadline and
+/// never re-shown.
 fn measure_steady() -> Steady {
     let launched = Instant::now();
-    let app = SandboxedApp::launch(10.0);
+    let app = SandboxedApp::launch(STEADY_INTERVAL_MIN);
     let pid = app.pid();
+    let interval = Duration::from_secs_f64(STEADY_INTERVAL_MIN * 60.0);
 
     assert!(
-        wait_until(STARTUP_TIMEOUT, || popup_visible(pid)),
-        "the launch popup never came on screen within {STARTUP_TIMEOUT:?} — \
-         is the session unlocked? app log: {}",
+        wait_until(interval + STARTUP_TIMEOUT, || popup_visible(pid)),
+        "the first deadline's popup never came on screen within {STARTUP_TIMEOUT:?} \
+         of the interval — is the session unlocked? app log: {}",
         app.log()
     );
-    let startup_ms = launched.elapsed().as_secs_f64() * 1e3;
+    // Launch to on-screen, less the interval it spent Waiting.
+    let startup_ms = (launched.elapsed().as_secs_f64() - interval.as_secs_f64()) * 1e3;
     wait_for_key(&app);
     // A popup sampled the instant it lands reads anywhere from ~100 to ~200
     // MiB on the same build: its surfaces are still being allocated.
@@ -247,7 +256,7 @@ fn measure_steady() -> Steady {
         assert!(
             !popup_visible(pid),
             "the popup came back during the hidden window — the interval is \
-             ten minutes, so something other than the timer showed it"
+             longer, so something other than the timer showed it"
         );
         footprints.push(sample(pid).footprint as f64 / MIB);
     }
@@ -279,7 +288,7 @@ fn measure_steady() -> Steady {
 }
 
 struct Cycles {
-    /// Hidden footprint in each gap: after the launch popup, then after each
+    /// Hidden footprint in each gap: after the first popup, then after each
     /// timer re-show.
     hidden_mb: Vec<f64>,
     lifetime_max_mb: f64,
@@ -293,8 +302,8 @@ fn measure_cycles() -> Cycles {
     let interval = Duration::from_secs_f64(CYCLE_INTERVAL_MIN * 60.0);
 
     assert!(
-        wait_until(STARTUP_TIMEOUT, || popup_visible(pid)),
-        "the cycles launch never showed its popup; app log: {}",
+        wait_until(interval + STARTUP_TIMEOUT, || popup_visible(pid)),
+        "the cycles launch never showed its first popup; app log: {}",
         app.log()
     );
     wait_for_key(&app);

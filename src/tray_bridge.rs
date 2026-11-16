@@ -296,8 +296,8 @@ fn tray_thread_main(hotkey: Option<Hotkey>, config_path: PathBuf, initial_config
     let initial_icon =
         tray_icon_frame(daisy::PETAL_COUNT, None).expect("failed to create initial tray icon");
     // Tooltip will be refreshed by the loop below as soon as eframe pushes
-    // a timer via set_timer_state. Until then the popup is visible (first
-    // launch), so the user never sees this placeholder anyway.
+    // a timer via set_timer_state, which its first frame does: the launch
+    // interval (spec §4). Until then this placeholder stands.
     let initial_tooltip = "Nudge";
 
     let tray = TrayIconBuilder::new()

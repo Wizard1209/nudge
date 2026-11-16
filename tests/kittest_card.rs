@@ -37,10 +37,18 @@ use nudge_web::update::{self, Action, Release};
 // NudgeApp — the spotlight card
 // =============================================================================
 
+/// Launch, then the first Deadline: the app starts in Waiting (spec §4), and
+/// the card is what the interval elapsing opens.
 fn nudge_harness<'a>(default_minutes: f64) -> Harness<'a, NudgeApp> {
     let mut harness = Harness::new_eframe(move |cc| NudgeApp::new(cc, default_minutes));
     harness.run();
+    first_deadline(&mut harness);
     harness
+}
+
+fn first_deadline(harness: &mut Harness<'_, NudgeApp>) {
+    harness.state_mut().deliver_deadline();
+    harness.run();
 }
 
 /// Pins the phantom-fourth-Tab-stop regression: `egui::Area` implies a
@@ -173,6 +181,7 @@ fn enter_submits_one_journal_event() {
         }))
     });
     harness.run();
+    first_deadline(&mut harness);
 
     harness
         .get_all_by_role(Role::TextInput)
@@ -219,6 +228,7 @@ fn recording_nudge_harness<'a>(
         }))
     });
     harness.run();
+    first_deadline(&mut harness);
     (harness, events)
 }
 
@@ -308,7 +318,7 @@ fn leaving_with_an_interval_too_large_to_arm_closes() {
 }
 
 /// A `default_interval_minutes` past the bound in `config.json` is refused at
-/// launch the way `main` reads it: the popup starts on the 10-minute default,
+/// launch the way `main` reads it: the popup opens on the 10-minute default,
 /// and its first submit records that.
 #[test]
 fn a_configured_interval_too_large_to_arm_starts_the_popup_on_the_default() {
