@@ -2,7 +2,8 @@
 
 Interval journaling for focus. Native Rust, Windows.
 
-@README.md
+Product behaviour, defaults and file paths: README.md; the state machine:
+docs/design-spec.md §4.
 
 ## Dev Commands
 
