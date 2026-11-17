@@ -378,6 +378,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_manual_open_marks_the_popup_visible_before_the_next_frame() {
+        shared::set_popup_visible(false);
+        let _ = shared::take_tray_clicked();
+
+        request_manual_open();
+
+        assert!(shared::popup_visible(), "the popup is not marked visible");
+        assert!(
+            shared::take_tray_clicked(),
+            "the tray-clicked edge is not raised"
+        );
+    }
+
+    #[test]
     fn every_key_the_parser_accepts_has_a_vk() {
         let tokens = hotkey::all_key_tokens();
         assert!(tokens.len() > 80, "the grammar enumerates its keys");

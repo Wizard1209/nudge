@@ -1152,6 +1152,32 @@ mod tests {
         assert!(!f.is_dirty(), "baseline updated, so still clean");
     }
 
+    #[test]
+    fn toggle_autostart_persists_only_autostart_over_the_saved_config() {
+        let provider = FakeProvider::new(false);
+        let baseline = Config::default();
+        let mut f = SettingsForm::from_config(baseline.clone());
+        f.hotkey = "Alt+J".to_string();
+        f.interval_text = "25".to_string();
+        f.sprite_enabled = !baseline.sprite.enabled;
+        assert!(f.is_dirty());
+        let saved = std::cell::RefCell::new(None);
+
+        f.toggle_autostart(&provider, true, |c| {
+            *saved.borrow_mut() = Some(c.clone());
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(
+            saved.into_inner(),
+            Some(Config {
+                autostart: true,
+                ..baseline
+            })
+        );
+    }
+
     fn sprite_on() -> SpriteConfig {
         SpriteConfig {
             enabled: true,

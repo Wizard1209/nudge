@@ -357,6 +357,39 @@ mod tests {
         }
 
         #[test]
+        fn spawn_keeps_firing_across_repeated_saves() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.json");
+            save(&path, &Config::default()).unwrap();
+
+            let counter = Arc::new(AtomicUsize::new(0));
+            let counter_for_cb = Arc::clone(&counter);
+            let _handle = spawn(
+                path.clone(),
+                Box::new(move || {
+                    counter_for_cb.fetch_add(1, Ordering::SeqCst);
+                }),
+            )
+            .expect("watcher spawn");
+            std::thread::sleep(Duration::from_millis(100));
+
+            for (n, hotkey) in ["Alt+J", "Ctrl+F12", "Alt+K"].into_iter().enumerate() {
+                let prev = counter.load(Ordering::SeqCst);
+                save(
+                    &path,
+                    &Config {
+                        hotkey: hotkey.to_string(),
+                        ..Config::default()
+                    },
+                )
+                .unwrap();
+                let after = wait_for_callback(&counter, prev, Duration::from_secs(2));
+                assert!(after > prev, "save #{} did not fire the watcher", n + 1);
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }
+
+        #[test]
         fn spawn_ignores_unrelated_files_in_same_dir() {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("config.json");

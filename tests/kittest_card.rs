@@ -128,6 +128,28 @@ fn typing_round_trips_including_cyrillic() {
 }
 
 #[test]
+fn ctrl_backspace_deletes_one_cyrillic_word_once() {
+    let mut harness = nudge_harness(10.0);
+    type_into_card(&mut harness, 0, "привет мир");
+
+    harness.key_press_modifiers(
+        egui::Modifiers::CTRL | egui::Modifiers::COMMAND,
+        egui::Key::Backspace,
+    );
+    harness.run();
+
+    assert_eq!(
+        harness
+            .get_all_by_role(Role::TextInput)
+            .next()
+            .unwrap()
+            .value()
+            .as_deref(),
+        Some("привет "),
+    );
+}
+
+#[test]
 fn enter_submits_one_journal_event() {
     let events: std::rc::Rc<std::cell::RefCell<Vec<JournalEvent>>> = Default::default();
     let recorder = std::rc::Rc::clone(&events);
@@ -922,6 +944,57 @@ fn one_edge(edges: &[(&str, f32)]) -> bool {
     let min = edges.iter().map(|e| e.1).fold(f32::MAX, f32::min);
     let max = edges.iter().map(|e| e.1).fold(f32::MIN, f32::max);
     max - min <= 1.0
+}
+
+fn focused_widget(harness: &Harness<'_, SettingsApp>) -> (String, egui::Rect) {
+    let node = harness
+        .query_all(By::new().predicate(|n| n.is_focused()))
+        .next()
+        .expect("a widget has keyboard focus");
+    let name = format!(
+        "{:?} {:?}",
+        node.accesskit_node().role(),
+        node.accesskit_node().label().or(node.value())
+    );
+    (name, node.rect())
+}
+
+#[test]
+fn settings_tab_visits_controls_in_reading_order() {
+    let (mut harness, _) =
+        settings_harness_with_source(cfg("Alt+J", 10.0, false), FakeEdgeSource::default());
+    harness
+        .get_all_by_role(Role::TextInput)
+        .next()
+        .unwrap()
+        .focus();
+    harness.run();
+
+    let mut visited = vec![focused_widget(&harness)];
+    for _ in 0..30 {
+        harness.key_press(egui::Key::Tab);
+        harness.run();
+        let next = focused_widget(&harness);
+        if next.1 == visited[0].1 {
+            break;
+        }
+        visited.push(next);
+    }
+    assert!(
+        visited.len() >= 8,
+        "Tab reached too few controls: {visited:?}"
+    );
+
+    for pair in visited.windows(2) {
+        let (a, b) = (&pair[0], &pair[1]);
+        let same_row = (a.1.center().y - b.1.center().y).abs() < 1.0;
+        let in_order = if same_row {
+            b.1.left() > a.1.left()
+        } else {
+            b.1.center().y > a.1.center().y
+        };
+        assert!(in_order, "Tab went from {} to {}", a.0, b.0);
+    }
 }
 
 #[test]

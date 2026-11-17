@@ -697,4 +697,22 @@ mod tests {
         let hk = default_hotkey();
         assert_eq!(format(&hk), "Ctrl+Shift+Space");
     }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn vocabulary_has_a_glyph_for_every_character_in_egui_default_proportional_font() {
+        let ctx = eframe::egui::Context::default();
+        let _ = ctx.run_ui(eframe::egui::RawInput::default(), |_| {});
+        let font = eframe::egui::FontId::proportional(14.0);
+        let missing: String = ctx.fonts_mut(|fonts| {
+            VOCABULARY
+                .chars()
+                .filter(|&c| !fonts.has_glyph(&font, c))
+                .collect()
+        });
+        assert!(
+            missing.is_empty(),
+            "egui's default proportional font has no glyph for {missing:?} in VOCABULARY"
+        );
+    }
 }
