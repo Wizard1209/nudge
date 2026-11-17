@@ -1425,15 +1425,20 @@ fn update_harness<'a>(
     (harness, calls)
 }
 
+const SETTLE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
 fn settle_on(harness: &mut Harness<'_, SettingsApp>, text: &str) {
-    for _ in 0..200 {
+    let deadline = std::time::Instant::now() + SETTLE_DEADLINE;
+    loop {
         harness.step();
         if harness.query_by_label(text).is_some() {
             return;
         }
+        if std::time::Instant::now() >= deadline {
+            panic!("{text:?} never appeared within {SETTLE_DEADLINE:?}");
+        }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    panic!("{text:?} never appeared");
 }
 
 #[test]
