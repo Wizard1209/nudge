@@ -46,13 +46,17 @@ explicitly. Otherwise the spec applies to all of them.
   frontmost application's front window, as Spotlight chooses — read when the
   popup is shown, on every trigger alike. With no such window it is the
   display under the pointer; the pointer's display on its own is the valid
-  alternative, not the rule.
+  alternative, not the rule. A window across two displays is on the one
+  holding its centre, or, with the centre on neither, the one it overlaps
+  most; where neither window nor pointer settles it, the primary display.
 - On macOS the popup appears on whichever Space is current, full-screen
   ones included; Mission Control and the click-wallpaper-to-reveal-desktop
   gesture leave it where it is. It takes the keyboard when shown even if
   another application is activating at the same moment, and hands it back
   to the application that had it when it closes, by any of the three Leave
-  triggers and by Enter alike.
+  triggers and by Enter alike. A close by focus loss leaves the keyboard
+  with the application the user switched to; if the one that had it has
+  quit, or there was none, the system picks which gets it.
 - Not resizable.
 - Does not appear in the taskbar or in ALT+TAB.
 - Lives in the tray: closing the popup does not exit the app.
@@ -131,7 +135,12 @@ explicitly. Otherwise the spec applies to all of them.
   - Field 3: `Следующий через (мин)`
 - Colours: the placeholder is gray 170; typed text is (235,235,240).
 - Focus is on the first field on open.
-- Navigation: Tab forward, Shift+Tab backward.
+- Navigation: Tab forward, Shift+Tab backward, wrapping from the last field
+  to the first and back; the keyboard never leaves the card.
+- Ctrl or Alt with Left/Right moves the cursor by word, and with
+  Backspace/Delete deletes by word. A word is a run of letters, digits and
+  underscores in any script; any other character, a period or an apostrophe
+  included, ends it.
 - The active (focused) row shows a subtle rounded tint around its text: a
   field inside the row, inset 10pt from the row's sides and 5pt from its top
   and bottom, corner radius 8. It reads as the text's own input box, not as
