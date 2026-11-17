@@ -1,61 +1,3 @@
-//! The hotkey recorder against a real desktop, driven by real events.
-//!
-//! **Never run on your own machine.** Every test here registers a system-wide
-//! combination and posts keystrokes into whatever has the focus. It belongs in
-//! the Tart guest, which is what `scripts/native-tests-macos.sh` is for:
-//!
-//! ```sh
-//! SUITE=macos_hotkey_native scripts/native-tests-macos.sh
-//! SUITE=macos_hotkey_native scripts/native-tests-macos.sh -- records_the_spelled_combinations
-//! ```
-//!
-//! # Why this file is also the fixture recorder
-//!
-//! The acceptance rule for this feature is that a test counts only if its
-//! input is a recorded real event stream or a real keypress. That rule is
-//! expensive to keep — a guest boot per assertion — so every test here runs
-//! the settings binary with `NUDGE_RECORD_KEYS` set and copies the stream the
-//! key monitor saw into `tests/fixtures/keystreams/`, with a provenance line
-//! saying which machine, which layout, which keys and which test produced it.
-//! `tests/hotkey_replay.rs` then replays those on every `cargo test`, in
-//! milliseconds, on the host.
-//!
-//! One instrument, two tiers. No fixture exists that a real run did not
-//! produce, and the fast tier cannot drift from the slow one, because the slow
-//! one rewrites it.
-//!
-//! # How the assertions avoid passing for the wrong reason
-//!
-//! Three habits, because a recorder that never armed would otherwise satisfy
-//! most of what is asserted here:
-//!
-//! - **The window is read, not guessed.** [`Ui::settings`] pulls the settings
-//!   window's accessibility tree out of the running process, so the field, the
-//!   hint under it, the Record/Cancel label and the save banner are all
-//!   observed values rather than things inferred from `config.json`.
-//! - **Every empty stream has a positive control.** A null assertion
-//!   (`nothing was recorded`) is preceded, in the same process, by a chord
-//!   that must land — so "the monitor saw nothing" is distinguishable from
-//!   "the monitor is nothing".
-//! - **The anchored key codes are literals.** Where a test's point is that the
-//!   OS code and the §5 token agree, the code posted is a `kVK_*` constant
-//!   spelled out here, never [`keycode::keycode_for`] — pressing through the
-//!   table under test and reading back through the same table would hide a
-//!   uniformly wrong row.
-//!
-//! # Its own test binary
-//!
-//! Separate from `tests/macos_native.rs` for the reason that file already
-//! gives about platform globals, and because these tests hold machine-wide
-//! registrations: `--test-threads=1`, one distinct combination per test, and
-//! process death is what releases a binding.
-//!
-//! The window-geometry and synthetic-input helpers below overlap with that
-//! file's. That is deliberate duplication rather than a shared harness: each
-//! is a handful of lines of platform call, and the alternative — a common
-//! module — would make a change for one suite able to break the other, which
-//! is the property this port has been careful to avoid.
-
 #![cfg(target_os = "macos")]
 
 use std::ffi::c_void;
@@ -80,22 +22,10 @@ use nudge_web::hotkey::{self, Modifiers};
 use nudge_web::platform::{hotkey_carbon, keycode};
 use nudge_web::recorder::PROMPT;
 
-/// Long enough for eframe to open a window and run its first frames.
 const STARTUP_GRACE: Duration = Duration::from_secs(4);
-/// After a click or a chord, before reading what it did.
 const SETTLE: Duration = Duration::from_millis(400);
 
 const CONFIG_SUBDIR: &str = "Library/Application Support/Nudge";
-
-// ---------------------------------------------------------------------------
-// key codes, spelled out
-// ---------------------------------------------------------------------------
-//
-// `kVK_*` from HIToolbox's `Events.h`, written here as literals on purpose:
-// these are the anchors that tie the OS's own numbering to the §5 tokens
-// `src/platform/macos/keycode.rs` claims for them. A test that pressed
-// `keycode_for("J")` and then read the answer back through the same array
-// would agree with itself no matter what the array said.
 
 const VK_ANSI_C: CGKeyCode = 0x08;
 const VK_ANSI_V: CGKeyCode = 0x09;
@@ -108,16 +38,10 @@ const VK_TAB: CGKeyCode = 0x30;
 const VK_ESCAPE: CGKeyCode = 0x35;
 const VK_F13: CGKeyCode = 0x69;
 const VK_LEFT_ARROW: CGKeyCode = 0x7B;
-/// The modifier caps. A flags-changed event rides on one of these, so a chord
-/// that is held has to name the cap it is held with.
 const VK_COMMAND: CGKeyCode = 0x37;
 const VK_SHIFT: CGKeyCode = 0x38;
 const VK_OPTION: CGKeyCode = 0x3A;
 const VK_CONTROL: CGKeyCode = 0x3B;
-
-// ---------------------------------------------------------------------------
-// the app under test
-// ---------------------------------------------------------------------------
 
 fn binary_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("target/debug/nudge")
@@ -127,22 +51,14 @@ fn fixture_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/keystreams")
 }
 
-/// A `nudge` process with its own HOME, its own `config.json`, and (for the
-/// settings window) its own recording of every press edge the key monitor saw.
 struct Sandboxed {
     child: Child,
     home: tempfile::TempDir,
-    /// Where the key monitor is appending edges, when this is a settings
-    /// window. The file may not exist if no key was ever pressed — an empty
-    /// stream is a real result, and two acceptance bullets are exactly that.
     keystream: PathBuf,
 }
 
 impl Drop for Sandboxed {
     fn drop(&mut self) {
-        // A leaked settings window swallows keys while armed, and a leaked
-        // main instance holds a machine-wide binding. Either poisons the rest
-        // of the run.
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -161,14 +77,10 @@ impl Sandboxed {
         .expect("seed config.json");
     }
 
-    /// The settings window, with a seeded hotkey and key recording on.
     fn settings(saved_hotkey: &str) -> Self {
         Self::settings_inner(saved_hotkey, false)
     }
 
-    /// The same, with stderr captured so a test can assert the app logged no
-    /// error. Read it with [`Sandboxed::stderr_after_exit`], which kills the
-    /// child first — the pipe is never drained while the process runs.
     fn settings_logging(saved_hotkey: &str) -> Self {
         Self::settings_inner(saved_hotkey, true)
     }
@@ -195,7 +107,6 @@ impl Sandboxed {
         }
     }
 
-    /// The main instance: the one that registers the hotkey. It reads no keys.
     fn main_instance(hotkey: &str) -> Self {
         let home = tempfile::tempdir().expect("temp HOME");
         Self::seed(home.path(), hotkey);
@@ -212,8 +123,6 @@ impl Sandboxed {
         }
     }
 
-    /// Reuse this sandbox's HOME for a fresh process — the relaunch half of
-    /// "the captured value survives Save and a relaunch".
     fn relaunch_settings(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -225,9 +134,6 @@ impl Sandboxed {
         std::thread::sleep(STARTUP_GRACE);
     }
 
-    /// Start a *main* instance on this sandbox's HOME, so the value a
-    /// recording just saved is the value that gets registered. Returned
-    /// separately because it is a second live process, not a replacement.
     fn spawn_main_on_same_home(&self) -> Sandboxed {
         std::fs::create_dir_all(self.home.path().join("Documents")).expect("Documents");
         let child = Command::new(binary_path())
@@ -235,8 +141,6 @@ impl Sandboxed {
             .spawn()
             .expect("spawn nudge");
         std::thread::sleep(STARTUP_GRACE);
-        // A borrowed HOME: this handle must not own the TempDir, or dropping
-        // it would delete the config out from under the other process.
         Sandboxed {
             child,
             home: tempfile::tempdir().expect("placeholder"),
@@ -252,7 +156,6 @@ impl Sandboxed {
         self.home.path().join(CONFIG_SUBDIR).join("config.json")
     }
 
-    /// The `hotkey` field as it stands on disk.
     fn saved_hotkey(&self) -> String {
         self.config()["hotkey"]
             .as_str()
@@ -265,13 +168,10 @@ impl Sandboxed {
         serde_json::from_str(&text).expect("config.json is JSON")
     }
 
-    /// The press edges the monitor recorded, verbatim.
     fn recorded_edges(&self) -> String {
         std::fs::read_to_string(&self.keystream).unwrap_or_default()
     }
 
-    /// The edges as `(keycode, modifiers)`, which is what an assertion about
-    /// *what the OS delivered* wants.
     fn edges(&self) -> Vec<(u64, u64)> {
         self.recorded_edges()
             .lines()
@@ -287,25 +187,18 @@ impl Sandboxed {
             .collect()
     }
 
-    /// Start the stream over. Used between a positive control and the null
-    /// case it protects, so the fixture landed for the null case holds only
-    /// the null case.
     fn truncate_keystream(&self) {
         if self.keystream.exists() {
             std::fs::write(&self.keystream, "").expect("truncate keystream");
         }
     }
 
-    /// Stop the process but keep the sandbox: the HOME lives in this struct,
-    /// and dropping it would delete the config another process is reading.
     fn kill_child(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
         std::thread::sleep(SETTLE);
     }
 
-    /// Kill the child and return everything it wrote to stderr. Only valid on
-    /// a sandbox made by [`Sandboxed::settings_logging`].
     fn stderr_after_exit(&mut self) -> String {
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -317,12 +210,6 @@ impl Sandboxed {
         text
     }
 
-    /// Land this run's stream in `tests/fixtures/keystreams/<bullet>.ndjson`,
-    /// with the provenance the replay tier refuses to run without.
-    ///
-    /// `layout` is **read from the system**, not passed in: it is the one
-    /// claim in the header a reader cannot check for themselves, so a literal
-    /// here would be the harness asserting rather than observing.
     fn land_fixture(&self, bullet: &str, keys: &str, harness: &str) {
         let dir = fixture_dir();
         std::fs::create_dir_all(&dir).expect("fixture dir");
@@ -330,9 +217,6 @@ impl Sandboxed {
             "bullet": bullet,
             "os": os_version(),
             "layout": current_input_source(),
-            // Every stream here comes from `CGEventPost` into a real session:
-            // the OS delivered it, which is what the rule asks for. A stream a
-            // human typed would say `real-keyboard`.
             "input": "synthetic-cgevent",
             "keys": keys,
             "harness": harness,
@@ -362,17 +246,6 @@ fn os_version() -> String {
     )
 }
 
-// ---------------------------------------------------------------------------
-// the active keyboard layout, read and set
-// ---------------------------------------------------------------------------
-//
-// Text Input Sources, called directly. The alternative — firing the
-// "select previous input source" keystroke and trusting it — is an assertion
-// that cannot fail informatively: `osascript` succeeds when the keystroke is
-// *delivered*, whether or not a Russian source exists, is enabled, or became
-// active. Measured in this guest: the keystroke leaves the layout on U.S.,
-// while `TISSelectInputSource` returns 0 and the next read says Russian.
-
 #[link(name = "Carbon", kind = "framework")]
 unsafe extern "C" {
     fn TISCopyCurrentKeyboardInputSource() -> *const c_void;
@@ -397,7 +270,6 @@ fn source_id(source: *const c_void) -> Option<String> {
     Some(unsafe { CFString::wrap_under_get_rule(raw as CFStringRef) }.to_string())
 }
 
-/// The input source that is active right now, e.g. `com.apple.keylayout.US`.
 fn current_input_source() -> String {
     let source = unsafe { TISCopyCurrentKeyboardInputSource() };
     assert!(!source.is_null(), "no current keyboard input source");
@@ -406,8 +278,6 @@ fn current_input_source() -> String {
     id
 }
 
-/// Select an *enabled* input source by ID. Returns false if this guest does
-/// not have it enabled, which is a precondition failure rather than a result.
 fn select_input_source(id: &str) -> bool {
     let list = unsafe { TISCreateInputSourceList(std::ptr::null(), false) };
     assert!(!list.is_null(), "TISCreateInputSourceList returned nothing");
@@ -431,14 +301,9 @@ fn select_input_source(id: &str) -> bool {
     selected
 }
 
-/// Puts the layout back on the way out. The guest is a single shared VM, so a
-/// test that switches the keyboard and leaves owes every later test a wrong
-/// answer.
 struct LayoutGuard(String);
 
 impl LayoutGuard {
-    /// Switch, then *read back*. The read is the assertion: it is what makes
-    /// the provenance line's `layout` an observation.
     fn switch_to(id: &str) -> Self {
         let previous = current_input_source();
         assert!(
@@ -461,12 +326,6 @@ impl Drop for LayoutGuard {
     }
 }
 
-// ---------------------------------------------------------------------------
-// reading the settings window
-// ---------------------------------------------------------------------------
-
-/// One accessibility element of the settings window: what it is, what it is
-/// called, and what it holds.
 #[derive(Debug, Clone)]
 struct Element {
     role: String,
@@ -549,18 +408,6 @@ fn settings_group(body: &str) -> String {
     )
 }
 
-/// Run one of those scripts.
-///
-/// The retry lives inside the AppleScript — AccessKit publishes the tree on
-/// the first client request, so the first walk after a window opens finds no
-/// group at all, and re-asking in-process is cheaper than re-spawning
-/// `osascript`. A second, outer retry covers `osascript` itself failing:
-/// measured in this guest, it intermittently answers "not allowed assistive
-/// access" (-25211) with nothing on stdout, and a bare stdout check would read
-/// that as "no window" and say so in the panic.
-///
-/// `MANY` is never retried: two settings windows at once make every reading
-/// ambiguous, and this suite's rule is one at a time.
 fn ask_settings_window(body: &str) -> String {
     let script = settings_group(body);
     let mut last = String::new();
@@ -595,9 +442,6 @@ fn ask_settings_window(body: &str) -> String {
     );
 }
 
-/// What the accessibility API can see of every `nudge` right now. Only ever
-/// called to explain a failure — a panic that says "no window" is worth little
-/// without saying what there was instead.
 fn nudge_windows() -> String {
     let out = Command::new("osascript")
         .arg("-e")
@@ -671,8 +515,6 @@ impl Ui {
         self.0.iter().position(|e| e.role == role)
     }
 
-    /// The Record/Cancel button of the hotkey row: the first button in the
-    /// window, ahead of Save and the window-level Cancel.
     fn row_button(&self) -> &Element {
         let i = self
             .index_of_role("AXButton")
@@ -680,13 +522,10 @@ impl Ui {
         &self.0[i]
     }
 
-    /// Whether the recorder is listening, read off the button's own label.
     fn armed(&self) -> bool {
         self.row_button().name == "Cancel"
     }
 
-    /// The line under the hotkey row: the prompt while armed, a refusal naming
-    /// the key after an unbindable press, the standing vocabulary when idle.
     fn hint(&self) -> String {
         let i = self.index_of_role("AXButton").expect("row button");
         self.0
@@ -697,9 +536,6 @@ impl Ui {
             .clone()
     }
 
-    /// The hotkey text field's contents. `None` while armed — the field is
-    /// replaced by the prompt then, because a text box under "press a
-    /// combination" reads as somewhere to type.
     fn hotkey_field(&self) -> Option<String> {
         let i = self.index_of_role("AXButton").expect("row button");
         let field = self.0.get(i.checked_sub(1)?)?;
@@ -717,9 +553,6 @@ impl Ui {
         field.value.clone()
     }
 
-    /// The status line above the Save button, when there is one: the static
-    /// text right before the button, since the rows above it end in a text
-    /// field.
     fn banner(&self) -> Option<String> {
         let i = self
             .0
@@ -731,9 +564,6 @@ impl Ui {
             .map(|e| e.name.clone())
     }
 
-    /// The `Saved` note beside the buttons (§9), when there is one: the
-    /// static text right after the window's Cancel button, which is the last
-    /// button in the window.
     fn saved_note(&self) -> Option<String> {
         let i = self
             .0
@@ -746,12 +576,10 @@ impl Ui {
     }
 }
 
-/// Put something unsaved into the window: §9 greys `Save` while the form
-/// matches the file, so a case that wants to click it edits first.
 fn edit_the_interval(to: &str) {
     focus_interval_field();
     set_pasteboard(to);
-    press_chord(VK_ANSI_A, CGEventFlags::CGEventFlagCommand); // select all
+    press_chord(VK_ANSI_A, CGEventFlags::CGEventFlagCommand);
     press_chord(VK_ANSI_V, CGEventFlags::CGEventFlagCommand);
     assert_eq!(
         Ui::settings().interval_field(),
@@ -760,17 +588,6 @@ fn edit_the_interval(to: &str) {
     );
 }
 
-/// Click a named button in the settings window.
-///
-/// Addresses the button rather than a point, which is what makes this survive
-/// a layout change. Measured in this guest: the widgets sit in an `AXGroup`
-/// under the window, so `button of window 1` — which is what an earlier
-/// version of this helper asked for — finds only the close/minimise/zoom caps
-/// and fails with "Invalid index".
-///
-/// While armed there are two buttons called `Cancel`: the row's and the
-/// window's. `first ... whose name is` takes the row's, which is the one that
-/// means [`Input::Cancel`](nudge_web::recorder::Input::Cancel).
 fn click_button(name: &str) {
     let answer = ask_settings_window(&format!(
         r#"set frontmost of p to true
@@ -781,16 +598,6 @@ fn click_button(name: &str) {
     std::thread::sleep(SETTLE);
 }
 
-/// Put the keyboard focus in the interval field.
-///
-/// By setting `AXFocused`, not by clicking: AccessKit publishes no `AXPress`
-/// action on a text field, so `click` on one raises an error rather than
-/// focusing it. The flag is read back, so a helper that quietly did nothing
-/// would fail here rather than in the assertion it was setting up.
-///
-/// The second text field when the recorder is idle: the hotkey's is the
-/// first, and the sprite rows' come after. Armed, the hotkey field is not
-/// shown, so this is only called idle.
 fn focus_interval_field() {
     let answer = ask_settings_window(
         r#"set f to text field 2 of g
@@ -811,11 +618,6 @@ fn focus_interval_field() {
     std::thread::sleep(SETTLE);
 }
 
-/// Click Record and prove it armed before anything is pressed at it.
-///
-/// Every bullet below runs through here, so the one thing all of them depend
-/// on is checked in all of them: the button existed, the click landed, the
-/// state changed, and the row is asking for a combination.
 fn arm() {
     click_button("Record");
     let ui = Ui::settings();
@@ -826,10 +628,6 @@ fn arm() {
     );
     assert_eq!(ui.hint(), PROMPT, "armed, but not asking for a combination");
 }
-
-// ---------------------------------------------------------------------------
-// finding and driving the window
-// ---------------------------------------------------------------------------
 
 /// Whether this process is **showing the popup** right now.
 ///
@@ -851,8 +649,6 @@ fn popup_visible(pid: u32) -> bool {
     window_present(pid, true)
 }
 
-/// Whether this process has any ordinary window presented — how the relaunch
-/// test sees that the settings window came back up.
 fn window_visible(pid: u32) -> bool {
     window_present(pid, false)
 }
@@ -913,9 +709,6 @@ fn window_present(pid: u32, require_elevated: bool) -> bool {
     false
 }
 
-/// A fresh main instance shows no popup: launch is Waiting (spec §4), and
-/// the seeded interval is an hour. So "the popup is visible" afterwards means
-/// "the hotkey fired" — asserted, because the two-process bullets rest on it.
 fn assert_no_popup_at_launch(pid: u32) {
     assert!(
         !popup_visible(pid),
@@ -955,7 +748,6 @@ fn press_chord(code: CGKeyCode, modifiers: CGEventFlags) {
     .filter(|(flag, _)| modifiers.contains(*flag))
     .collect();
 
-    // Down, one cap at a time, each event carrying everything held so far.
     let mut held = CGEventFlags::CGEventFlagNull;
     for (flag, cap) in &caps {
         held |= *flag;
@@ -968,7 +760,6 @@ fn press_chord(code: CGKeyCode, modifiers: CGEventFlags) {
         event.post(CGEventTapLocation::HID);
         std::thread::sleep(Duration::from_millis(60));
     }
-    // Up, in reverse, ending on nothing held.
     for (flag, cap) in caps.iter().rev() {
         held.remove(*flag);
         post_flags_changed(*cap, held);
@@ -976,8 +767,6 @@ fn press_chord(code: CGKeyCode, modifiers: CGEventFlags) {
     std::thread::sleep(SETTLE);
 }
 
-/// One modifier cap changing state: a key event on the cap's own key code,
-/// retyped as `flagsChanged` and carrying the flags that are held afterwards.
 fn post_flags_changed(cap: CGKeyCode, held: CGEventFlags) {
     let event = CGEvent::new_keyboard_event(event_source(), cap, true).expect("create event");
     event.set_flags(held);
@@ -986,12 +775,6 @@ fn post_flags_changed(cap: CGKeyCode, held: CGEventFlags) {
     std::thread::sleep(Duration::from_millis(60));
 }
 
-/// The same, addressed the way a person would: `⌥⌘J`, through the §5 parser
-/// and the one key-code table the app registers with.
-///
-/// Used where the *combination* is the subject and the key code is incidental.
-/// Where the key code is the subject, [`press_chord`] with a `VK_*` literal is
-/// used instead, so the press cannot inherit the same mistake as the read.
 fn press(label: &str) {
     let hk = hotkey::parse(label).expect("the label must parse");
     let code = keycode::keycode_for(hk.key.as_str()).expect("macOS must have a code for it");
@@ -1015,14 +798,10 @@ fn carbon_to_cg_flags(modifiers: Modifiers) -> CGEventFlags {
     flags
 }
 
-/// `⌥⌘`, the workhorse chord of this suite.
 fn alt_cmd() -> CGEventFlags {
     CGEventFlags::CGEventFlagAlternate | CGEventFlags::CGEventFlagCommand
 }
 
-/// Hold `modifiers` down and release them, pressing no key. Must produce no
-/// event the recorder can see: modifier chords arrive as `flagsChanged`, which
-/// the monitor's mask excludes.
 fn hold_modifiers_only(modifiers: CGEventFlags) {
     for flags in [modifiers, CGEventFlags::CGEventFlagNull] {
         post_flags_changed(VK_COMMAND, flags);
@@ -1030,7 +809,6 @@ fn hold_modifiers_only(modifiers: CGEventFlags) {
     std::thread::sleep(SETTLE);
 }
 
-/// Take the focus away from the settings window by activating another app.
 fn steal_focus() {
     let _ = Command::new("osascript")
         .arg("-e")
@@ -1059,19 +837,9 @@ fn pasteboard() -> String {
     String::from_utf8_lossy(&out.stdout).to_string()
 }
 
-// ---------------------------------------------------------------------------
-// the instrument, before the bullets
-// ---------------------------------------------------------------------------
-
-/// Everything below depends on being able to see the settings window and press
-/// its buttons. If that is broken, the bullets fail for a reason that has
-/// nothing to do with the recorder, so it is checked once, on its own, first.
 #[test]
 #[ignore = "needs a real desktop; run via scripts/native-tests-macos.sh"]
 fn the_settings_window_can_be_read_and_clicked() {
-    // Bound, not dropped: this handle is what keeps the window open and kills
-    // it afterwards. Nothing reads it, because the window is addressed by what
-    // is in it rather than by which process owns it.
     let _app = Sandboxed::settings("Ctrl+Shift+Space");
 
     let idle = Ui::settings();
@@ -1106,16 +874,6 @@ fn the_settings_window_can_be_read_and_clicked() {
     assert_eq!(back.hotkey_field().as_deref(), Some("⌃⇧Space"));
 }
 
-// ---------------------------------------------------------------------------
-// the acceptance bullets
-// ---------------------------------------------------------------------------
-
-/// `⌥⌘J`, `⌥⌘←` and `⇧/` land in the field spelled the way §5 writes them.
-///
-/// The key codes are `kVK_*` literals rather than table lookups, so the press
-/// and the read cannot share a mistake: if `keycode.rs` gave `←` the wrong
-/// code, the arrow would still be pressed here and the field would come back
-/// wrong.
 #[test]
 #[ignore = "needs a real desktop; run via scripts/native-tests-macos.sh"]
 fn records_the_spelled_combinations() {
@@ -1160,7 +918,6 @@ fn records_the_spelled_combinations() {
     }
 }
 
-/// The modifier nibble `crate::hotkey` uses, for asserting on a recorded edge.
 fn ui_modifiers(flags: CGEventFlags) -> u64 {
     let mut mask = 0u64;
     if flags.contains(CGEventFlags::CGEventFlagControl) {
@@ -1178,14 +935,6 @@ fn ui_modifiers(flags: CGEventFlags) -> u64 {
     mask
 }
 
-/// `⌘C` records as `⌘C` and does not paste.
-///
-/// The second half needs a differential, not an absence: a copy with nothing
-/// selected changes nothing either way, so "the interval field is untouched"
-/// would be green with the swallow entirely broken. What is done instead is
-/// the same keystroke twice — `⌘V` with a sentinel on the pasteboard, into the
-/// same focused field — once idle and once armed. Idle it must paste; armed it
-/// must not. That difference can only come from the monitor.
 #[test]
 #[ignore = "needs a real desktop; run via scripts/native-tests-macos.sh"]
 fn cmd_c_records_and_does_not_reach_the_clipboard() {
@@ -1193,9 +942,8 @@ fn cmd_c_records_and_does_not_reach_the_clipboard() {
     let app = Sandboxed::settings("Ctrl+Shift+Space");
     set_pasteboard(SENTINEL);
 
-    // Positive control: idle, the very same chord edits the window.
     focus_interval_field();
-    press_chord(VK_ANSI_A, CGEventFlags::CGEventFlagCommand); // select all
+    press_chord(VK_ANSI_A, CGEventFlags::CGEventFlagCommand);
     press_chord(VK_ANSI_V, CGEventFlags::CGEventFlagCommand);
     assert_eq!(
         Ui::settings().interval_field(),
@@ -1204,7 +952,6 @@ fn cmd_c_records_and_does_not_reach_the_clipboard() {
          so the armed case below would prove nothing"
     );
 
-    // Armed: the identical chord, the identical focused field, swallowed.
     arm();
     press_chord(VK_ANSI_V, CGEventFlags::CGEventFlagCommand);
     let ui = Ui::settings();
@@ -1220,7 +967,6 @@ fn cmd_c_records_and_does_not_reach_the_clipboard() {
         ui.0
     );
 
-    // The bullet itself.
     arm();
     app.truncate_keystream();
     press_chord(VK_ANSI_C, CGEventFlags::CGEventFlagCommand);
@@ -1245,12 +991,6 @@ fn cmd_c_records_and_does_not_reach_the_clipboard() {
     );
 }
 
-/// Keypad `5` is refused **by name**, and is not mistaken for the digit row.
-///
-/// The refusal text is read off the window, which is the only place "by name"
-/// is observable. Stated so it cannot pass vacuously twice over: the hint must
-/// name the keypad, and the recorder must still be armed — proved by the
-/// *next* chord landing with no second Record click.
 #[test]
 #[ignore = "needs a real desktop; run via scripts/native-tests-macos.sh"]
 fn the_keypad_is_refused_and_leaves_the_recorder_armed() {
@@ -1276,7 +1016,6 @@ fn the_keypad_is_refused_and_leaves_the_recorder_armed() {
         "macos_hotkey_native::the_keypad_is_refused_and_leaves_the_recorder_armed",
     );
 
-    // Still armed: no second Record click.
     press("Alt+Cmd+J");
     click_button("Save");
     assert_eq!(
@@ -1286,14 +1025,12 @@ fn the_keypad_is_refused_and_leaves_the_recorder_armed() {
     );
 }
 
-/// A bare letter is refused by name; a bare `F13` records. The F row types
-/// nothing, which is what makes it the one exception to the modifier rule.
 #[test]
 #[ignore = "needs a real desktop; run via scripts/native-tests-macos.sh"]
 fn a_bare_letter_is_refused_and_a_bare_f_key_records() {
     let refused = Sandboxed::settings("Ctrl+Shift+Space");
     arm();
-    press_chord(VK_ANSI_J, CGEventFlags::CGEventFlagNull); // J, nothing held
+    press_chord(VK_ANSI_J, CGEventFlags::CGEventFlagNull);
 
     let ui = Ui::settings();
     assert!(
@@ -1308,7 +1045,7 @@ fn a_bare_letter_is_refused_and_a_bare_f_key_records() {
         "J",
         "macos_hotkey_native::a_bare_letter_is_refused_and_a_bare_f_key_records",
     );
-    press("Alt+Cmd+J"); // still armed
+    press("Alt+Cmd+J");
     click_button("Save");
     assert_eq!(refused.saved_hotkey(), "⌥⌘J");
     drop(refused);
@@ -1333,25 +1070,11 @@ fn a_bare_letter_is_refused_and_a_bare_f_key_records() {
     assert_eq!(recorded.saved_hotkey(), "F13");
 }
 
-/// `⌥⌘` alone changes nothing and shows no error, and neither does `fn`.
-///
-/// The recorded stream for these is **empty**, and an empty stream is what a
-/// dead monitor produces too — so each null is preceded, in this same process,
-/// by something that must land:
-///
-/// 1. `⌥⌘J` records. The monitor is installed, armed, and writing the stream.
-/// 2. `⌥⌘J` with `fn` also held records, as plain `⌥⌘J`. That is the control
-///    for the `fn` half specifically: it shows `CGEventFlagSecondaryFn` is
-///    postable and does arrive, so an empty stream afterwards means `fn` alone
-///    produced no press edge rather than that `fn` was never delivered.
-///
-/// Only then is the stream truncated and the modifiers held alone.
 #[test]
 #[ignore = "needs a real desktop; run via scripts/native-tests-macos.sh"]
 fn modifiers_alone_and_fn_alone_are_not_events() {
     let app = Sandboxed::settings("Ctrl+Shift+Space");
 
-    // Control 1 — the instrument is alive.
     arm();
     press_chord(VK_ANSI_J, alt_cmd());
     assert_eq!(
@@ -1364,9 +1087,6 @@ fn modifiers_alone_and_fn_alone_are_not_events() {
     );
     assert_eq!(Ui::settings().hotkey_field().as_deref(), Some("⌥⌘J"));
 
-    // Control 2 — the fn flag is postable and does arrive, riding on a key
-    // event. It is not one of the four modifiers, so it must not show up in
-    // the nibble.
     arm();
     app.truncate_keystream();
     press_chord(VK_ANSI_J, alt_cmd() | CGEventFlags::CGEventFlagSecondaryFn);
@@ -1379,7 +1099,6 @@ fn modifiers_alone_and_fn_alone_are_not_events() {
         "fn either was not delivered, or was counted as a modifier"
     );
 
-    // The nulls.
     arm();
     app.truncate_keystream();
     hold_modifiers_only(alt_cmd());
@@ -1422,14 +1141,6 @@ fn modifiers_alone_and_fn_alone_are_not_events() {
     );
 }
 
-/// With a Russian layout active, the cap that types `о` still records `⌥⌘J`.
-/// A key is a position, not the character it produces.
-///
-/// The layout is switched through `TISSelectInputSource` and then **read
-/// back**, so the precondition is observed rather than assumed; the value read
-/// is what goes into the fixture's provenance line. A guard puts the previous
-/// source back — this guest is shared, and a layout left switched is a wrong
-/// answer owed to every later test.
 #[test]
 #[ignore = "needs a real desktop; run via scripts/native-tests-macos.sh"]
 fn a_russian_layout_records_the_same_physical_key() {
@@ -1463,18 +1174,9 @@ fn a_russian_layout_records_the_same_physical_key() {
     );
 }
 
-/// Bare `Esc` puts the saved hotkey back, and so does losing the focus —
-/// whether the focus is taken by another app or by `⌘Tab` itself.
-///
-/// Non-vacuous by construction: after the cancelling input, a perfectly good
-/// chord is pressed **without re-arming**. If it lands, the recorder never
-/// cancelled — and that is the difference between "cancelled" and "captured
-/// something that happened to equal the saved value".
 #[test]
 #[ignore = "needs a real desktop; run via scripts/native-tests-macos.sh"]
 fn escape_and_focus_loss_put_the_saved_hotkey_back() {
-    // Esc. Pressed as a `kVK_*` literal because §5 refuses a bare Esc as a
-    // hotkey, so it cannot be addressed through the parser.
     let app = Sandboxed::settings("Alt+Cmd+J");
     arm();
     press_chord(VK_ESCAPE, CGEventFlags::CGEventFlagNull);
@@ -1491,7 +1193,7 @@ fn escape_and_focus_loss_put_the_saved_hotkey_back() {
         "Esc",
         "macos_hotkey_native::escape_and_focus_loss_put_the_saved_hotkey_back",
     );
-    press("Ctrl+Shift+Space"); // must be ignored: the recorder is idle
+    press("Ctrl+Shift+Space");
     click_button("Save");
     assert_eq!(
         app.saved_hotkey(),
@@ -1500,7 +1202,6 @@ fn escape_and_focus_loss_put_the_saved_hotkey_back() {
     );
     drop(app);
 
-    // Another app taking the focus.
     let app = Sandboxed::settings("Alt+Cmd+J");
     arm();
     steal_focus();
@@ -1520,16 +1221,10 @@ fn escape_and_focus_loss_put_the_saved_hotkey_back() {
     );
     drop(app);
 
-    // ⌘Tab itself. macOS consumes the chord for the switcher, so what the
-    // recorder can observe is only the focus going away — the same thing the
-    // case above stages by other means. Posting the literal chord is what
-    // shows the two are in fact the same, rather than asserting it.
-    // Bound rather than dropped: the sandbox owns the HOME the window is
-    // reading, and this block asserts on the window rather than on the file.
     let _app = Sandboxed::settings("Alt+Cmd+J");
     arm();
     press_chord(VK_TAB, CGEventFlags::CGEventFlagCommand);
-    press("Ctrl+Shift+Space"); // must be ignored: the recorder cancelled
+    press("Ctrl+Shift+Space");
     let ui = Ui::settings();
     assert!(!ui.armed(), "⌘Tab did not end the recording: {:#?}", ui.0);
     assert_eq!(
@@ -1537,10 +1232,6 @@ fn escape_and_focus_loss_put_the_saved_hotkey_back() {
         Some("⌥⌘J"),
         "⌘Tab did not cancel — a later chord still recorded"
     );
-    // The liveness control, and the whole reason this block is not a pair of
-    // vacuous negatives: "no chord landed" is also what a switcher left on
-    // screen produces, eating every key posted after it. So the window is
-    // armed again and a *different* combination has to land.
     arm();
     press("Ctrl+Shift+Space");
     let ui = Ui::settings();
@@ -1557,27 +1248,11 @@ fn escape_and_focus_loss_put_the_saved_hotkey_back() {
     );
 }
 
-/// Pressing the app's own current hotkey opens the popup and ends the
-/// recording cancelled. The running instance holds it system-wide while the
-/// settings window is a separate process, so the Carbon binding wins and the
-/// settings monitor never sees the key.
-///
-/// The settings side gets its own positive control: a chord the main instance
-/// does **not** hold must land in the settings stream, so "the monitor saw
-/// nothing" is distinguishable from "the monitor is nothing".
 #[test]
 #[ignore = "needs a real desktop; run via scripts/native-tests-macos.sh"]
 fn the_apps_own_hotkey_opens_the_popup_instead_of_recording() {
-    // The settings window goes up first, alone, and its control runs while it
-    // is the only `nudge` on the machine. That ordering is not cosmetic:
-    // measured in this guest, a settings window that has never been the key
-    // window publishes no accessibility tree at all, and starting the main
-    // instance first puts its always-on-top popup over this one before it ever
-    // gets a frame. Which process was launched first is no part of the claim
-    // being tested; both are alive for the part that is.
     let settings = Sandboxed::settings("Alt+Cmd+J");
 
-    // Control: the settings monitor works, for a key nobody has bound.
     arm();
     press_chord(VK_F13, CGEventFlags::CGEventFlagNull);
     assert_eq!(
@@ -1602,8 +1277,6 @@ fn the_apps_own_hotkey_opens_the_popup_instead_of_recording() {
         "the settings monitor saw a key the main process had bound"
     );
 
-    // The popup taking the focus is what cancels the recording; proved
-    // non-vacuously by the next chord not landing.
     press("Ctrl+Shift+Space");
     click_button("Save");
     assert_eq!(
@@ -1613,12 +1286,6 @@ fn the_apps_own_hotkey_opens_the_popup_instead_of_recording() {
     );
 }
 
-/// `⌘Space` is reported as taken by the system rather than accepted silently.
-///
-/// The two answers disagreeing is the fact being pinned, not a bug: the
-/// registration call reports nothing about another holder — that is the
-/// measurement this whole change rests on — and the system's own table is the
-/// only source that can see Spotlight.
 #[test]
 #[ignore = "reads the live system shortcut table and registers a real hotkey"]
 fn cmd_space_registers_and_is_still_reported_as_the_systems() {
@@ -1638,12 +1305,6 @@ fn cmd_space_registers_and_is_still_reported_as_the_systems() {
     );
 }
 
-/// ...and the user is the one told. The status above is only evidence for the
-/// bullet if it reaches the window, which is the half nothing else covers:
-/// `Save` turns it into a banner, and the banner is read back off the window.
-///
-/// Each window is edited before `Save` is clicked: §9 greys the button while
-/// the form matches the file.
 #[test]
 #[ignore = "needs a real desktop; run via scripts/native-tests-macos.sh"]
 fn saving_cmd_space_says_the_system_holds_it() {
@@ -1668,12 +1329,8 @@ fn saving_cmd_space_says_the_system_holds_it() {
         "⌘Space",
         "it is a warning, not a refusal"
     );
-    // The window is addressed by content, not by pid, so a second settings
-    // window would make every reading below ambiguous.
     drop(app);
 
-    // The control: an unclaimed combination saves with no such warning, so the
-    // assertion above is about ⌘Space rather than about every Save.
     let free = Sandboxed::settings("Alt+Cmd+J");
     edit_the_interval("15");
     click_button("Save");
@@ -1687,12 +1344,6 @@ fn saving_cmd_space_says_the_system_holds_it() {
     assert_eq!(free.saved_hotkey(), "⌥⌘J");
 }
 
-/// What actually happens when `⌘Space` is pressed at an armed recorder, which
-/// nothing else in this suite finds out. Spotlight may take the chord before
-/// the app-local monitor ever sees it — the point of the assertion is that
-/// both outcomes are *coherent*: either the recorder captured exactly `⌘Space`
-/// and stopped, or it saw nothing and is still waiting. A field holding
-/// something else, or a row that disarmed with nothing recorded, is a bug.
 #[test]
 #[ignore = "needs a real desktop; run via scripts/native-tests-macos.sh"]
 fn pressing_cmd_space_while_armed_either_records_it_or_never_arrives() {
@@ -1701,18 +1352,12 @@ fn pressing_cmd_space_while_armed_either_records_it_or_never_arrives() {
     press_chord(VK_SPACE, CGEventFlags::CGEventFlagCommand);
 
     let edges = app.edges();
-    // Whatever Spotlight did with the chord, get the desktop back before the
-    // next test runs: this guest is shared and a search field left open eats
-    // the following keystrokes.
     press_chord(VK_ESCAPE, CGEventFlags::CGEventFlagNull);
 
     let ui = Ui::settings();
     match edges.as_slice() {
         [] => {
             eprintln!("[observed] ⌘Space never reached the app-local monitor");
-            // Either nothing happened at all, or Spotlight took the focus and
-            // the recording cancelled. Both are coherent; what may not happen
-            // is the field acquiring a combination no edge delivered.
             if let Some(field) = ui.hotkey_field() {
                 assert_eq!(
                     field, "⌃⇧Space",
@@ -1740,14 +1385,6 @@ fn pressing_cmd_space_while_armed_either_records_it_or_never_arrives() {
     }
 }
 
-/// The captured value survives `Save` and a relaunch, and the app logs no
-/// error.
-///
-/// "Survives" is taken to mean the value still *works*, not only that the same
-/// bytes read back: a main instance is started on the same HOME afterwards and
-/// the captured combination has to make its popup appear. And the logging half
-/// is asserted rather than assumed — the child's stderr is captured and has to
-/// carry no error line.
 #[test]
 #[ignore = "needs a real desktop; run via scripts/native-tests-macos.sh"]
 fn a_captured_hotkey_survives_save_and_a_relaunch() {
@@ -1757,8 +1394,6 @@ fn a_captured_hotkey_survives_save_and_a_relaunch() {
     click_button("Save");
     assert_eq!(app.saved_hotkey(), "⌥⌘J");
 
-    // Everything the app reports goes to stderr behind a `[nudge…]` prefix, so
-    // the absence of an error is checkable rather than a figure of speech.
     let log = app.stderr_after_exit();
     let errors: Vec<&str> = log
         .lines()
@@ -1788,8 +1423,6 @@ fn a_captured_hotkey_survives_save_and_a_relaunch() {
         "the relaunched settings window never opened"
     );
 
-    // The value is not only stored, it binds: a main instance on the same HOME
-    // must answer the captured combination.
     app.kill_child();
     let main = app.spawn_main_on_same_home();
     assert_no_popup_at_launch(main.pid());

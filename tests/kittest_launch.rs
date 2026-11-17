@@ -1,11 +1,3 @@
-//! Where the spec §4 machine starts, headless through the real `NudgeApp`:
-//! Waiting, with the timer armed for the configured default interval, and
-//! the popup arriving with the first Deadline.
-//!
-//! Its own test binary, like `kittest_viewport_commands.rs`: the armed timer
-//! is the platform seam's, one per process, and every `NudgeApp` arms it at
-//! launch. The tests here take [`SEAM`] for the same reason.
-
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -17,7 +9,6 @@ use egui_kittest::kittest::Queryable;
 use nudge_web::app::NudgeApp;
 use nudge_web::platform;
 
-/// Held for a whole test: the armed timer is per process.
 static SEAM: Mutex<()> = Mutex::new(());
 
 fn seam() -> MutexGuard<'static, ()> {
@@ -38,7 +29,6 @@ fn minutes(d: Duration) -> f64 {
     d.as_secs_f64() / 60.0
 }
 
-/// The armed interval and how much of it is left, read off the seam.
 fn armed() -> (f64, f64) {
     let t = platform::armed_timer().expect("a timer is armed");
     let left = t.deadline.saturating_duration_since(Instant::now());
@@ -68,9 +58,6 @@ fn the_first_deadline_opens_a_timer_popup_on_the_first_field() {
     assert!(inputs[0].is_focused(), "with the caret in the first field");
     assert_eq!(inputs[2].value().as_deref(), Some("7"));
 
-    // Asking·Timer, not Asking·Manual: a Leave sets the timer from the
-    // field, where a Leave from a manual popup would leave the launch
-    // interval running.
     inputs[2].focus();
     harness.run();
     harness

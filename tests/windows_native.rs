@@ -1,21 +1,3 @@
-//! The spec §4 state machine, observed on Windows from outside the app.
-//!
-//! Each test launches the built `nudge.exe` with `--config` pointing at a
-//! temporary file — launch is Waiting, so the first popup is the first
-//! deadline's — and then sees it only the way a user would: whether its
-//! window is on screen and holds the foreground, what the journal on disk
-//! says, and when the popup comes back. Input is synthetic (`SendInput`), the
-//! hotkey included. Nothing from the crate is imported, so the file builds
-//! unchanged against any tree that keeps the `--config` flag, the config keys
-//! and the journal location.
-//!
-//! The journal cannot be redirected: the app writes to the Documents known
-//! folder. [`Journal`] moves the user's file aside for the length of a test
-//! and puts it back afterwards.
-//!
-//! Needs a logged-in desktop, so `#[ignore]`d. In the VM:
-//! `SUITE=windows_native scripts/native-tests-windows.sh`.
-
 #![cfg(target_os = "windows")]
 
 use std::path::{Path, PathBuf};
@@ -34,24 +16,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::BOOL;
 
-/// What launch adds to the first interval before its popup is visible, cold
-/// start under x64 emulation included.
 const LAUNCH_BUDGET: Duration = Duration::from_secs(15);
-/// From a key press to the window it acts on being shown or hidden.
 const REACTION: Duration = Duration::from_secs(3);
-/// How long a popup that has just appeared gets before keys are sent to it:
-/// the window is shown by the tray thread, and the app turns the show into
-/// its own state on the next frame.
 const SETTLE: Duration = Duration::from_millis(500);
-/// Long enough for the app to have run a frame after a key. Keys that reach
-/// it within one frame are handled in an order of its own: egui moves focus
-/// on Tab at the start of the next frame, and the popup acts on Enter before
-/// the field takes the text that came with it.
 const FRAME: Duration = Duration::from_millis(250);
-/// Allowed lateness of a timer-driven reappearance. The app fires 250 ms
-/// after the deadline at most (the last petal's fall), then paints.
 const LATE: Duration = Duration::from_secs(3);
-/// Allowed earliness: none is legitimate, this is measurement slack.
 const EARLY: Duration = Duration::from_millis(500);
 
 const HOTKEY_DEFAULT: &[VIRTUAL_KEY] = &[VK_CONTROL, VK_SHIFT, VK_SPACE];
@@ -67,8 +36,6 @@ fn config_json(hotkey: &str, minutes: f64) -> String {
 fn secs(minutes: f64) -> Duration {
     Duration::from_secs_f64(minutes * 60.0)
 }
-
-// ---------- the app under test ------------------------------------------------
 
 struct App {
     child: Child,
@@ -97,8 +64,6 @@ impl App {
         self.child.id()
     }
 
-    /// The popup: a visible top-level window of this process larger than
-    /// the tray's helper windows.
     fn popup(&self) -> Option<HWND> {
         visible_windows(self.pid())
             .into_iter()
@@ -120,7 +85,6 @@ impl App {
         pid == self.pid()
     }
 
-    /// When the popup was first seen on screen, polling until `deadline`.
     fn shown_by(&self, deadline: Instant) -> Option<Instant> {
         poll_until(deadline, || self.is_shown())
     }
@@ -129,10 +93,6 @@ impl App {
         poll_until(deadline, || !self.is_shown())
     }
 
-    /// When the popup was first seen on screen and still there a frame
-    /// later. eframe shows its window after the first frame it paints and
-    /// launch hides it again in that frame, so one sample can catch an empty
-    /// window.
     fn stays_shown_by(&self, deadline: Instant) -> Option<Instant> {
         poll_until(deadline, || {
             self.is_shown() && {
@@ -142,9 +102,6 @@ impl App {
         })
     }
 
-    /// The first popup: launch is Waiting, so it is the first deadline's,
-    /// `minutes` (the configured interval) after the app has started. Waited
-    /// for as one that stays, past the window launch shows and hides.
     fn first_popup(&self, minutes: f64) -> Instant {
         let within = LAUNCH_BUDGET + secs(minutes);
         self.stays_shown_by(Instant::now() + within)
@@ -154,8 +111,6 @@ impl App {
         self.wait_ready(REACTION, "first deadline")
     }
 
-    /// Wait for the popup to be up and to hold the keyboard, then give the
-    /// app its frame. Returns when it was first seen.
     fn wait_ready(&self, within: Duration, what: &str) -> Instant {
         let deadline = Instant::now() + within;
         let shown = self
@@ -168,7 +123,6 @@ impl App {
         shown
     }
 
-    /// Esc, and the moment the popup was seen gone.
     fn leave(&self, what: &str) -> Instant {
         self.close_with(VK_ESCAPE, "Esc", what)
     }
@@ -182,8 +136,6 @@ impl App {
         if let Some(t) = self.hidden_by(Instant::now() + REACTION) {
             return t;
         }
-        // Not a retry: the test fails either way. What a second press does
-        // tells a popup that ignores keys from one that never got them.
         let foreground = self.has_foreground();
         press(&[key]);
         let second = self.hidden_by(Instant::now() + REACTION).is_some();
@@ -193,15 +145,12 @@ impl App {
         )
     }
 
-    /// Press `hotkey` while the popup is hidden and wait for it to come up.
     fn summon(&self, hotkey: &[VIRTUAL_KEY], what: &str) -> Instant {
         assert!(!self.is_shown(), "{what}: the popup was already up");
         press(hotkey);
         self.wait_ready(REACTION, what)
     }
 
-    /// Replace the config the way the settings window does: a whole new
-    /// file renamed over the old one.
     fn rewrite_config(&self, config: &str) {
         let tmp = self.config.with_extension("json.tmp");
         std::fs::write(&tmp, config).expect("write config");
@@ -255,8 +204,6 @@ fn visible_windows(pid: u32) -> Vec<(HWND, RECT)> {
     data.found
 }
 
-// ---------- keyboard ------------------------------------------------------------
-
 fn key_input(vk: VIRTUAL_KEY, up: bool) -> INPUT {
     let scan = unsafe { MapVirtualKeyW(vk.0 as u32, MAPVK_VK_TO_VSC) } as u16;
     INPUT {
@@ -277,7 +224,6 @@ fn key_input(vk: VIRTUAL_KEY, up: bool) -> INPUT {
     }
 }
 
-/// Press a chord: every key down in order, then up in reverse.
 fn press(chord: &[VIRTUAL_KEY]) {
     let mut inputs: Vec<INPUT> = chord.iter().map(|&vk| key_input(vk, false)).collect();
     inputs.extend(chord.iter().rev().map(|&vk| key_input(vk, true)));
@@ -285,15 +231,11 @@ fn press(chord: &[VIRTUAL_KEY]) {
     assert_eq!(sent as usize, inputs.len(), "SendInput refused the input");
 }
 
-/// Press a chord that changes where the next keys go (Tab, select-all), and
-/// give the app a frame to apply it.
 fn press_then_frame(chord: &[VIRTUAL_KEY]) {
     press(chord);
     std::thread::sleep(FRAME);
 }
 
-/// Type lowercase ASCII letters, digits, spaces and dots, by key code (a US
-/// layout prints them unshifted), then give the app a frame to take them in.
 fn type_text(text: &str) {
     for ch in text.chars() {
         let vk = match ch {
@@ -308,11 +250,6 @@ fn type_text(text: &str) {
     std::thread::sleep(FRAME);
 }
 
-// ---------- the journal ---------------------------------------------------------
-
-/// The app's journal file, emptied for one test: an existing file is moved
-/// aside and restored on drop. A backup left by a run that died before its
-/// drop is the user's journal and is put back first.
 struct Journal {
     path: PathBuf,
     backup: PathBuf,
@@ -356,9 +293,6 @@ fn read_lines(path: &Path) -> Vec<serde_json::Value> {
         .collect()
 }
 
-// ---------- assertions ------------------------------------------------------------
-
-/// The popup came back `interval` after `from`, within the slack.
 fn assert_back_after(from: Instant, at: Instant, interval: Duration, what: &str) {
     let took = at.duration_since(from);
     eprintln!(
@@ -387,16 +321,9 @@ fn expect_back(app: &App, from: Instant, interval: Duration, what: &str) -> Inst
     at
 }
 
-// ---------- the tests -----------------------------------------------------------------
-
-/// Waiting is the initial state: launch shows nothing, and the popup comes
-/// with the first deadline, the configured interval later, holding the
-/// keyboard.
 #[test]
 #[ignore = "drives a real desktop; run in the Windows VM via scripts/native-tests-windows.sh"]
 fn launch_waits_and_the_first_deadline_shows_the_popup_with_the_keyboard() {
-    // 21 s: longer than a cold start, so a popup shown at launch would be on
-    // screen inside it.
     const MINUTES: f64 = 0.35;
     let app = App::launch(&config_json("Ctrl+Shift+Space", MINUTES));
     let launched = Instant::now();
@@ -409,14 +336,11 @@ fn launch_waits_and_the_first_deadline_shows_the_popup_with_the_keyboard() {
     assert!(app.is_shown() && app.has_foreground());
 }
 
-/// Leave from Asking·Timer: timer := the minutes field — the field as the
-/// user left it, not the configured default.
 #[test]
 #[ignore = "drives a real desktop; run in the Windows VM via scripts/native-tests-windows.sh"]
 fn esc_from_a_timer_popup_rearms_it_from_the_minutes_field() {
     let app = App::launch(&config_json("Ctrl+Shift+Space", 0.05));
     app.first_popup(0.05);
-    // Third row, whole text replaced: 0.15 min = 9 s against the config's 3 s.
     press_then_frame(&[VK_TAB]);
     press_then_frame(&[VK_TAB]);
     press_then_frame(&[VK_CONTROL, VIRTUAL_KEY(b'A' as u16)]);
@@ -425,9 +349,6 @@ fn esc_from_a_timer_popup_rearms_it_from_the_minutes_field() {
     expect_back(&app, hidden, secs(0.15), "after Esc from a timer popup");
 }
 
-/// Submit with text from Asking·Timer: exactly one journal line, with the
-/// typed answers, the trigger and the interval; and the timer re-armed from
-/// the field.
 #[test]
 #[ignore = "drives a real desktop; run in the Windows VM via scripts/native-tests-windows.sh"]
 fn submit_with_text_writes_one_journal_line_and_rearms() {
@@ -478,7 +399,6 @@ fn submit_with_text_writes_one_journal_line_and_rearms() {
     assert_eq!(journal.lines().len(), 1, "nothing else was written");
 }
 
-/// Submit with both answers empty writes nothing, and still re-arms.
 #[test]
 #[ignore = "drives a real desktop; run in the Windows VM via scripts/native-tests-windows.sh"]
 fn submit_with_empty_answers_writes_nothing_and_rearms() {
@@ -495,9 +415,6 @@ fn submit_with_empty_answers_writes_nothing_and_rearms() {
     );
 }
 
-/// Summon by the hotkey while Waiting opens Asking·Manual; Leave from it does
-/// not touch the timer, so the deadline set before the summon still fires on
-/// time.
 #[test]
 #[ignore = "drives a real desktop; run in the Windows VM via scripts/native-tests-windows.sh"]
 fn hotkey_summons_while_waiting_and_esc_keeps_the_deadline() {
@@ -526,8 +443,6 @@ fn hotkey_summons_while_waiting_and_esc_keeps_the_deadline() {
     );
 }
 
-/// A deadline that elapses behind Asking·Manual is still owed when the popup
-/// is left, so it fires at once.
 #[test]
 #[ignore = "drives a real desktop; run in the Windows VM via scripts/native-tests-windows.sh"]
 fn a_deadline_passed_behind_a_manual_popup_fires_when_it_is_left() {
@@ -556,17 +471,12 @@ fn a_deadline_passed_behind_a_manual_popup_fires_when_it_is_left() {
     );
 }
 
-/// Live reload (§9): a new hotkey in config.json takes over at once — the new
-/// combination summons, the old one no longer does — and what it opens is a
-/// manual popup (§5: `trigger_source = manual`).
 #[test]
 #[ignore = "drives a real desktop; run in the Windows VM via scripts/native-tests-windows.sh"]
 fn live_reload_moves_the_hotkey() {
     let journal = Journal::isolate();
     let app = App::launch(&config_json("Ctrl+Shift+Space", 0.05));
     app.first_popup(0.05);
-    // Ten minutes in the field, so the Leave re-arms a timer that cannot
-    // fire during the test.
     press_then_frame(&[VK_TAB]);
     press_then_frame(&[VK_TAB]);
     press_then_frame(&[VK_CONTROL, VIRTUAL_KEY(b'A' as u16)]);
@@ -580,10 +490,6 @@ fn live_reload_moves_the_hotkey() {
     app.rewrite_config(&config_json(label, 10.0));
     std::thread::sleep(Duration::from_secs(2));
 
-    // The test takes the old combination itself: that only succeeds once the
-    // app has let go of it, and the press then lands here instead of in the
-    // shell, which opens Search on an unbound Ctrl+Shift+Space over the
-    // taskbar and keeps the foreground from every later test.
     const OLD_HOTKEY_ID: i32 = 1;
     unsafe {
         RegisterHotKey(
@@ -611,11 +517,6 @@ fn live_reload_moves_the_hotkey() {
     assert_eq!(lines[0]["doing"], "reloaded", "{}", lines[0]);
 }
 
-/// A manual open that lands within milliseconds of the deadline must not
-/// lose the deadline: whichever of the two wins, nudges continue afterwards.
-/// The hotkey is pressed at jittered offsets around the measured moment the
-/// timer shows the popup, round after round; the app has to nudge again
-/// after every round.
 #[test]
 #[ignore = "drives a real desktop; run in the Windows VM via scripts/native-tests-windows.sh"]
 fn a_manual_open_at_the_deadline_does_not_stop_the_nudges() {
@@ -626,7 +527,6 @@ fn a_manual_open_at_the_deadline_does_not_stop_the_nudges() {
     let app = App::launch(&config_json("Ctrl+Shift+Space", MINUTES));
     app.first_popup(MINUTES);
 
-    // When, after a Leave, the timer's popup appears.
     let mut fire = Vec::new();
     for i in 0..CALIBRATION {
         let left = app.leave(&format!("calibration {i}"));
@@ -637,9 +537,6 @@ fn a_manual_open_at_the_deadline_does_not_stop_the_nudges() {
     fire.sort();
     let fire_at = fire[CALIBRATION / 2];
 
-    // Offsets from -50 ms to +10 ms around it, spread by a fixed LCG: the
-    // hotkey lands in the last moments before the timer shows the popup, or
-    // just after.
     let mut seed: u64 = 0x5eed_1e55;
     let mut offsets_ms = Vec::new();
     for round in 0..ROUNDS {
@@ -670,9 +567,6 @@ fn a_manual_open_at_the_deadline_does_not_stop_the_nudges() {
         );
         let left = app.leave(&format!("round {round}: Esc after the hotkey"));
 
-        // Up already when the hotkey went in: the summon was dropped and the
-        // Leave re-armed the timer. Otherwise the deadline is either past
-        // (fires at once) or still ahead of the manual popup.
         let owed = if was_up { interval } else { fire_at };
         let back = app.shown_by(left + owed + LATE);
         eprintln!(

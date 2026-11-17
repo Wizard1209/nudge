@@ -1,26 +1,3 @@
-//! Replay of key streams a keyboard actually produced.
-//!
-//! This is the fast tier of the recorder's evidence, and the whole reason it
-//! can be fast: the guest suite (`tests/macos_hotkey_native.rs`) presses real
-//! keys against a real desktop and, on the way, writes down every press edge
-//! the monitor saw. Those files land here, and from then on the same input
-//! runs on every `cargo test` in a fraction of a second.
-//!
-//! **A test for this feature is evidence only if its input is a recorded real
-//! event stream or a real keypress.** A suite that passes against a
-//! hand-written sequence the platform never produces has shipped a dead
-//! recorder here twice, so the rule is mechanical rather than a habit: every
-//! fixture must open with a provenance line saying which machine, which
-//! layout, which physical keys and which harness produced it, and a file
-//! without one is rejected instead of replayed. Writing a fixture by hand
-//! means writing a lie into that line, which is a different act from being
-//! careless.
-//!
-//! What is replayed is the real path, end to end short of the window: the
-//! recorded key code → `classify_press` → the decision table → the settings
-//! form's field. The one thing standing in for the OS is where the edges come
-//! from, which is exactly the seam the fixture exists to fill.
-
 #![cfg(target_os = "macos")]
 
 use std::collections::VecDeque;
@@ -32,52 +9,28 @@ use nudge_web::platform::keycode;
 use nudge_web::recorder::{EdgeSource, Input, PhysicalKey, PressEdge, Verdict};
 use nudge_web::settings_app::{HotkeyRecorder, SettingsForm, apply_effect};
 
-// ---------------------------------------------------------------------------
-// the fixture format
-// ---------------------------------------------------------------------------
-
-/// Where the guest suite drops what it recorded.
 fn fixture_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/keystreams")
 }
 
-/// The first line of every fixture. Each field is required, and the test
-/// refuses a file that leaves one out — this is the gate that a hand-authored
-/// sequence cannot pass by looking like the others.
 #[derive(Debug)]
 struct Provenance {
-    /// Which acceptance bullet this stream was recorded for.
     bullet: String,
-    /// The OS the keys were pressed on.
     os: String,
-    /// The active input source. `⌥⌘J` from a Russian layout is a different
-    /// recording from `⌥⌘J` on a US one, and the point is that they agree.
     layout: String,
-    /// `real-keyboard` or `synthetic-cgevent`. Nothing else counts: both are
-    /// events the OS delivered, which is what the acceptance rule asks for.
     input: String,
-    /// The physical keys a human would say were pressed.
     keys: String,
-    /// The test that pressed them, so the recording can be reproduced.
     harness: String,
 }
 
 const ACCEPTED_INPUT_KINDS: [&str; 2] = ["real-keyboard", "synthetic-cgevent"];
 
-/// One recorded press: the edge the monitor produced **and** the raw
-/// `modifierFlags` the `NSEvent` carried before conversion.
-///
-/// Both are written down because the conversion between them is code that
-/// ships — and it is the piece a hand-written stream cannot exercise honestly:
-/// macOS raises the `fn` bit by itself for every arrow and every F key, and
-/// dropping it is what keeps `⌥⌘←` the combination the user pressed.
 #[derive(Debug, Clone, Copy)]
 struct RecordedEdge {
     edge: PressEdge,
     ns_flags: u64,
 }
 
-/// One fixture: its provenance and the edges the monitor saw, in order.
 #[derive(Debug)]
 struct Stream {
     provenance: Provenance,
@@ -170,22 +123,9 @@ fn parse_stream(path: &Path) -> Result<Stream, String> {
     Ok(Stream { provenance, edges })
 }
 
-// ---------------------------------------------------------------------------
-// the source that stands in for the keyboard
-// ---------------------------------------------------------------------------
-
-/// A key source whose edges came off a keyboard some time ago.
-///
-/// It is the only substitution this tier makes, and it is deliberately the
-/// narrowest one available: everything downstream of `drain` — the key code,
-/// the modifier nibble, the classification, the table, the field — is the code
-/// the window runs.
 struct ReplayEdgeSource {
     pending: VecDeque<PressEdge>,
     armed: bool,
-    /// Every edge that arrived while *not* armed. The monitor would have
-    /// passed those to the window untouched, so a fixture that only replays
-    /// correctly with the recorder disarmed is a fixture recorded wrong.
     seen_while_idle: usize,
 }
 
@@ -217,39 +157,13 @@ impl EdgeSource for ReplayEdgeSource {
     }
 }
 
-// ---------------------------------------------------------------------------
-// what each recorded stream must do
-// ---------------------------------------------------------------------------
-
-/// One acceptance bullet, as an assertion over the stream recorded for it.
 struct Bullet {
-    /// The fixture's basename, without `.ndjson`, and the `bullet` its
-    /// provenance line must carry.
     name: &'static str,
-    /// What is in `config.json` when the recording starts — every cancelling
-    /// path has to land back on exactly this.
     saved: &'static str,
-    /// What the field must read afterwards. `None` means "whatever was saved",
-    /// which is what a refusal and a cancel both leave behind.
     field_after: Option<&'static str>,
-    /// Whether the recorder is still listening. A refusal does not disarm: it
-    /// would leave a mistyped chord looking exactly like a recorded one.
     armed_after: bool,
-    /// A refusal has to name the key. This is the name it must contain.
     hint_contains: Option<&'static str>,
-    /// How many press edges the recording must hold, and — where the bullet is
-    /// about a particular physical cap — which `kVK_*` code the first of them
-    /// must carry.
-    ///
-    /// This is an assertion about the *fixture*, not about the table, and it
-    /// is what keeps the two empty streams from being vacuous: `⌥⌘` alone and
-    /// `fn` alone replay to "still armed, field unchanged" under any
-    /// implementation whatsoever, so what has to be pinned there is that the
-    /// OS delivered nothing, which is a fact about the file.
     edges: usize,
-    /// `kVK_*`, spelled out. The guest posts these as literals too, so a
-    /// wrong row in `keycode.rs` cannot be pressed and read back through
-    /// itself into agreement.
     first_code: Option<u16>,
 }
 
@@ -281,9 +195,6 @@ const BULLETS: &[Bullet] = &[
         edges: 1,
         first_code: Some(0x2C),
     },
-    // ⌘C reaches the recorder as three plain facts — key code 8, the Command
-    // bit, nothing else. It was only ever a clipboard command because the
-    // toolkit saw it first, and the monitor swallows it before anything can.
     Bullet {
         name: "cmd-c",
         saved: "Ctrl+Shift+Space",
@@ -293,8 +204,6 @@ const BULLETS: &[Bullet] = &[
         edges: 1,
         first_code: Some(0x08),
     },
-    // Keypad 5 and the digit row's 5 are different keys with different codes.
-    // The toolkit folds them together; this is where that fold would show.
     Bullet {
         name: "keypad-5",
         saved: "Ctrl+Shift+Space",
@@ -313,8 +222,6 @@ const BULLETS: &[Bullet] = &[
         edges: 1,
         first_code: Some(0x26),
     },
-    // The F row types nothing, which is what makes a bare F13 a usable
-    // shortcut and the one exception to the modifier rule.
     Bullet {
         name: "bare-f13",
         saved: "Ctrl+Shift+Space",
@@ -324,10 +231,6 @@ const BULLETS: &[Bullet] = &[
         edges: 1,
         first_code: Some(0x69),
     },
-    // These two are recorded as *empty* streams, and that is the assertion:
-    // modifiers alone and `fn` arrive as flagsChanged, which the monitor's
-    // mask excludes, so they are not events at all rather than events the
-    // table has to ignore.
     Bullet {
         name: "modifiers-only",
         saved: "Ctrl+Shift+Space",
@@ -346,9 +249,6 @@ const BULLETS: &[Bullet] = &[
         edges: 0,
         first_code: None,
     },
-    // A key is a position, not the character it produces. Same cap, same code,
-    // same combination — recorded with the layout switched so the claim is
-    // observed rather than asserted.
     Bullet {
         name: "russian-layout-alt-cmd-j",
         saved: "Ctrl+Shift+Space",
@@ -358,8 +258,6 @@ const BULLETS: &[Bullet] = &[
         edges: 1,
         first_code: Some(0x26),
     },
-    // A hotkey needs a modifier, so a lone Esc can never be one and the
-    // keystroke is free to mean "back out".
     Bullet {
         name: "bare-escape",
         saved: "Alt+Cmd+J",
@@ -371,7 +269,6 @@ const BULLETS: &[Bullet] = &[
     },
 ];
 
-/// Replay one stream into an armed recorder and report what the row shows.
 struct Outcome {
     field: String,
     armed: bool,
@@ -389,7 +286,6 @@ fn replay(stream: &Stream, saved: &str) -> Outcome {
     let source = ReplayEdgeSource::new(stream.edges.iter().map(|e| e.edge).collect());
     let mut row = HotkeyRecorder::new(Some(Box::new(source)));
 
-    // The Record button. Everything after this is the recording.
     row.feed(&Input::Record);
     for effect in row.pump(true) {
         apply_effect(&effect, &mut form);
@@ -401,24 +297,12 @@ fn replay(stream: &Stream, saved: &str) -> Outcome {
     }
 }
 
-/// The §5 spelling of a label, which is what the field must read.
 fn native(label: &str) -> String {
     hotkey::format_native(&hotkey::parse(label).expect("the expectation must parse"))
 }
 
-// ---------------------------------------------------------------------------
-// the tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn the_recorder_has_recorded_evidence() {
-    // The ratchet, and the reason it is its own test: with no fixtures at all
-    // every assertion below is about an empty set, and an empty set satisfies
-    // anything. This feature has shipped a dead recorder twice; the difference
-    // this time has to be a red test rather than a note in a document.
-    //
-    // Every guest run rewrites the whole set, so a partial one means a guest
-    // test did not run — the same failure, caught the same way.
     let dir = fixture_dir();
     let missing: Vec<&str> = BULLETS
         .iter()
@@ -436,8 +320,6 @@ fn the_recorder_has_recorded_evidence() {
 
 #[test]
 fn every_fixture_carries_its_provenance() {
-    // Run over the directory rather than the expectation list, so a stray file
-    // cannot sit there unread and a future bullet cannot be added without one.
     let dir = fixture_dir();
     let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
         panic!(
@@ -487,8 +369,6 @@ fn every_recorded_stream_replays_to_what_its_bullet_promises() {
     for bullet in BULLETS {
         let path = dir.join(format!("{}.ndjson", bullet.name));
         if !path.exists() {
-            // `the_recorder_has_recorded_evidence` is where a missing stream
-            // is reported; failing again here would only bury it.
             continue;
         }
         let stream = parse_stream(&path).unwrap_or_else(|e| panic!("{e}"));
@@ -501,10 +381,6 @@ fn every_recorded_stream_replays_to_what_its_bullet_promises() {
             stream.provenance.harness
         );
 
-        // What the OS delivered, before anything interprets it. For the two
-        // empty streams this is the whole assertion: they replay to "still
-        // armed, field unchanged" under any implementation, so the claim being
-        // kept is that no press edge arrived.
         assert_eq!(
             stream.edges.len(),
             bullet.edges,
@@ -539,12 +415,6 @@ fn every_recorded_stream_replays_to_what_its_bullet_promises() {
 
 #[test]
 fn the_recorded_flags_convert_to_the_recorded_modifiers() {
-    // `modifiers_from_ns_flags` is the one piece of the capture path a stream
-    // of already-converted nibbles would leave uncovered — and it is where the
-    // `fn` bit lives. macOS raises that bit by itself for the arrows and the F
-    // row, so honouring it would turn `⌥⌘←` into a combination the user cannot
-    // type. Here the raw flags come off a real event and the conversion is run
-    // over them.
     let dir = fixture_dir();
     let mut stray_bits = 0u64;
     let mut edges = 0usize;
@@ -563,7 +433,6 @@ fn the_recorded_flags_convert_to_the_recorded_modifiers() {
                 bullet.name,
                 recorded.ns_flags
             );
-            // Everything outside the four Carbon can bind.
             stray_bits |= recorded.ns_flags & !((1 << 17) | (1 << 18) | (1 << 19) | (1 << 20));
             edges += 1;
         }
@@ -582,9 +451,6 @@ fn the_recorded_flags_convert_to_the_recorded_modifiers() {
 
 #[test]
 fn a_fixture_with_no_provenance_is_refused() {
-    // The gate itself, exercised on a file written for the purpose. This is
-    // the one place in the tier where a hand-written stream is the subject
-    // rather than the evidence.
     let dir = std::env::temp_dir().join(format!("nudge-replay-gate-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
 
