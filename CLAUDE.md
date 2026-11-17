@@ -5,6 +5,11 @@ Interval journaling for focus. Native Rust, Windows.
 Product behaviour, defaults and file paths: README.md; the state machine:
 docs/design-spec.md §4.
 
+Source files carry no comments. The one exception is a fact stated in at most
+four comment lines, the last of which is `proof: <https URL | repo-relative
+path::fn name or test title>`; tool directives such as `@ts-expect-error` are
+exempt. `cargo test --test comment_policy` checks it.
+
 ## Dev Commands
 
 ### Build & run native (Windows exe via WSL)
