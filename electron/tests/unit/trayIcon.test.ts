@@ -9,11 +9,6 @@ import {
   formatTooltip,
 } from "../../src/electron/trayIcon";
 
-// Spec §5: daisy icon — 16 petals around a yellow centre, drawn from
-// assets/daisy.svg. Petals fall one per `interval/16`, top petal (12 o'clock, index 0) first, then clockwise. At
-// timer expiry only the centre remains. Tooltip is "~N min" (ceil to whole
-// minutes) and flips to "now" when the timer is at zero.
-
 describe("trayIcon / visiblePetals", () => {
   it("returns all 16 petals at progress 0", () => {
     const petals = visiblePetals(0);
@@ -26,18 +21,15 @@ describe("trayIcon / visiblePetals", () => {
   });
 
   it("drops the 12-o'clock petal (index 0) first", () => {
-    // Just past 1/16 of the interval: petal 0 has fallen, 1..15 remain.
     const petals = visiblePetals(1 / 16 + 0.001);
     expect(petals).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
   });
 
   it("drops petals clockwise (index ascends)", () => {
-    // Halfway: petals 0..7 fallen, 8..15 remain.
     expect(visiblePetals(0.5)).toEqual([8, 9, 10, 11, 12, 13, 14, 15]);
   });
 
   it("keeps the last petal until progress fully hits 1", () => {
-    // 15/16 < progress < 1: 15 fallen, petal 15 still there.
     expect(visiblePetals(15 / 16 + 0.001)).toEqual([15]);
   });
 
@@ -91,8 +83,6 @@ describe("trayIcon / buildTrayIcon", () => {
     expect(px.count((p) => p[3] > 0)).toBeGreaterThan(36 * 36 * 0.3);
     const [r, g, b, a] = px.at(18, 18);
     expect([a, r > 230, g > 170, b < 120]).toEqual([255, true, true, true]);
-    // Near the tip of the top petal (petal-0, about 12 o'clock): the
-    // bluest pixel there is blue, not the white of the petal's body.
     let bluest = 0;
     for (let y = 1; y <= 4; y++)
       for (let x = 16; x <= 20; x++) {
@@ -107,9 +97,6 @@ describe("trayIcon / buildTrayIcon", () => {
     expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([size, size]);
   });
 
-  // The petals on the flower are exactly the frame's stable ones: each is
-  // found by sampling its own axis, at 3/4 of the tip radius, at the angle
-  // the SVG's transform gives it.
   it.each(Array.from({ length: PETAL_COUNT + 1 }, (_, k) => k))(
     "with %i petals fallen, the rest are on the flower and only they",
     (fallen) => {
@@ -140,9 +127,6 @@ describe("trayIcon / buildTrayIcon", () => {
   });
 });
 
-// Not spec §5: the prototype's own mark, so its tray icon is told apart from
-// the Rust app's at a glance. An orbit tilted up to the right, its electron
-// at the upper-right end.
 describe("trayIcon / the Electron mark", () => {
   const size = 36;
   const electron = (png: Buffer) => pixels(png, size).at(Math.round((58 * size) / 64), Math.round((17 * size) / 64));
@@ -166,10 +150,7 @@ describe("trayIcon / the Electron mark", () => {
 });
 
 describe("trayIcon / daisyFrame", () => {
-  // §5 fall animation: petal k starts falling at t = (k+1) * interval/16
-  // and is fully gone after `fadeMs`. While falling, it counts as the "in
-  // motion" petal (still drawn, but offset + fading), not part of `stable`.
-  const interval = 16_000; // 16s for easy mental math (slot = 1s)
+  const interval = 16_000;
   const fadeMs = 250;
 
   it("returns all 16 stable petals at t=0, none falling", () => {
@@ -179,7 +160,7 @@ describe("trayIcon / daisyFrame", () => {
   });
 
   it("marks petal 0 as falling right when its slot ends", () => {
-    const f = daisyFrame(1000, interval, fadeMs); // exactly at slot boundary
+    const f = daisyFrame(1000, interval, fadeMs);
     expect(f.stable).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
     expect(f.falling?.index).toBe(0);
     expect(f.falling?.phase).toBeCloseTo(0, 5);
@@ -211,13 +192,8 @@ describe("trayIcon / daisyFrame", () => {
   });
 
   it("clamps the fade duration to the slot length on short intervals", () => {
-    // For a 1.6s interval, slot = 100ms — shorter than the default 250ms
-    // fade. The animation must compress so that one falling petal never
-    // overlaps the next slot.
     const short = 1600;
     const slot = short / 16;
-    // 60ms into the first slot's fade, with slot=100 the effective fade is
-    // 100ms, so phase ≈ 0.6 (not 0.24 you'd get from a literal 250ms fade).
     const f = daisyFrame(slot + 60, short, fadeMs);
     expect(f.falling?.index).toBe(0);
     expect(f.falling?.phase).toBeCloseTo(0.6, 1);
@@ -237,15 +213,11 @@ describe("trayIcon / formatTooltip", () => {
   });
 });
 
-// --- Helpers ------------------------------------------------------------
-
 import { readFileSync } from "node:fs";
 import { decodePng } from "../fixtures/png.js";
 
 const SVG = readFileSync(new URL("../../../assets/daisy.svg", import.meta.url), "utf8");
 
-// Each petal's angle, degrees clockwise from 12 o'clock, from its group's
-// `rotate(a cx cy)`.
 function petalAngles(): number[] {
   const out: number[] = [];
   for (let k = 0; k < PETAL_COUNT; k++) {
@@ -266,7 +238,6 @@ function pixels(png: Buffer, size: number) {
   return { at, count };
 }
 
-/** Petal tip radius on the 64-unit canvas (the table's `petal_tip`). */
 const TIP_RADIUS = 31;
 
 function petalsOnFlower(png: Buffer, size: number): number[] {

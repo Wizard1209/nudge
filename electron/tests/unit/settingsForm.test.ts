@@ -7,9 +7,6 @@ const cfg = (over: Partial<Config> = {}): Config => ({
   ...over,
 });
 
-// Every form here names its platform: §5 has one canonical spelling per
-// platform, so a form that read the host's would assert a different string on
-// a Mac than on a PC.
 const form = (over: Partial<Config> = {}, platform: "macos" | "windows" = "windows") =>
   SettingsForm.fromConfig(cfg(over), platform);
 
@@ -33,8 +30,6 @@ describe("SettingsForm.fromConfig", () => {
   });
 
   it("shows a value that does not parse exactly as stored", () => {
-    // It is the only copy of what the user typed, and the field is where they
-    // fix it.
     expect(form({ hotkey: "Ctrl+Nonsense" }, "macos").hotkey).toBe("Ctrl+Nonsense");
   });
 

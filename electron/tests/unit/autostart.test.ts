@@ -31,7 +31,6 @@ describe("applyAutostart", () => {
   });
 
   it("treats an unconfirmed change as a backend error", () => {
-    // enable() succeeds but isEnabled keeps reporting false (the OS lied).
     const provider = new FakeProvider(false, { lieOnConfirm: true });
     const persist = vi.fn();
     const result = applyAutostart(provider, true, persist);
@@ -48,7 +47,6 @@ describe("applyAutostart", () => {
     const result = applyAutostart(provider, true, persist);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.kind).toBe("persist");
-    // OS change already took effect even though config write failed.
     expect(provider.isEnabled()).toBe(true);
   });
 });

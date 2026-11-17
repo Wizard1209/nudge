@@ -11,14 +11,7 @@ import {
 } from "../fixtures/judge"
 import { focusField, selectAllAndType, wait, FIELD_DOING_Y, FIELD_MINUTES_Y } from "../fixtures/actions"
 
-// What the judge is for here: text the egui canvas draws — placeholders, typed
-// input, the error line — has no DOM and no accessibility node a deterministic
-// test could read, and "rounded" is a perception, not a measurement. Everything
-// measurable about the card (presence, dividers, focus field, placement) is
-// asserted in pixels by the standard suite instead.
-
 describe("popup copy and shape (LLM-judged)", () => {
-    // The two fresh-load asserts never mutate the page — one shared browser.
     test("fresh load shows the three placeholders of spec §3", async ({ nudgeFile }) => {
         await wait(700)
         const shot = (await nudgeFile.page.screenshot()) as Buffer

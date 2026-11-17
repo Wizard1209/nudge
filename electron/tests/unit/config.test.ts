@@ -231,8 +231,6 @@ describe("migrateLegacyConfig", () => {
     expect(readFileSync(dest, "utf-8")).toBe('{"hotkey":"Alt+J"}');
   });
 
-  // What Windows answers when the two folders are on different drives, and
-  // Unix when they are on different volumes.
   const crossDevice = () => Object.assign(new Error("EXDEV: cross-device link"), { code: "EXDEV" });
   const refuseTheOriginal = (from: string, to: string) => {
     if (from === legacy) throw crossDevice();
@@ -251,8 +249,6 @@ describe("migrateLegacyConfig", () => {
   });
 
   it("runs on the legacy file and writes nothing when the copy cannot be put in place", () => {
-    // Every rename fails, so the checked copy cannot be renamed into place
-    // either. A file at the destination would end the retries for good.
     const body = '{"hotkey":"Alt+J"}';
     writeFileSync(legacy, body);
 
@@ -267,7 +263,6 @@ describe("migrateLegacyConfig", () => {
     expect(existsSync(dest)).toBe(false);
     expect(readdirSync(dirname(dest)), "no temp file left behind").toEqual([]);
 
-    // The next start tries again.
     expect(migrateLegacyConfig(legacy, dest)).toBe(dest);
     expect(existsSync(legacy)).toBe(false);
     expect(readFileSync(dest, "utf-8")).toBe(body);
@@ -276,7 +271,6 @@ describe("migrateLegacyConfig", () => {
   it("runs on the legacy file and writes no config when the copy fails", () => {
     const body = '{"hotkey":"Alt+J"}';
     writeFileSync(legacy, body);
-    // A directory where the temp copy goes makes writing the copy fail.
     mkdirSync(dest + ".tmp", { recursive: true });
 
     expect(migrateLegacyConfig(legacy, dest, refuseTheOriginal)).toBe(legacy);

@@ -1,11 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { launchApp } from './fixtures/electron.js';
 
-// Bug 3: quitting raises an error/crash. The tray icon is refreshed by a
-// `setInterval(updateTray, 50)` that is never cleared. On quit Electron
-// destroys the Tray; if the timer fires in that window, `tray.setImage` on a
-// destroyed Tray throws "Object has been destroyed". The fix: guard updateTray
-// against a missing/destroyed tray AND clear the interval on will-quit.
 describe('quit — must not crash on a destroyed tray', () => {
   let app;
   afterEach(async () => {
@@ -18,7 +13,6 @@ describe('quit — must not crash on a destroyed tray', () => {
     const popup = await app.firstWindow();
     await popup.waitForLoadState('domcontentloaded');
 
-    // app.evaluate rejects if the evaluated code throws in the main process.
     await expect(
       app.evaluate(() => globalThis.__nudgeTest.tickTrayAfterDestroy()),
     ).resolves.toBeUndefined();

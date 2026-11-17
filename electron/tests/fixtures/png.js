@@ -1,6 +1,3 @@
-// Tiny PNG encoder/decoder for tests: synthetic fixtures are built in code
-// (never derived from the real art), and the decoder stands in for
-// nativeImage / canvas where neither exists (plain Node unit tests).
 import { deflateSync, inflateSync, crc32 } from 'node:zlib';
 
 const SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -15,10 +12,6 @@ function chunk(type, data) {
   return Buffer.concat([len, body, crc]);
 }
 
-/**
- * Encode an 8-bit PNG. `pixel(x, y)` returns the channel values for the
- * colour type: 0 gray, 2 RGB, 4 gray+alpha, 6 RGBA. `trns` adds a tRNS chunk.
- */
 export function encodePng({ width, height, colorType, pixel, trns }) {
   const ch = CHANNELS[colorType];
   const raw = Buffer.alloc((width * ch + 1) * height);
@@ -42,10 +35,6 @@ export function encodePng({ width, height, colorType, pixel, trns }) {
   ]);
 }
 
-/**
- * Decode an 8-bit, non-interlaced PNG into RGBA (4 bytes per pixel, alpha at
- * offset 3 — the layout the validator reads). tRNS is honoured for gray/RGB.
- */
 export function decodePng(bytes) {
   const buf = Buffer.from(bytes);
   let pos = 8;
@@ -98,14 +87,11 @@ export function decodePng(bytes) {
   return out;
 }
 
-/** A 4×4 RGB PNG — no alpha channel at all. */
 export const rgbPng = () =>
   encodePng({ width: 4, height: 4, colorType: 2, pixel: () => [10, 20, 30] });
 
-/** A 4×4 RGBA PNG whose every pixel is fully opaque. */
 export const opaqueRgbaPng = () =>
   encodePng({ width: 4, height: 4, colorType: 6, pixel: () => [10, 20, 30, 255] });
 
-/** A 4×4 RGBA PNG with a transparent left half — a valid sprite. */
 export const cutoutRgbaPng = () =>
   encodePng({ width: 4, height: 4, colorType: 6, pixel: (x) => [10, 20, 30, x < 2 ? 0 : 255] });

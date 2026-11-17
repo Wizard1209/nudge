@@ -9,7 +9,6 @@ import {
     FIELD_MINUTES_Y,
 } from "../fixtures/actions"
 
-// Enter and Escape both hide the form — same dismiss contract via two keys.
 describe("dismiss key hides the form", () => {
     test.for(["Enter", "Escape"] as const)("%s hides form and shows the pill", async (key, { nudge }) => {
         await nudge.page.keyboard.press(key)
@@ -18,10 +17,6 @@ describe("dismiss key hides the form", () => {
     })
 })
 
-// "Timer auto-triggers form reappearance" is LLM-judged and lives in
-// form-reopen.judge.test.ts; deterministic timer-reopen coverage is below in
-// "Multiple submits append to journal (timer-driven reopen)".
-
 test("Enter saves journal entry to localStorage", async ({ nudge }) => {
     await nudge.page.evaluate(() => localStorage.clear())
 
@@ -29,7 +24,6 @@ test("Enter saves journal entry to localStorage", async ({ nudge }) => {
     await nudge.page.keyboard.type("writing code", { delay: 30 })
     await wait(200)
 
-    // Tab to second field.
     await nudge.page.keyboard.press("Tab")
     await wait(200)
     await nudge.page.keyboard.type("no", { delay: 30 })
@@ -48,7 +42,7 @@ test("Enter saves journal entry to localStorage", async ({ nudge }) => {
     const entry = JSON.parse(lines[0])
     expect(entry.schema_version).toBe(1)
     expect(entry.event_type).toBe("submitted")
-    expect(entry.entry_id).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/) // ULID
+    expect(entry.entry_id).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/)
     expect(entry.captured_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2}$/)
     expect(entry.implementation).toBe("rust")
     expect(entry.trigger_source).toBe("timer")
@@ -75,7 +69,6 @@ test("Esc does NOT save journal entry", async ({ nudge }) => {
 test("Multiple submits append to journal (timer-driven reopen)", async ({ nudge }) => {
     await nudge.page.evaluate(() => localStorage.clear())
 
-    // First entry — set short timer so reopen fires within the test.
     await focusField(nudge.page, FIELD_MINUTES_Y)
     await selectAllAndType(nudge.page, "0.02")
 
@@ -84,10 +77,8 @@ test("Multiple submits append to journal (timer-driven reopen)", async ({ nudge 
     await wait(200)
     await nudge.page.keyboard.press("Enter")
 
-    // Wait for timer auto-reopen.
     await wait(2500)
 
-    // Second entry.
     await focusField(nudge.page, FIELD_DOING_Y)
     await nudge.page.keyboard.type("second entry", { delay: 30 })
     await wait(200)

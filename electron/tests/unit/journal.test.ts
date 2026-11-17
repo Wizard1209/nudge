@@ -166,10 +166,6 @@ describe("journal / formatTimestamp", () => {
 });
 
 describe("journal / isJournalable", () => {
-  // Spec §4: "If at least one of doing / bullshit is non-empty — writes a
-  // journal entry." Used to support the "change interval without journaling"
-  // workflow: manual open → tweak minutes → Enter with empty fields → timer
-  // is updated, journal stays untouched.
   it("returns true when doing has content", () => {
     expect(isJournalable("writing tests", "")).toBe(true);
   });
@@ -187,8 +183,6 @@ describe("journal / isJournalable", () => {
   });
 
   it("returns false when both are whitespace only", () => {
-    // Whitespace-only is treated as empty — typing spaces by accident or
-    // bumping Enter from a focused empty field should not pollute the journal.
     expect(isJournalable("   ", "\t \n")).toBe(false);
   });
 });

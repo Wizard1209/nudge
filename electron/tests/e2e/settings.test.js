@@ -6,20 +6,14 @@ import { SPRITE_ERROR } from '../../src/shared/sprite.ts';
 
 const STORAGE_KEY = 'nudge-config';
 
-// §5 has one canonical spelling per platform, and the browser under test runs
-// on this host — so the expected string is the host's spelling. Asserting one
-// of them everywhere would only prove the test knows what a Mac looks like.
 const MAC = process.platform === 'darwin';
 const spell = (mac, win) => (MAC ? mac : win);
 
-/** Read the persisted config out of the page's localStorage. */
 async function readStored(page) {
     const raw = await page.evaluate((k) => localStorage.getItem(k), STORAGE_KEY);
     return raw ? JSON.parse(raw) : null;
 }
 
-/** Write a config into localStorage without touching the form — this is the
- * "saved value" every cancelling path is supposed to re-read. */
 async function writeStored(page, config) {
     await page.evaluate(
         (k, cfg) => localStorage.setItem(k, JSON.stringify(cfg)),
@@ -39,7 +33,6 @@ const savedNote = (page) =>
 const saveDisabled = (page) =>
     page.$eval('[data-testid="settings-save"]', (el) => el.disabled);
 
-/** Replace a field's text by typing into it, so the page sees real edits. */
 async function retype(page, id, text) {
     await page.click(`[data-testid="${id}"]`, { clickCount: 3 });
     await page.type(`[data-testid="${id}"]`, text);
@@ -50,8 +43,6 @@ async function arm(page) {
     expect(await recorderState(page)).toBe('armed');
 }
 
-/** Press one physical key with modifiers held — a press edge, the only
- * keyboard input an armed recorder accepts. */
 async function pressChord(page, modifiers, code) {
     for (const m of modifiers) await page.keyboard.down(m);
     await page.keyboard.press(code);
@@ -71,7 +62,6 @@ describe('settings sub-app', () => {
         await browser?.close();
     });
 
-    // Each test starts from a clean slate: clear storage, reload the sub-app.
     beforeEach(async () => {
         await page.bringToFront();
         await page.evaluate(() => localStorage.clear());
@@ -88,8 +78,6 @@ describe('settings sub-app', () => {
         expect(await page.$('[data-testid="settings-cancel"]')).not.toBeNull();
     });
 
-    // §9: the autostart row names the platform's own mechanism, and the
-    // browser under test runs on this host.
     it('names the autostart row after the platform', async () => {
         const text = await page.$eval('[data-testid="settings-autostart"]', (el) =>
             el.closest('label').textContent.trim());
@@ -119,14 +107,10 @@ describe('settings sub-app', () => {
     });
 
     describe('saving (§9)', () => {
-        // §9 Saving: "`Save` is live only while the form differs from the
-        // file, so a form that reads as unedited is one whose content is on
-        // disk."
         it('keeps Save greyed while the form matches the file', async () => {
             expect(await saveDisabled(page)).toBe(true);
             await retype(page, 'settings-interval', '15');
             expect(await saveDisabled(page)).toBe(false);
-            // Typing the stored value back is no edit: nothing differs.
             await retype(page, 'settings-interval', '10');
             expect(await saveDisabled(page)).toBe(true);
             await retype(page, 'settings-interval', '15');
@@ -135,8 +119,6 @@ describe('settings sub-app', () => {
             expect(await saveDisabled(page)).toBe(true);
         });
 
-        // §9 Saving: "A save that reached the file says so — `Saved`, beside
-        // the buttons — and the first edit after it takes the note away."
         it('says Saved after a save, until the first edit', async () => {
             expect(await savedNote(page)).toBeNull();
             await retype(page, 'settings-interval', '15');
@@ -147,8 +129,6 @@ describe('settings sub-app', () => {
             expect(await savedNote(page)).toBeNull();
         });
 
-        // §9 Saving: "The note is the button's: an autostart click, committed
-        // on its own, takes it away like any other edit and raises none."
         it('an autostart click after a save takes the note away and raises none', async () => {
             await retype(page, 'settings-interval', '15');
             await page.click('[data-testid="settings-save"]');
@@ -166,8 +146,6 @@ describe('settings sub-app', () => {
             expect(await savedNote(page)).toBeNull();
         });
 
-        // §9 Saving: "Return anywhere in the form is `Save`: the same checks,
-        // the same write, the same messages as the button."
         it('saves on Return in any field', async () => {
             await retype(page, 'settings-interval', '15');
             await page.keyboard.press('Enter');
@@ -195,8 +173,6 @@ describe('settings sub-app', () => {
             expect(await savedNote(page)).toBeNull();
         });
 
-        // §9 Saving: "A focused button or checkbox keeps its own Return —
-        // `Cancel` stays `Cancel`."
         it('leaves Return to a focused button or checkbox', async () => {
             await retype(page, 'settings-interval', '15');
             await page.focus('[data-testid="settings-autostart"]');
@@ -211,12 +187,8 @@ describe('settings sub-app', () => {
             expect(await page.$eval('[data-testid="settings-interval"]', (el) => el.value)).toBe('10');
         });
 
-        // §9 Saving: "A Return that ends an input-method composition is the
-        // composition's, not a save."
         it('leaves a composition-ending Return to the field', async () => {
             await retype(page, 'settings-interval', '15');
-            // Puppeteer cannot drive an IME; the event it would deliver is
-            // dispatched by hand, at the field, with the composing flag up.
             await page.$eval('[data-testid="settings-interval"]', (el) =>
                 el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true, cancelable: true })));
             expect(await readStored(page)).toBeNull();
@@ -224,8 +196,6 @@ describe('settings sub-app', () => {
             expect(await saveDisabled(page)).toBe(false);
         });
 
-        // §9 Saving: "While the recorder is armed the key is the recorder's —
-        // a press, not a save."
         it('leaves Return to an armed recorder', async () => {
             await retype(page, 'settings-interval', '15');
             await arm(page);
@@ -299,9 +269,6 @@ describe('settings sub-app', () => {
         });
 
         it('follows the physical key, not the character it types', async () => {
-            // Puppeteer's `KeyJ` is a cap, not a letter: `text` is what a
-            // layout would produce, and the recorder must ignore it the way it
-            // ignores the `о` a Russian layout puts on this cap.
             await arm(page);
             await page.keyboard.down('Alt');
             await page.keyboard.down('Meta');
@@ -317,7 +284,6 @@ describe('settings sub-app', () => {
             expect(await recorderState(page)).toBe('armed');
             expect(await bannerText(page)).toContain('J needs a modifier');
 
-            // Still armed: the next real chord records.
             await pressChord(page, ['Control'], 'KeyK');
             expect(await fieldValue(page)).toBe(spell('⌃K', 'Ctrl+K'));
 
@@ -334,7 +300,6 @@ describe('settings sub-app', () => {
             expect(await recorderState(page)).toBe('armed');
             expect(await fieldValue(page)).toBe(spell('⌃⇧Space', 'Ctrl+Shift+Space'));
 
-            // The digit row is a different key and does record.
             await pressChord(page, ['Alt'], 'Digit5');
             expect(await fieldValue(page)).toBe(spell('⌥5', 'Alt+5'));
         });
@@ -360,13 +325,9 @@ describe('settings sub-app', () => {
         });
 
         it('re-reads the saved value on every cancelling path, rather than remembering one', async () => {
-            // The config changes on "disk" while the recorder is armed. What
-            // comes back is that value, not the one the field held at arming.
             for (const cancelIt of [
                 async () => page.keyboard.press('Escape'),
                 async () => page.click('[data-testid="settings-hotkey-record"]'),
-                // The form's own Cancel is a cancelling path too: it must put
-                // back what is saved *now*, not the value the page loaded.
                 async () => page.click('[data-testid="settings-cancel"]'),
             ]) {
                 await arm(page);
@@ -385,10 +346,6 @@ describe('settings sub-app', () => {
 
         it('cancels when the window loses focus', async () => {
             await arm(page);
-            // Headless tabs do not take focus from each other (bringToFront
-            // fires no blur), so focus really moves out of the top window the
-            // one way it can here: into a subframe. The event the recorder
-            // sees is the browser's own, not one the test dispatched.
             await page.evaluate(async () => {
                 const frame = document.createElement('iframe');
                 frame.srcdoc = '<input id="x">';
@@ -406,8 +363,6 @@ describe('settings sub-app', () => {
             await arm(page);
             await pressChord(page, ['Meta'], 'KeyC');
             expect(await fieldValue(page)).toBe(spell('⌘C', 'Win+C'));
-            // Nothing typed into the field either: it holds the combination,
-            // not the letter.
             expect(await fieldValue(page)).not.toContain('c');
         });
     });
@@ -428,7 +383,6 @@ describe('settings sub-app', () => {
         ];
         const dataUrl = (buf) => `data:image/png;base64,${buf.toString('base64')}`;
 
-        // Svelte's bind:value listens for `input`; set long values in one go.
         async function setField(id, value) {
             await page.$eval(`[data-testid="${id}"]`, (el, v) => {
                 el.value = v;
@@ -459,8 +413,6 @@ describe('settings sub-app', () => {
             expect(values).toEqual([false, '', '0', '0', '480']);
         });
 
-        // §10: "`x`, `y`, `card_width`, labelled in points" — the unit once,
-        // on the row, like `min` after the interval; the fields keep bare names.
         it('labels the position row in points, and says so when refusing a field', async () => {
             const labels = await page.evaluate((ids) => ids.map((id) =>
                 document.querySelector(`[data-testid="${id}"]`).closest('label').querySelector('span').textContent.trim()),
@@ -482,10 +434,7 @@ describe('settings sub-app', () => {
             }
         });
 
-        // §9: with the sprite off, the PNG and Position rows are dimmed and
-        // stay editable; the checkbox row is not dimmed.
         it('dims the PNG and Position rows while the sprite is off, and only then', async () => {
-            // The opacity a field is painted with: its own times its ancestors'.
             const shown = () => page.evaluate((ids) => ids.map((id) => {
                 let o = 1;
                 for (let el = document.querySelector(`[data-testid="${id}"]`); el; el = el.parentElement) {

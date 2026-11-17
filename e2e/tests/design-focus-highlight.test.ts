@@ -3,20 +3,12 @@ import { test } from "../fixtures/nudge"
 import { decode, avgBrightness } from "../fixtures/pixels"
 import { focusField, wait, FIELD_DOING_Y } from "../fixtures/actions"
 
-// Row centres at 800×600 viewport. Each row is 40px tall + 1px divider.
-// Tied to draw_card top_offset = 0.25 * 600 = 150 (spec §1).
 const ROW1_Y = 170
 const ROW2_Y = 212
 const ROW3_Y = 254
 
-// Three brightness asserts on a SINGLE screenshot taken after Tab into row 2.
-// Each assert protects a separate regression:
-//   1. visible       — focused row is brighter than unfocused rows
-//   2. subtle        — focused row is NOT a solid white block
-//   3. inset         — highlight is a field inside the row, not a row fill
 test("focused row is visibly highlighted, subtle, and inset from card edges", async ({ nudge }) => {
     await nudge.page.bringToFront()
-    // Click into row 1 so the canvas receives focus, then Tab to row 2.
     await focusField(nudge.page, FIELD_DOING_Y)
     await nudge.page.keyboard.press("Tab")
     await wait(900)
@@ -24,8 +16,6 @@ test("focused row is visibly highlighted, subtle, and inset from card edges", as
     const buf = (await nudge.page.screenshot()) as Buffer
     const png = decode(buf)
 
-    // ─── 1. Visible: row 2 background brighter than rows 1 & 3 ───
-    // Sample a clean band on the right of each row, away from text/caret.
     const SAMPLE_X = 560
     const SAMPLE_W = 40
     const SAMPLE_H = 20
@@ -36,8 +26,6 @@ test("focused row is visibly highlighted, subtle, and inset from card edges", as
     expect(row2).toBeGreaterThan(row1 + 3)
     expect(row2).toBeGreaterThan(row3 + 3)
 
-    // ─── 2. Subtle: row 2 stays below "solid white block" threshold ───
-    // Sample mid-row where the highlight overlay has full coverage.
     const MID_X = 380
     const MID_W = 60
     const MID_H = 16
@@ -47,9 +35,6 @@ test("focused row is visibly highlighted, subtle, and inset from card edges", as
     expect(row2Mid).toBeLessThan(55)
     expect(row2Mid - row1Mid).toBeLessThan(25)
 
-    // ─── 3. Inset: highlight stops short of card's left edge ───
-    // Card left ≈ x=160 and the field starts 10px in (spec §3). The gutter
-    // band (2–8 px in) should still show card fill, not the highlight tint.
     const GUTTER_X = 162
     const GUTTER_W = 6
     const INSIDE_X = 280

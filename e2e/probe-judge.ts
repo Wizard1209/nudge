@@ -1,14 +1,3 @@
-// Probe script: captures canonical screenshots once, then hammers the LLM
-// judge with prompts against those screenshots to verify both recall (positive
-// claim on the right state always passes) and precision (positive claim on the
-// wrong state always fails). Re-run this whenever you change a prompt or the
-// underlying visuals to confirm the judge stays deterministic without retries.
-//
-// Usage:
-//   cd e2e
-//   npx tsx probe-judge.ts capture     # one-time: launch browser, save PNGs to /tmp/nudge-probe/
-//   npx tsx probe-judge.ts probe       # run prompts against saved PNGs, print pass-rate table
-
 import puppeteer from "puppeteer"
 import fs from "node:fs"
 import {
@@ -30,10 +19,6 @@ const PACE_MS = 1500
 
 const STATES = ["initial", "pill-only", "typed"] as const
 type State = typeof STATES[number]
-
-// ────────────────────────────────────────────────────────────────────
-// Capture
-// ────────────────────────────────────────────────────────────────────
 
 async function capture() {
     fs.mkdirSync(SCREENSHOT_DIR, { recursive: true })
@@ -68,10 +53,6 @@ async function capture() {
     await browser.close()
 }
 
-// ────────────────────────────────────────────────────────────────────
-// Probe
-// ────────────────────────────────────────────────────────────────────
-
 interface PromptCase {
     state: State
     name: string
@@ -81,7 +62,6 @@ interface PromptCase {
 }
 
 const CASES: PromptCase[] = [
-    // Positives — must always pass
     { state: "initial",   name: "card-present/initial",   expected: true,  prompt: PROMPT_CARD_PRESENT },
     { state: "initial",   name: "card-frosted/initial",   expected: true,  prompt: PROMPT_CARD_FROSTED },
     { state: "initial",   name: "three-rows/initial",     expected: true,  prompt: PROMPT_THREE_ROWS,                region: CARD_REGION },
@@ -90,7 +70,6 @@ const CASES: PromptCase[] = [
     { state: "typed",     name: "typed-hello/typed",      expected: true,  prompt: promptTypedText("hello nudge"),   region: CARD_REGION },
     { state: "typed",     name: "card-present/typed",     expected: true,  prompt: PROMPT_CARD_PRESENT },
 
-    // Negatives — must always fail (precision check)
     { state: "pill-only", name: "NEG card-present/pill",  expected: false, prompt: PROMPT_CARD_PRESENT },
     { state: "initial",   name: "NEG card-absent/initial",expected: false, prompt: PROMPT_CARD_ABSENT },
     { state: "initial",   name: "NEG pill-present/init",  expected: false, prompt: PROMPT_PILL_PRESENT,              region: BOTTOM_RIGHT_REGION },

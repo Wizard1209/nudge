@@ -10,7 +10,6 @@ import {
 } from "../../src/shared/card";
 import { CARD_HEIGHT } from "../../src/shared/sprite";
 
-// Spec §2/§3 numbers, as the reference app renders them.
 describe("card metrics", () => {
   it("rounds the corners at 16", () => {
     expect(CARD_RADIUS).toBe(16);
@@ -30,9 +29,6 @@ describe("card metrics", () => {
   });
 });
 
-// The fill's alpha depends on what is behind it (spec §2): over the macOS
-// glass it only tints; over Windows Acrylic the measured result is ~95%; with
-// nothing behind it the fill is the surface and is 95% itself.
 describe("cardFillAlpha", () => {
   it("tints the glass at 120/255", () => {
     expect(cardFillAlpha("glass")).toBeCloseTo(120 / 255, 6);

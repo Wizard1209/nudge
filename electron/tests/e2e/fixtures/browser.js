@@ -2,7 +2,6 @@ import puppeteer from 'puppeteer';
 
 const BASE_URL = process.env.E2E_BASE_URL || 'http://localhost:5173';
 
-// Debug mode: set E2E_DEBUG=1 to run headed with step delays and element highlights.
 const DEBUG_MODE = !!process.env.E2E_DEBUG;
 const STEP_DELAY = DEBUG_MODE ? 1500 : 0;
 
@@ -10,9 +9,6 @@ export async function step(ms = STEP_DELAY) {
     if (ms > 0) await new Promise((r) => { setTimeout(r, ms); });
 }
 
-/**
- * Highlight an element for visual debugging. No-op in headless.
- */
 export async function highlight(page, selector, ms = STEP_DELAY) {
     if (!DEBUG_MODE) return;
     await page.evaluate((sel) => {
@@ -30,10 +26,6 @@ export async function highlight(page, selector, ms = STEP_DELAY) {
     }, selector);
 }
 
-/**
- * Launch a new browser instance.
- * In debug mode, launches headed (visible window) with slowMo.
- */
 export async function launchBrowser() {
     return puppeteer.launch({
         headless: DEBUG_MODE ? false : 'shell',
@@ -46,9 +38,6 @@ export async function launchBrowser() {
     });
 }
 
-/**
- * Open a page with error collection.
- */
 export async function createPage(browser, path = '/', viewport = { width: 800, height: 600 }) {
     const page = await browser.newPage();
     await page.setViewport(viewport);

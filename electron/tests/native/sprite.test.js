@@ -8,11 +8,8 @@ import { opaqueRgbaPng } from '../fixtures/png.js';
 import { SPRITE_ERROR } from '../../src/shared/sprite.ts';
 
 const FIXTURE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../e2e/fixtures/sprite-green.png');
-// The green fixture placed like the real sprite.
 const REAL = { enabled: true, path: FIXTURE, x: -41, y: -277, card_width: 679 };
 
-// config.sprite turns the popup into one window spanning card ∪ sprite: one
-// window means the sprite can never outlive the card on close.
 describe('popup with a sprite', () => {
   let app;
   afterEach(async () => {
@@ -34,7 +31,6 @@ describe('popup with a sprite', () => {
     return { popup, dir };
   }
 
-  /** The popup's renderer page; replaced when the window is recreated. */
   function popupPage() {
     return app.windows().find((p) => /index\.html/.test(p.url()) && !p.isClosed());
   }
@@ -61,7 +57,6 @@ describe('popup with a sprite', () => {
     await expect.poll(async () => (await popupState(app))?.visible).toBe(true);
   }
 
-  /** card ∪ sprite for REAL: the sprite's point size depends on the display scale. */
   async function realSize() {
     const scale = await scaleFactor();
     return [Math.max(41 + 679, 720 / scale), Math.max(277 + 130, 430 / scale)];
@@ -72,7 +67,6 @@ describe('popup with a sprite', () => {
     expect(await size()).toEqual(await realSize());
   });
 
-  /** Scale factor of the display the popup goes on (one display here: the cursor's too). */
   function scaleFactor() {
     return app.evaluate(({ screen }) =>
       screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).scaleFactor);
@@ -91,9 +85,6 @@ describe('popup with a sprite', () => {
     await popup.waitForSelector('[data-testid="sprite"]');
     const scale = await scaleFactor();
     const g = await geometry(popup);
-    // The 720×430 fixture covers 720×430 device pixels, which is fewer points
-    // on a HiDPI display; the <img> is laid out at that point size so
-    // Chromium maps it 1:1 and never resamples.
     expect([g.sprite.width, g.sprite.height]).toEqual([720 / scale, 430 / scale]);
     expect(await popup.evaluate(() => {
       const img = document.querySelector('[data-testid="sprite"]');
@@ -102,7 +93,6 @@ describe('popup with a sprite', () => {
   });
 
   it('sizes the window from the sprite\'s point size, so it follows the display scale', async () => {
-    // Below a default card nothing but the sprite sets the height.
     await launch({ sprite: { ...REAL, x: 0, y: 130, card_width: 480 } });
     const scale = await scaleFactor();
     expect(await size()).toEqual([Math.max(480, 720 / scale), 130 + 430 / scale]);
@@ -112,13 +102,7 @@ describe('popup with a sprite', () => {
     await launch({ sprite: REAL });
     const { bounds, workArea } = await app.evaluate(({ screen }) =>
       screen.getDisplayNearestPoint(screen.getCursorScreenPoint()));
-    // Spec §1: card top at 25% of the monitor's height + 80, centred on the
-    // monitor. The sprite rises 277px above the card; where that is above
-    // the work area's top edge the window is pinned there instead, and the
-    // card then sits 277px below it.
     const specTop = Math.round(bounds.y + bounds.height * 0.25) + 80;
-    // WSLg reports a placeholder position until the window manager places
-    // the freshly mapped window, so wait for it to settle.
     await expect.poll(async () => {
       const { contentBounds: b } = await popupState(app);
       return [b.x + 41, b.y + 277];
@@ -175,11 +159,8 @@ describe('popup with a sprite', () => {
   it('defers a change made while the popup is open until it hides', async () => {
     const { dir } = await launch(null);
     writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ sprite: REAL }));
-    // Give the watcher time to fire; the open popup must not change under the user.
     await new Promise((r) => setTimeout(r, 1000));
     expect(await size()).toEqual([480, 130]);
-    // Hiding applies the sprite by recreating the window, which can close the
-    // page between keydown and keyup: the outcome is checked below instead.
     await popupPage().keyboard.press('Escape').catch(() => {});
     await expect.poll(async () => (await popupState(app))?.visible).toBe(false);
     await expect.poll(size, { timeout: 10_000 }).toEqual(await realSize());
@@ -189,8 +170,6 @@ describe('popup with a sprite', () => {
     const { popup, dir } = await launch({ sprite: REAL });
     await hide(popup);
     writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ sprite: { ...REAL, x: 0, y: 130, card_width: 480 } }));
-    // Sprite hangs below a default card: as wide as the wider of the two,
-    // card plus sprite tall, the sprite measured in points.
     const scale = await scaleFactor();
     await expect.poll(size, { timeout: 10_000 }).toEqual([Math.max(480, 720 / scale), 130 + 430 / scale]);
     await show();
@@ -226,9 +205,6 @@ describe('popup with a sprite', () => {
     expect(JSON.parse(readFileSync(path.join(dir, 'config.json'), 'utf-8')).sprite).toEqual(REAL);
   });
 
-  // §9 Saving: "A save that reached the file says so — `Saved`, beside the
-  // buttons — and the first edit after it takes the note away." A path picked
-  // through Browse… is an edit like a typed one.
   it('a Browse… pick after a save takes the Saved note away', async () => {
     const { dir } = await launch(null);
     const settings = await openSettingsWindow(app);

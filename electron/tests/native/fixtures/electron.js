@@ -7,14 +7,6 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const MAIN = path.join(root, 'dist', 'electron', 'main.js');
 
-// These tests drive the REAL Electron app (main process + native windows) —
-// the layer the browser/Puppeteer suites can't reach. They need a display
-// (WSLg / X11) and must run UNSANDBOXED so Electron can open the X socket.
-//
-// NUDGE_FORCE_PROD makes an unpackaged build load the *shipped* renderer files
-// (dist/renderer/*.html) instead of a Vite dev server — so a test exercises the
-// exact assets the portable .exe ships. NUDGE_E2E installs a tiny main-process
-// test hook (globalThis.__nudgeTest) used to open Settings / probe the tray.
 export async function launchApp(extraEnv = {}) {
   const app = await electron.launch({
     args: [MAIN],
@@ -22,7 +14,6 @@ export async function launchApp(extraEnv = {}) {
       ...process.env,
       NUDGE_E2E: '1',
       NUDGE_FORCE_PROD: '1',
-      // A fresh <Documents>/Nudge per launch: no user config, journal or sprite.
       NUDGE_DIR: mkdtempSync(path.join(os.tmpdir(), 'nudge-native-')),
       ...extraEnv,
     },
@@ -32,15 +23,11 @@ export async function launchApp(extraEnv = {}) {
     await popup.waitForLoadState('domcontentloaded');
     return { app, popup };
   } catch (err) {
-    // The caller never receives `app`, so its afterEach cannot close it.
-    // SIGKILL, not app.close(): close() goes through the main thread, which is
-    // exactly what is stuck when no window ever appears.
     app.process().kill('SIGKILL');
     throw err;
   }
 }
 
-/** Snapshot of every BrowserWindow's native state, keyed for assertions. */
 export function windowStates(app) {
   return app.evaluate(({ BrowserWindow }) =>
     BrowserWindow.getAllWindows().map((w) => ({
@@ -53,23 +40,16 @@ export function windowStates(app) {
   );
 }
 
-/** The popup window's native state (title "Nudge"). */
 export async function popupState(app) {
   const all = await windowStates(app);
   return all.find((w) => w.title === 'Nudge') ?? null;
 }
 
-/** The settings window's native state (title contains "Settings"). */
 export async function settingsState(app) {
   const all = await windowStates(app);
   return all.find((w) => w.title.includes('Settings')) ?? null;
 }
 
-/**
- * Open the Settings window via the main-process test hook and return its Page,
- * fully loaded. Polls app.windows() rather than waitForEvent('window') — the
- * latter races the (synchronous) window creation and can miss the event.
- */
 export async function openSettingsWindow(app) {
   const before = app.windows().length;
   await app.evaluate(() => globalThis.__nudgeTest.openSettings());

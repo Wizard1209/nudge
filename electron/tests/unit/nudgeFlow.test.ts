@@ -1,10 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { restartsTimer, INITIAL_TRIGGER_SOURCE } from "../../src/shared/nudgeFlow";
 
-// Spec §4: Enter (save) always (re)starts the timer. Esc/Switch leave the timer
-// alone *unless* the popup was opened by the timer itself — a timer-opened
-// popup's deadline is already at zero, so closing without rearming would re-open
-// it instantly. A manually-opened popup has a live timer ticking behind it.
 describe("restartsTimer (§4 close → restart decision)", () => {
   it("save always restarts the timer, whatever opened the popup", () => {
     expect(restartsTimer("save", "manual")).toBe(true);
@@ -19,11 +15,6 @@ describe("restartsTimer (§4 close → restart decision)", () => {
   });
 });
 
-// Spec §4: the browser mode opens on a popup that behaves as if the timer had
-// just fired, so ANY way of closing it (Enter, Esc, Switch) arms the timer for
-// the next cycle. The bug: the app opened it as "manual", so Esc/Switch on the
-// very first popup left it with no timer at all — "the timer dies after first
-// launch".
 describe("browser mode's opening popup (§4)", () => {
   it("treats the opening popup as a timer fire, so Esc/Switch arm the timer", () => {
     expect(INITIAL_TRIGGER_SOURCE).toBe("timer");

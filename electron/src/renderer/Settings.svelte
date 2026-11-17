@@ -30,24 +30,16 @@
     type Config,
   } from "../shared/config";
 
-  // In the Electron Settings window the preload exposes `nudgeSettings`
-  // (IPC-backed). In the browser sub-app it's absent → localStorage +
-  // FakeProvider. The SettingsForm / recorder logic is identical either way.
   const settingsApi =
     typeof window !== "undefined" ? window.nudgeSettings : undefined;
 
   const STORAGE_KEY = "nudge-config";
 
-  /** Which spelling this build shows and writes (§5: one per platform). */
   const platform = detectPlatform();
 
-  // §9: the autostart row names the platform's own mechanism — the same
-  // platform the hotkey spelling follows, so the two never disagree.
   const autostartLabel =
     platform === "macos" ? "Open at login" : "Launch with Windows";
 
-  // Browser persistence. The Electron Settings window will swap these for IPC
-  // calls (Layer B5); the pure SettingsForm/recorder logic stays identical.
   function loadStored(): Config {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return { ...DEFAULT_CONFIG };
@@ -61,15 +53,11 @@
     localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg));
   }
 
-  // `persisted` is the on-disk view. Autostart toggles write through it
-  // immediately (transactional, no Save); Save writes the whole form.
   const initial = loadStored();
   let persisted = $state<Config>(initial);
   const provider = new FakeProvider(initial.autostart);
   let form = SettingsForm.fromConfig(initial, platform);
 
-  // Reactive mirrors of the form fields (Svelte 5 runes can't bind to a class
-  // field directly, so we mirror and push changes back into the form).
   let hotkey = $state(form.hotkey);
   let intervalText = $state(form.intervalText);
   let autostart = $state(form.autostart);
@@ -80,19 +68,13 @@
   let cardWidthText = $state(form.cardWidthText);
   let spriteError = $state("");
 
-  // §9 "Updates": the running version, and the row's state. Nothing is asked
-  // of the network until the button is pressed.
   let version = $state("");
   let update = $state<UpdateState>({ kind: "idle" });
 
   let recorder = $state<RecorderState>("idle");
   let banner = $state("");
-  // §9: a save that reached the file says so, until the first edit after it.
   let saved = $state(false);
 
-  // §9: Save is live only while the form differs from the file. Compared
-  // against `persisted` — the on-disk view — rather than the form's own
-  // baseline, so the answer does not depend on when the mirrors were synced.
   const dirty = $derived.by(() => {
     const probe = SettingsForm.fromConfig(persisted, platform);
     probe.hotkey = hotkey;
@@ -106,21 +88,15 @@
     return probe.isDirty();
   });
 
-  // Electron loads its config over IPC (async), so seed the fields after mount.
   onMount(() => {
     if (!settingsApi) return;
     void settingsApi.getConfig().then(reseed);
     void settingsApi.updateInfo().then((info) => (version = info.version));
-    // In Electron the focus loss comes from the native window, not from the
-    // page: `window`'s own blur is the browser sub-app's only signal, and it
-    // is the one a test harness suppresses.
     return settingsApi.onWindowBlur?.(() => onWindowBlur());
   });
 
   function reseed(cfg: Config) {
     persisted = cfg;
-    // §9: a stored value that parses is re-spelled for this platform on load
-    // (the form does that as it seeds).
     form = SettingsForm.fromConfig(cfg, platform);
     syncFromForm();
   }
@@ -158,20 +134,10 @@
     const picked = await settingsApi?.browseSprite();
     if (picked) {
       spritePath = picked;
-      onEdit(); // a pick is an edit, though it fires no input event
+      onEdit();
     }
   }
 
-  // --- The recorder (docs/TASK-hotkey-native.md) ---
-  //
-  // This shell owns none of the decisions: it turns real events into the
-  // table's inputs, hands them to `recorderStep`, and performs the effect it
-  // gets back. The one thing it decides is *when* a keydown is a press edge,
-  // and `classifyPress` answers even that.
-
-  /** The saved hotkey, re-read on every cancelling path. The recorder
-   * remembers nothing when it arms, so a value changed on disk (or by the
-   * other surface) while the field was armed is the one that comes back. */
   async function savedHotkey(): Promise<string> {
     const cfg = settingsApi ? await settingsApi.getConfig() : loadStored();
     return respell(cfg.hotkey, platform);
@@ -198,12 +164,6 @@
     }
   }
 
-  // --- The Updates row (§9) ---
-  //
-  // The table is `updateStep`'s; this runs its effects. The prototype is not
-  // the released binary and has nothing of its own to replace, so its action
-  // is the release page on every platform — the Rust app's Windows build is
-  // the one that installs.
   async function updateInput(input: UpdateInput) {
     if (!settingsApi) return;
     const out = updateStep(update, input, version, "openPage");
@@ -216,7 +176,6 @@
     }
   }
 
-  /** The first edit after a save takes the `Saved` note away (§9). */
   function onEdit() {
     saved = false;
   }
@@ -230,34 +189,20 @@
 
   function onWindowKeydown(e: KeyboardEvent) {
     if (recorder !== "armed") {
-      // §9: Return anywhere in the form is Save. A focused button or
-      // checkbox keeps its own Return (the same rule as the Rust window,
-      // where egui makes it a click), so Cancel stays Cancel. A Return that
-      // ends an input-method composition is the composition's.
       if (e.key === "Enter" && !e.isComposing && !keepsItsOwnReturn(e.target)) {
         e.preventDefault();
         void save();
       }
       return;
     }
-    // While armed the key is the recorder's: Return is a press, not a save.
-    // While armed the recorder owns the keyboard: nothing types into the
-    // field, and ⌘C records as ⌘C instead of copying. (In the packaged app a
-    // combination that matches a menu accelerator is eaten by the menu before
-    // the renderer sees it — Electron has no app-local key monitor the way
-    // the task doc's macOS one does. The prototype has no menu bar, so the
-    // gap is invisible here; the Rust app must not rely on it.)
     e.preventDefault();
     e.stopPropagation();
     const verdict = classifyPress(e);
-    // A chord of modifiers alone is not an event: holding ⌥⌘ neither accepts
-    // nor refuses, and neither does an auto-repeat.
     if (verdict === null) return;
     void step({ kind: "press", verdict });
   }
 
   function onWindowBlur() {
-    // Focus loss cancels: *which* shortcut took the focus is not observable.
     void step({ kind: "focusLost" });
   }
 
@@ -267,9 +212,6 @@
 
   async function onAutostartChange(e: Event) {
     const desired = (e.target as HTMLInputElement).checked;
-    // Transactional: flip the OS, confirm, then persist only the autostart bit
-    // on top of the last-saved config — unsaved hotkey/interval edits stay
-    // unsaved. On failure, revert the checkbox and surface the error.
     if (settingsApi) {
       const result = await settingsApi.toggleAutostart(desired);
       if (result.ok) {
@@ -278,7 +220,7 @@
         form.autostart = desired;
         banner = "";
       } else {
-        autostart = !desired; // revert
+        autostart = !desired;
         banner = "Could not change autostart";
       }
       return;
@@ -291,7 +233,7 @@
       form.autostart = desired;
       banner = "";
     } else {
-      autostart = !desired; // revert
+      autostart = !desired;
       banner =
         result.error.kind === "backend"
           ? "Could not change autostart"
@@ -300,16 +242,10 @@
   }
 
   async function save() {
-    // §9: the same checks, the same write, the same messages from Return and
-    // from the button — and nothing to do while nothing differs from the file.
     if (!dirty) return;
     syncToForm();
     const result = form.toConfig();
     if (!result.ok) {
-      // §9: if any field fails the file is not touched at all, and the
-      // hotkey's banner also states the accepted vocabulary. One message
-      // line reports the one failure this save found: a sprite refusal from
-      // an earlier save does not stand next to it.
       const err = result.error;
       if (err.field === "hotkey") {
         banner = `${describeParseError(err.error)}. ${vocabulary(platform)}`;
@@ -323,9 +259,6 @@
       }
       return;
     }
-    // An enabled sprite must be a usable PNG; a disabled one saves as typed.
-    // Electron checks the file in the main process on save; the browser
-    // sub-app checks the path as a URL before persisting.
     const { sprite } = result.config;
     let error: string | null = null;
     if (settingsApi) {
@@ -349,13 +282,6 @@
   }
 
   async function cancel() {
-    // Revert to the saved config. In Electron, Cancel closes the window
-    // (spec §9); in the browser sub-app there's no window, so we just reset.
-    //
-    // The revert re-reads rather than restoring the `persisted` snapshot: this
-    // is a cancelling path like any other, and the recorder remembers nothing.
-    // Re-seeding `persisted` first is what keeps the field the table restores
-    // and the fields this function resets on the same value.
     const cfg = settingsApi ? await settingsApi.getConfig() : loadStored();
     persisted = cfg;
     await step({ kind: "cancel" });
@@ -369,12 +295,6 @@
 
 <svelte:window onkeydown={onWindowKeydown} onblur={onWindowBlur} />
 
-<!-- §9 "Window chrome and layout": three groups of rows in rounded boxes, a
-     hairline between rows, the label at the left of a row and the control at
-     its right edge; the hotkey vocabulary is its group's footnote; the
-     message line keeps its height above the buttons; Cancel, then the one
-     filled button, Save, at the bottom right. The controls are the compact
-     (py-1) size so a 44px row keeps air around them. -->
 <main class="min-h-screen bg-zinc-950 text-white p-5" oninput={onEdit}>
   <div class="space-y-5">
     <div>
@@ -408,8 +328,6 @@
           </div>
         </div>
       </div>
-      <!-- §9: the accepted vocabulary is standing information under the
-           field — the group's footnote. -->
       <p
         data-testid="settings-hotkey-vocabulary"
         class="mt-2 px-3 text-xs text-zinc-500"
@@ -433,7 +351,6 @@
           <span>min</span>
         </div>
       </div>
-      <!-- §9: the row's text names the platform's own mechanism. -->
       <label class="flex items-center justify-between gap-3 min-h-11 px-3 cursor-default">
         <span class="text-sm">{autostartLabel}</span>
         <input
@@ -454,10 +371,6 @@
           bind:checked={spriteEnabled}
         />
       </label>
-      <!-- The one field that holds long text, in the label's size: a path
-           of ordinary length reads whole instead of clipped. §9: with the
-           sprite off this row and the next are dimmed — their children, so
-           the hairlines stay — and stay editable. -->
       <div class={["flex items-center justify-between gap-3 min-h-11 px-3", !spriteEnabled && "*:opacity-50"]}>
         <span class="text-sm shrink-0">PNG</span>
         <div class="flex flex-1 min-w-0 gap-2">
@@ -480,7 +393,6 @@
           {/if}
         </div>
       </div>
-      <!-- §10: the three are in points; the unit is said once, on the row. -->
       <div class={["flex items-center justify-between gap-3 min-h-11 px-3", !spriteEnabled && "*:opacity-50"]}>
         <span data-testid="settings-sprite-position" class="text-sm">Position (pt)</span>
         <div class="flex items-center gap-3">
@@ -518,10 +430,6 @@
       </div>
     </div>
 
-    <!-- §9 "Updates": the running version at the left, the check's status and
-         its one button at the right; the footnote says where it looks and
-         when. Only where there is an app to update — not in the browser
-         sub-app. -->
     {#if settingsApi}
       <div>
         <div class="rounded-[10px] border border-zinc-800 bg-zinc-900/50">
@@ -548,13 +456,6 @@
       </div>
     {/if}
 
-    <!-- §9: the message line is reserved — it keeps its height whether or
-         not it has anything to say, so the window never changes size and
-         never scrolls. Tall enough for the longest message, a refused hotkey
-         with the vocabulary after it, and nothing a message quotes can make
-         one longer (`echoed`); a sprite refusal is a message like any other
-         and sits on the same line. The height is fixed, not a minimum, and
-         the line clips: the form's shape is the line's, never the message's. -->
     <div class="flex h-[100px] flex-col justify-end gap-1 overflow-hidden">
       {#if banner}
         <p data-testid="settings-banner" class="text-sm text-amber-400">{banner}</p>
@@ -575,7 +476,6 @@
       >
         Cancel
       </button>
-      <!-- §9: greyed while there is nothing to save — the same fill, dimmed. -->
       <button
         data-testid="settings-save"
         onclick={save}

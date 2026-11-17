@@ -29,8 +29,6 @@ const CANCEL: RecorderInput = { kind: "cancel" };
 const FOCUS_LOST: RecorderInput = { kind: "focusLost" };
 const press = (verdict: PressVerdict): RecorderInput => ({ kind: "press", verdict });
 
-// docs/TASK-hotkey-native.md — the decision table, every cell, both columns.
-// Nothing decides outside it, so nothing else may be asserted here.
 describe("recorderStep — the decision table", () => {
   describe("Idle", () => {
     it("Record → Armed", () => {
@@ -134,7 +132,6 @@ describe("recorderStep — the decision table", () => {
       inputs.map((i) => `${s}/${i.kind === "press" ? i.verdict.kind : i.kind}`),
     );
     expect(new Set(cells).size).toBe(12);
-    // Every cell is total: no input leaves the recorder without a next state.
     for (const s of states) {
       for (const i of inputs) {
         expect(["idle", "armed"]).toContain(recorderStep(s, i).state);
@@ -143,8 +140,6 @@ describe("recorderStep — the decision table", () => {
   });
 
   it("never carries a remembered hotkey out of a cancelling path", () => {
-    // The recorder has nothing to remember when it arms: the effect says
-    // "re-read the saved value", it does not hand one back.
     for (const input of [press(bareEscape), CANCEL, FOCUS_LOST]) {
       const { effect } = recorderStep("armed", input);
       expect(effect).toEqual({ kind: "restoreSaved" });
@@ -163,7 +158,6 @@ const edge = (code: string, mods: Partial<PressEdge> = {}): PressEdge => ({
 
 describe("classifyPress — the bindability decided outside the table", () => {
   it("judges a chord by the physical cap, not the character it types", () => {
-    // A Russian layout types `о` on this cap; `code` does not move.
     expect(classifyPress(edge("KeyJ", { altKey: true, metaKey: true }))).toEqual({
       kind: "bindable",
       hotkey: { ctrl: false, alt: true, shift: false, win: true, key: "J" },

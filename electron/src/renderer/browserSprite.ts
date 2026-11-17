@@ -1,6 +1,5 @@
 import { checkSpritePng, SPRITE_ERROR } from "../shared/sprite";
 
-/** Decode a PNG to RGBA via the browser's image pipeline; null if it can't. */
 async function decodeInCanvas(bytes: Uint8Array): Promise<Uint8Array | null> {
   try {
     const bitmap = await createImageBitmap(new Blob([bytes as BlobPart], { type: "image/png" }), {
@@ -15,10 +14,6 @@ async function decodeInCanvas(bytes: Uint8Array): Promise<Uint8Array | null> {
   }
 }
 
-/**
- * The browser sub-app's stand-in for the main process check: `path` is a URL
- * here. Resolves with the error message, or null when the sprite is usable.
- */
 export async function checkSpriteUrl(path: string): Promise<string | null> {
   if (path === "") return SPRITE_ERROR.noPath;
   let bytes: Uint8Array;

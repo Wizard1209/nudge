@@ -3,9 +3,6 @@ import { contextBridge, ipcRenderer } from "electron";
 contextBridge.exposeInMainWorld("nudge", {
   platform: "electron" as const,
 
-  // Whether the frosted material is under this window's card (macOS with the
-  // backdrop addon built). Fixed for the window's life, and read before the
-  // page's first paint so the fill never flashes the wrong alpha.
   backdrop: ipcRenderer.sendSync("nudge:backdrop") as boolean,
 
   save: (data: { doing: string; bullshit: string; nextMinutes: number }) =>
@@ -37,9 +34,6 @@ contextBridge.exposeInMainWorld("nudge", {
   },
 });
 
-// Settings window bridge — only meaningful in the framed Settings BrowserWindow,
-// but exposed on every renderer (the popup just never calls it). Its presence
-// is how Settings.svelte detects Electron vs. the browser sub-app.
 contextBridge.exposeInMainWorld("nudgeSettings", {
   getConfig: () => ipcRenderer.invoke("settings:get-config"),
   save: (config: unknown) => ipcRenderer.invoke("settings:save", config),
@@ -51,7 +45,6 @@ contextBridge.exposeInMainWorld("nudgeSettings", {
   checkUpdate: () => ipcRenderer.invoke("settings:check-update"),
   openRelease: (url: string) => ipcRenderer.invoke("settings:open-release", url),
 
-  // The native window lost focus. The hotkey recorder cancels on it.
   onWindowBlur: (callback: () => void) => {
     const handler = () => callback();
     ipcRenderer.on("settings:blur", handler);

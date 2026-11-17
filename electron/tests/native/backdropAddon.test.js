@@ -8,11 +8,6 @@ const ADDON = path.resolve(
   '../../native/backdrop/build/Release/backdrop.node',
 );
 
-// The addon's argument checks, exercised from plain node: without a window
-// nothing can be attached, so what is left to pin is that a wrong argument
-// is refused up front — with NAPI_DISABLE_CPP_EXCEPTIONS a cast of the wrong
-// type leaves a pending exception and a garbage value, and a call that
-// carried on with it would still "succeed" at placing the view.
 describe.skipIf(process.platform !== 'darwin')('backdrop addon arguments', () => {
   const addon = createRequire(import.meta.url)(ADDON);
 

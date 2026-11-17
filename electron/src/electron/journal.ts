@@ -32,14 +32,9 @@ const TIMESTAMP_RE =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}(Z|[+-]\d{2}:\d{2})$/;
 
 export function formatTimestamp(d: Date = new Date()): string {
-  // toISOString() produces "YYYY-MM-DDTHH:mm:ss.sssZ" — Z is a valid RFC 3339 offset.
   return d.toISOString();
 }
 
-// Spec §4: Enter writes the journal only if at least one of doing/bullshit
-// has real content. Whitespace-only counts as empty so a stray Enter on an
-// untouched form doesn't leave a blank row in the journal. This also enables
-// the "change interval without journaling" workflow.
 export function isJournalable(doing: string, bullshit: string): boolean {
   return doing.trim() !== "" || bullshit.trim() !== "";
 }
@@ -77,8 +72,6 @@ function validate(ev: JournalEvent): void {
     );
 }
 
-// --- Path resolution ---
-
 let cachedDir: string | null = null;
 
 function isWSL(): boolean {
@@ -93,20 +86,12 @@ function isWSL(): boolean {
   }
 }
 
-/**
- * Resolve the `<Documents>/Nudge` directory that holds the journal
- * (and config.json off macOS). On WSL this bridges to the Windows user profile via
- * cmd.exe + wslpath; elsewhere it uses Electron's documents path. Cached.
- */
 export function resolveNudgeDir(): string {
   if (cachedDir) return cachedDir;
-  // Override for tests: keep the user's real folder out of native runs.
   if (process.env.NUDGE_DIR) return (cachedDir = process.env.NUDGE_DIR);
 
   try {
     if (isWSL()) {
-      // cwd=/mnt/c avoids cmd.exe's "UNC paths not supported" warning
-      // when started from a \\wsl.localhost\... directory.
       const raw = execSync('cmd.exe /C "echo %USERPROFILE%"', {
         encoding: "utf-8",
         stdio: ["ignore", "pipe", "ignore"],
@@ -130,8 +115,6 @@ export function resolveNudgeDir(): string {
 export function getJournalPath(): string {
   return join(resolveNudgeDir(), "journal-electron.ndjson");
 }
-
-// --- Write ---
 
 export function writeEvent(ev: JournalEvent, filePath?: string): void {
   validate(ev);

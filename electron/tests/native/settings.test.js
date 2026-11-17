@@ -2,14 +2,6 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { launchApp, settingsState, openSettingsWindow } from './fixtures/electron.js';
 
-// Bug 1: "everything in a gray frame, and on first open only half is visible."
-// Two native defects:
-//   (a) the window has no backgroundColor and the renderer's <html>/<body> are
-//       transparent → the default white/gray window shows through ("gray frame");
-//   (b) the window uses show:true (default) so it appears BEFORE the renderer
-//       paints → a gray, half-rendered first frame ("only half is visible").
-// The fix: dark window backgroundColor + dark html/body, and show the window
-// only on 'ready-to-show'. The frame/title bar itself stays (spec §9).
 describe('settings window — no gray flash, content fully painted', () => {
   let app;
   afterEach(async () => {
@@ -26,7 +18,6 @@ describe('settings window — no gray flash, content fully painted', () => {
     await openSettings();
     const state = await settingsState(app);
     expect(state).not.toBeNull();
-    // Default (unset) is white #FFFFFF. We want the zinc-950 surface.
     expect(state.backgroundColor.toUpperCase()).not.toBe('#FFFFFF');
     expect(state.backgroundColor.toUpperCase()).not.toBe('#FFF');
   });
@@ -38,14 +29,10 @@ describe('settings window — no gray flash, content fully painted', () => {
       const html = getComputedStyle(document.documentElement).backgroundColor;
       return { body, html };
     });
-    // A transparent body lets the gray native window show through. At least one
-    // of html/body must paint an opaque dark surface.
     const transparent = (c) => c === 'rgba(0, 0, 0, 0)' || c === 'transparent';
     expect(transparent(bg.body) && transparent(bg.html)).toBe(false);
   });
 
-  // §9: the window is sized to the form — nothing clipped, no empty band
-  // below the buttons: the button row ends one 20px margin above the bottom.
   it('the window is sized to the form (nothing clipped, nothing to spare)', async () => {
     const settings = await openSettings();
     const fit = await settings.evaluate(() => ({
@@ -57,8 +44,6 @@ describe('settings window — no gray flash, content fully painted', () => {
     expect(fit.formBottom).toBeCloseTo(fit.inner - 20, 0);
   });
 
-  // §9: the banner keeps its line above the buttons whether or not it has
-  // anything to say, so a refused save moves nothing and scrolls nothing.
   it('a refused save neither moves the buttons nor scrolls the form', async () => {
     const settings = await openSettings();
     const probe = () => settings.evaluate(() => ({
@@ -67,8 +52,6 @@ describe('settings window — no gray flash, content fully painted', () => {
       saveTop: document.querySelector('[data-testid="settings-save"]').getBoundingClientRect().top,
     }));
     const quiet = await probe();
-    // The longest message the banner carries: a bare key, refused with the
-    // vocabulary after it.
     await settings.fill('[data-testid="settings-hotkey"]', 'J');
     await settings.click('[data-testid="settings-save"]');
     await settings.waitForSelector('[data-testid="settings-banner"]');
@@ -98,10 +81,6 @@ describe('settings window — no gray flash, content fully painted', () => {
   });
 });
 
-// §9 "Window chrome and layout", read bullet by bullet against the real
-// window. Each test names the sentence it pins and asserts that sentence
-// alone; the geometry comes from boundingBox() / getBoundingClientRect() of
-// the elements in the live page, not from the stylesheet.
 describe('settings window — §9 layout', () => {
   let app;
   afterEach(async () => {
@@ -114,16 +93,9 @@ describe('settings window — §9 layout', () => {
     return openSettingsWindow(app);
   }
 
-  // The hotkey vocabulary's platform is the host's (§5: one spelling per
-  // platform), and so is the autostart row's name (§9).
   const AUTOSTART = process.platform === 'darwin' ? 'Open at login' : 'Launch with Windows';
-  // The Updates row names the running version: package.json's, which tracks
-  // Cargo.toml's.
   const VERSION = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url))).version;
 
-  // The three rounded boxes, each with its rows: a row's first element is
-  // its label and its last element its control. Everything the layout tests
-  // measure is read in one pass so the numbers describe one frame.
   function readGroups(settings) {
     return settings.evaluate(() => {
       const box = (el) => {
@@ -150,8 +122,6 @@ describe('settings window — §9 layout', () => {
               control: box(control),
               controlTag: control.tagName.toLowerCase(),
               controlType: control.getAttribute('type'),
-              // The hairline between rows, on whichever side of the seam the
-              // stylesheet draws it.
               borderTop: parseFloat(rs.borderTopWidth),
               borderBottom: parseFloat(rs.borderBottomWidth),
             };
@@ -161,9 +131,6 @@ describe('settings window — §9 layout', () => {
     });
   }
 
-  // "The form is four groups of rows in rounded boxes, a hairline between
-  // rows: the hotkey; the interval and autostart; the sprite (checkbox, PNG,
-  // position); the version and its update check."
   it('is four groups of rows in rounded boxes, a hairline between rows', async () => {
     const settings = await openSettings();
     const groups = await readGroups(settings);
@@ -173,23 +140,18 @@ describe('settings window — §9 layout', () => {
       ['Sprite', 'PNG', 'Position (pt)'],
       [`Nudge ${VERSION}`],
     ]);
-    // In that order, top to bottom.
     expect(groups[0].box.bottom).toBeLessThan(groups[1].box.top);
     expect(groups[1].box.bottom).toBeLessThan(groups[2].box.top);
     expect(groups[2].box.bottom).toBeLessThan(groups[3].box.top);
     for (const g of groups) {
       expect(parseFloat(g.radius)).toBeGreaterThan(0);
       expect(parseFloat(g.borderWidth)).toBeGreaterThan(0);
-      // A hairline between rows: every seam has one.
       for (let i = 1; i < g.rows.length; i += 1) {
         expect(g.rows[i - 1].borderBottom > 0 || g.rows[i].borderTop > 0, `seam ${i}`).toBe(true);
       }
     }
   });
 
-  // "In every row the label sits at the left and the control at the right
-  // edge — one left edge for every row's text and one right edge for every
-  // row's last control, so the groups read as one form"
   it('puts the label at the left and the control at the right edge of every row', async () => {
     const settings = await openSettings();
     const rows = (await readGroups(settings)).flatMap((g) => g.rows);
@@ -199,14 +161,12 @@ describe('settings window — §9 layout', () => {
       expect(row.control.right, `${row.text}: control right`).toBeCloseTo(row.innerRight, 0);
       expect(row.label.right, `${row.text}: label before control`).toBeLessThan(row.control.left);
     }
-    // One edge for all rows.
     const lefts = new Set(rows.map((r) => Math.round(r.label.left)));
     const rights = new Set(rows.map((r) => Math.round(r.control.right)));
     expect([...lefts]).toHaveLength(1);
     expect([...rights]).toHaveLength(1);
   });
 
-  // "The hotkey vocabulary is a footnote under its group."
   it('has the hotkey vocabulary as a footnote under the first group', async () => {
     const settings = await openSettings();
     const groups = await readGroups(settings);
@@ -215,11 +175,9 @@ describe('settings window — §9 layout', () => {
     const noteBottom = note.y + note.height;
     expect(noteTop).toBeGreaterThanOrEqual(groups[0].box.bottom);
     expect(noteBottom).toBeLessThanOrEqual(groups[1].box.top);
-    // A footnote belongs to the box above it: nearer to it than to the next.
     expect(noteTop - groups[0].box.bottom).toBeLessThan(groups[1].box.top - noteBottom);
   });
 
-  // "A checkbox sits at the right of its row; the row's text is its label."
   it('puts each checkbox at the right of its row, after the row text', async () => {
     const settings = await openSettings();
     const rows = (await readGroups(settings)).flatMap((g) => g.rows);
@@ -229,13 +187,11 @@ describe('settings window — §9 layout', () => {
       expect(row.control.right).toBeCloseTo(row.innerRight, 0);
       expect(row.control.left).toBeGreaterThan(row.label.right);
     }
-    // The row's text is the label: clicking it toggles the box.
     const before = await settings.locator('[data-testid="settings-sprite-enabled"]').isChecked();
     await settings.getByText('Sprite', { exact: true }).click();
     expect(await settings.locator('[data-testid="settings-sprite-enabled"]').isChecked()).toBe(!before);
   });
 
-  // "Nothing inside the window repeats the title: the title bar carries it."
   it('has no heading inside the window', async () => {
     const settings = await openSettings();
     const title = (await settingsState(app)).title;
@@ -248,7 +204,6 @@ describe('settings window — §9 layout', () => {
     expect(inside.lines).not.toContain('Settings');
   });
 
-  // "The window is sized to the form and is not resizable."
   it('is sized to the form and not resizable', async () => {
     const settings = await openSettings();
     const resizable = await app.evaluate(({ BrowserWindow }) =>
@@ -262,11 +217,8 @@ describe('settings window — §9 layout', () => {
     expect((await settingsState(app)).contentBounds.height).toBe(fit.inner);
   });
 
-  // "The banner has its line above the buttons whether or not it has anything
-  // to say, so the window never changes size."
   it('keeps the banner line and the window size when a save is refused', async () => {
     const settings = await openSettings();
-    // The banner's line is the block right above the button row.
     const line = () => settings.evaluate(() => {
       const buttons = document.querySelector('[data-testid="settings-save"]').parentElement;
       const l = buttons.previousElementSibling.getBoundingClientRect();
@@ -290,7 +242,6 @@ describe('settings window — §9 layout', () => {
     expect((await settingsState(app)).contentBounds).toEqual(quietWindow);
   });
 
-  // "The `Saved` note sits to their left after a save."
   it('puts the Saved note to the left of the buttons after a save', async () => {
     const settings = await openSettings();
     expect(await settings.locator('[data-testid="settings-saved"]').count()).toBe(0);
@@ -300,16 +251,10 @@ describe('settings window — §9 layout', () => {
     const note = await settings.locator('[data-testid="settings-saved"]').boundingBox();
     const cancel = await settings.locator('[data-testid="settings-cancel"]').boundingBox();
     expect(note.x + note.width).toBeLessThanOrEqual(cancel.x);
-    // On the buttons' line.
     expect(note.y).toBeLessThan(cancel.y + cancel.height);
     expect(cancel.y).toBeLessThan(note.y + note.height);
   });
 
-  // "... so the window never changes size." A refused hotkey echoes what was
-  // typed, and what was typed can be anything: the message has to stay on
-  // its line whatever it quotes, the buttons where they were, the form
-  // unscrolled. Two shapes of anything: one word that no line can hold,
-  // which pushes sideways, and a run of words, which wraps and pushes up.
   it('keeps the banner on its line when the refused hotkey is a long token', async () => {
     const settings = await openSettings();
     const probe = () => settings.evaluate(() => {
@@ -342,8 +287,6 @@ describe('settings window — §9 layout', () => {
     }
   });
 
-  // "`Cancel`, then `Save`, at the bottom right; `Save` is the one filled
-  // button ..." — and, of the rows, "the buttons end where the boxes do".
   it('has Cancel then Save at the bottom right, Save the one filled button', async () => {
     const settings = await openSettings();
     const cancel = await settings.locator('[data-testid="settings-cancel"]').boundingBox();
@@ -353,14 +296,10 @@ describe('settings window — §9 layout', () => {
       const s = getComputedStyle(document.querySelector('main'));
       return { innerHeight: window.innerHeight, main: { bottom: parseFloat(s.paddingBottom) } };
     });
-    // Cancel, then Save, on one line.
     expect(cancel.x + cancel.width).toBeLessThanOrEqual(save.x);
     expect(Math.abs(cancel.y - save.y)).toBeLessThan(1);
-    // At the right: where the boxes end; at the bottom: nothing below but
-    // the margin.
     expect(save.x + save.width).toBeCloseTo(groups[2].box.right, 0);
     expect(save.y + save.height).toBeCloseTo(innerHeight - main.bottom, 0);
-    // The one filled button: a fill of its own, unlike Cancel's.
     const fills = await settings.evaluate(() => {
       const bg = (id) => getComputedStyle(document.querySelector(`[data-testid="${id}"]`)).backgroundColor;
       return { save: bg('settings-save'), cancel: bg('settings-cancel') };
@@ -370,10 +309,6 @@ describe('settings window — §9 layout', () => {
   });
 });
 
-// §9 "Updates": a button, never a background check; the row says where it
-// looks; the result states, and the macOS action — the prototype's only one —
-// opening the release page. The check's answer is queued through the test
-// hook, so nothing here reaches the network.
 describe('settings window — §9 Updates', () => {
   let app;
   afterEach(async () => {
