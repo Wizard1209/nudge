@@ -148,6 +148,8 @@ fn main() -> eframe::Result {
 
     platform::start(configured_hotkey, config_path.clone(), config.clone());
 
+    // Dropping notify's watcher stops its watches, so the handle stays bound until main returns.
+    // proof: https://docs.rs/crate/notify/8.2.0/source/src/windows.rs
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     let _watcher = match config_watcher::spawn(
         config_path.clone(),
@@ -207,19 +209,6 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
 
-    // No Dock icon and no Cmd-Tab entry: this is a menu-bar app whose window
-    // is a transient overlay. `Accessory` is what `with_taskbar(false)` +
-    // `WS_EX_TOOLWINDOW` do on Windows.
-    //
-    // It has to be asked for *before* the app finishes launching, which is why
-    // it goes through the event-loop hook rather than a `setActivationPolicy`
-    // call of our own — the latter would run after `applicationDidFinishLaunching`
-    // and flash a Dock icon on the way past.
-    //
-    // An accessory app is not given the keyboard by default. What restores it
-    // is the `activateIgnoringOtherApps` in `platform::macos::focus_popup`,
-    // called on every reveal; without that call this line would produce a
-    // popup nobody can type into.
     #[cfg(target_os = "macos")]
     {
         use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};

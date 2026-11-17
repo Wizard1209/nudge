@@ -28,12 +28,8 @@ pub fn vision_verdict(png: &[u8], prompt: &str) -> Option<(bool, String)> {
 
     let model = std::env::var("OPENAI_JUDGE_MODEL").unwrap_or_else(|_| "gpt-6-luna".to_string());
 
-    // GPT-5.x / GPT-6.x / o-series are *reasoning* models: on
-    // /v1/chat/completions they REJECT `max_tokens` (require
-    // `max_completion_tokens`), spend hidden reasoning tokens out of that
-    // budget before the JSON, and don't take a custom `temperature`. Legacy
-    // gpt-4o* use the old `max_tokens` + `temperature` shape. Branch on the
-    // family so OPENAI_JUDGE_MODEL "just works" either way.
+    // GPT-6 models do not support `temperature` unless reasoning effort is `none`.
+    // proof: https://developers.openai.com/api/docs/guides/latest-model/gpt-6-astra.md
     let is_reasoning = model
         .strip_prefix("gpt-")
         .and_then(|rest| rest.chars().next())

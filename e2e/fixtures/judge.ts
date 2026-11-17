@@ -60,14 +60,8 @@ export async function visualAssert(
         writeFileSync(path.join(dir, `${Date.now()}-${name}.png`), cropped)
     }
 
-    // gpt-6-luna is the default ($0.10→$0.50 /1M, the cheapest current-gen
-    // vision model). Override with OPENAI_JUDGE_MODEL.
-    //
-    // GPT-5.x / GPT-6.x / o-series are *reasoning* models: on chat/completions
-    // they reject `max_tokens` (need `max_completion_tokens`), burn hidden
-    // reasoning tokens out of that budget, and don't take a custom
-    // `temperature`. Legacy gpt-4o* use the old shape. Branch so either family
-    // works.
+    // GPT-6 models do not support `temperature` unless reasoning effort is `none`.
+    // proof: https://developers.openai.com/api/docs/guides/latest-model/gpt-6-astra.md
     const model = process.env.OPENAI_JUDGE_MODEL ?? "gpt-6-luna"
     const isReasoning = /^(gpt-[5-9]|o)/.test(model)
     const effort = (process.env.OPENAI_JUDGE_EFFORT ?? "low") as

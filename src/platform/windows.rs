@@ -34,10 +34,6 @@ pub fn start(hotkey: Option<Hotkey>, config_path: std::path::PathBuf, initial: c
     remove_replaced_exe();
 }
 
-/// Delete the exe an update set aside (spec §9 "Updates"), off the main
-/// thread. The settings window that started this process is still running
-/// from that file for a moment after the start, and Windows refuses to
-/// delete an exe while it runs, so a refusal is retried for a few seconds.
 fn remove_replaced_exe() {
     let Ok(exe) = std::env::current_exe() else {
         return;
@@ -89,6 +85,9 @@ pub fn hand_over(exe: &std::path::Path, tray_thread: Option<u32>) -> Result<(), 
             }
         }
     }
+    // RegisterHotKey fails for keystrokes already registered for another hot key, so the old
+    // process must have ended before the new exe can register the same combination.
+    // proof: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerhotkey
     std::process::Command::new(exe)
         .spawn()
         .map(drop)
@@ -127,11 +126,9 @@ pub fn popup_is_foreground(_ctx: &egui::Context) -> bool {
 
 static WINIT_WNDPROC: AtomicIsize = AtomicIsize::new(0);
 
-/// Keep `WS_EX_TOOLWINDOW` on the popup for its whole life. winit rewrites
-/// the extended style wholesale on every show and hide, which drops the bit.
-/// The bit keeps the popup out of Alt+Tab, and it is what Chromium-based apps
-/// beneath read to not count the transparent, screen-sized popup as covering
-/// them — without it they stop painting while it is up and show black.
+// winit's set_visible rewrites GWL_EXSTYLE from its own window flags, which never include
+// WS_EX_TOOLWINDOW, so every show and hide clears that bit.
+// proof: https://docs.rs/crate/winit/0.30.13/source/src/platform_impl/windows/window_state.rs
 fn keep_tool_window(handle: isize) {
     unsafe extern "system" fn proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
         if msg == WM_STYLECHANGING && w.0 as i32 == GWL_EXSTYLE.0 {
@@ -190,9 +187,6 @@ fn monitors() -> Vec<(RECT, RECT)> {
 
 const AUTOHIDE_STRIP_PX: i32 = 2;
 
-/// The part of a monitor the popup may cover. `rcWork` leaves out a docked
-/// taskbar but not an auto-hidden one, so each auto-hide edge gives up its
-/// reveal strip — the taskbar stays reachable above the popup (spec §1).
 fn shield_area(monitor: RECT, work: RECT) -> RECT {
     let mut area = work;
     for edge in [ABE_LEFT, ABE_TOP, ABE_RIGHT, ABE_BOTTOM] {

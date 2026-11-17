@@ -39,9 +39,6 @@ const STEADY_INTERVAL_MIN: f64 = 0.75;
 
 const CYCLE_INTERVAL_MIN: f64 = 0.35;
 
-/// From a hide to the first gap sample of the cycles launch. A hidden
-/// window's memory goes back in steps, the last about 10 s after the hide;
-/// a gap sampled before that reads the release, not what a re-show kept.
 const CYCLE_SETTLE: Duration = Duration::from_secs(15);
 
 const CYCLES: usize = 5;

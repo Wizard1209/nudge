@@ -1,26 +1,6 @@
-//! The menu-bar status item, owned directly rather than through a crate.
-//!
-//! # Why not `tray-icon`
-//!
-//! The daisy is drawn per display density (spec §5): an 18 px bitmap for a
-//! 1x bar and a 36 px one for a 2x bar, both declared 18 pt, so AppKit picks
-//! the bitmap that matches the screen and draws it pixel for pixel. That
-//! needs an `NSImage` with two representations. `tray-icon` takes *one*
-//! bitmap, PNG-encodes it, builds an `NSImage` from the file and `setSize`s
-//! it to 18 pt — so whichever density is handed over, the other one is a
-//! resample, and the `NSStatusItem` it sizes is private. The honest variant
-//! is to own the item. The menu still comes from `muda`, which is what
-//! `tray-icon` builds its menus on; only the item and its image are ours.
-//!
-//! # Click routing
-//!
-//! The item's button gets one target/action, sent on both left and right
-//! mouse-up. The action reads `NSApplication.currentEvent` to tell them
-//! apart: a right-up (or a control-click) shows the menu, a plain left-up
-//! summons the popup through `super::request_manual_open` — the Windows
-//! tray's gestures, unchanged. The menu is attached to the item only for the
-//! duration of its tracking: with a permanent `menu` AppKit swallows every
-//! click into it and the action never fires.
+// While an NSStatusItem has a menu set, its button's click action is not used, so the menu
+// is attached only for the duration of its tracking.
+// proof: https://developer.apple.com/documentation/appkit/nsstatusitem/menu
 
 use std::cell::Cell;
 
@@ -44,8 +24,8 @@ const DENSITIES: [u32; 2] = [1, 2];
 pub struct StatusItem {
     item: Retained<NSStatusItem>,
     button: Retained<NSStatusBarButton>,
-    /// AppKit does not retain a control's target, so the click target lives
-    /// exactly as long as the item does.
+    // A control does not retain its target.
+    // proof: https://developer.apple.com/library/archive/documentation/General/Conceptual/CocoaEncyclopedia/Target-Action/Target-Action.html
     _target: Retained<ClickTarget>,
 }
 

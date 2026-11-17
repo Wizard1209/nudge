@@ -333,41 +333,6 @@ struct Element {
     value: String,
 }
 
-/// The AppleScript that walks to the settings window, wherever it is.
-///
-/// It **activates the window before reading it**, and that is load-bearing
-/// rather than tidy-minded. Measured in this guest: a settings window that
-/// opens while another application is frontmost never becomes key, eframe
-/// therefore never runs a frame for it, and AccessKit — which builds its tree
-/// on a frame — publishes nothing at all. The window is still listed by name,
-/// with zero children, which reads exactly like "the recorder is broken" and
-/// is not. The two bullets that hit this are the two that take the focus away
-/// on purpose: focus-loss/`⌘Tab`, and the popup opening over the settings
-/// window.
-///
-/// Which window to activate is decided by title, because in the two-process
-/// bullet both windows are up at once: the popup's is exactly `Nudge`, the
-/// settings window's is longer. Activating the popup instead — which is what
-/// "the first process that has a window" picks once the popup is showing —
-/// leaves the settings window unfocused, which is the very state this is here
-/// to get out of.
-///
-/// **Not by process id.** Measured in this guest: with two `nudge` processes
-/// alive, `first process whose unix id is <settings pid>` comes back holding
-/// the *other* one — asked for 33604 it returned 33600, the windowless main
-/// instance, and every `window 1 of p` after that failed with "Invalid index".
-/// System Events' `whose` filter over processes is not trustworthy when two
-/// share a name, and the two-process bullet is exactly the case that needs it.
-///
-/// So the window is found by what is *in* it: the only window in any `nudge`
-/// process whose group contains a label reading `Global hotkey:`. The popup
-/// has no such thing, and only one settings window is alive at a time — which
-/// [`settings_group`]'s callers check rather than assume, by refusing a second
-/// hit.
-///
-/// The tree also has to be asked for twice sometimes: AccessKit publishes it
-/// on the first client request, so the first walk after a window opens finds
-/// no group at all. Every caller retries.
 fn settings_group(body: &str) -> String {
     format!(
         r#"tell application "System Events"
@@ -466,14 +431,9 @@ fn nudge_windows() -> String {
     }
 }
 
-/// The settings window's contents, as the accessibility API reports them.
-///
-/// eframe links AccessKit, and everything the recorder puts on screen — the
-/// field, the Record/Cancel label, the hint under the row, the save banner —
-/// comes back through it. Measured in this guest: the widgets are children of
-/// an `AXGroup` inside the window rather than of the window itself, and
-/// `entire contents` does not descend into that group, so the group is walked
-/// explicitly.
+// AccessKit on macOS exposes egui's Role::Window root as an AXGroup inside the NSWindow,
+// so the widgets are elements of that group, not of the window.
+// proof: https://docs.rs/crate/accesskit_macos/0.26.1/source/src/node.rs
 struct Ui(Vec<Element>);
 
 impl Ui {
@@ -629,22 +589,9 @@ fn arm() {
     assert_eq!(ui.hint(), PROMPT, "armed, but not asking for a combination");
 }
 
-/// Whether this process is **showing the popup** right now.
-///
-/// Three filters, and every one of them is load-bearing. Measured in this
-/// guest: a running `nudge` owns an unnamed 500×500 layer-0 surface that is
-/// on-screen from launch and stays on-screen while the popup is hidden, so a
-/// predicate that only asked "does this pid have a visible window" answers yes
-/// before anything was pressed — which is how this helper was wrong the first
-/// time it ran. The popup is built `.with_always_on_top()`, which macOS
-/// reports as a non-zero `kCGWindowLayer`; that is the signal that tells the
-/// two apart. `tests/macos_native.rs` reaches the same conclusion by the same
-/// measurement, independently.
-///
-/// `kCGWindowListOptionAll` also keeps listing a window the app has ordered
-/// out, so finding an entry is not visibility — `kCGWindowIsOnscreen` is. And
-/// zero-size surfaces are skipped: the accessibility bridge owns some, and
-/// they are never anything a user sees.
+// kCGWindowListOptionAll lists offscreen windows too, so a listed window is not
+// a visible one; kCGWindowIsOnscreen says which.
+// proof: https://developer.apple.com/documentation/coregraphics/cgwindowlistoption/optionall
 fn popup_visible(pid: u32) -> bool {
     window_present(pid, true)
 }
@@ -722,21 +669,9 @@ fn event_source() -> CGEventSource {
         .expect("CGEventSourceCreate failed — is there a login session?")
 }
 
-/// Press and release one physical key with `modifiers` held — a press edge as
-/// the OS delivers it, which is the only keyboard input an armed recorder
-/// accepts.
-///
-/// The flags go on both edges: AppKit reads `modifierFlags` off the key-down
-/// event itself, not off a separate flags-changed event, and a key-down with
-/// no flags is a different combination.
-///
-/// The modifier caps are pressed and **released** around them anyway, each as
-/// its own flags-changed edge, because the window server keeps its own idea of
-/// what is held and the flags on a key event never tell it that a modifier
-/// went up. Measured: a `⌘Tab` posted as one flagged key edge leaves the
-/// application switcher on screen and Command stuck down — and this guest is a
-/// single shared VM, so every test after it inherits a chord nobody pressed.
-/// One red turns into six that way.
+// Quartz needs every keystroke of a chord posted, modifier keys included:
+// the modifier goes down, the key goes down, then both are released.
+// proof: https://developer.apple.com/documentation/coregraphics/cgevent/init(keyboardeventsource:virtualkey:keydown:)
 fn press_chord(code: CGKeyCode, modifiers: CGEventFlags) {
     let caps: Vec<(CGEventFlags, CGKeyCode)> = [
         (CGEventFlags::CGEventFlagCommand, VK_COMMAND),

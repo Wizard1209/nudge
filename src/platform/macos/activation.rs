@@ -24,9 +24,8 @@ pub(super) fn hand_back_activation() {
             .filter(|target| !target.isTerminated());
         let handed = target.is_some_and(|target| {
             let options = NSApplicationActivationOptions::empty();
-            // macOS 14 made activation cooperative: the active application
-            // names the one it hands over to. Older systems take the plain
-            // request, and do not have the selector.
+            // NSRunningApplication's activateFromApplication:options: exists only on macOS 14+.
+            // proof: https://developer.apple.com/documentation/appkit/nsrunningapplication/activate(from:options:)
             if target.respondsToSelector(sel!(activateFromApplication:options:)) {
                 target.activateFromApplication_options(
                     &NSRunningApplication::currentApplication(),

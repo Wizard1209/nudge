@@ -289,10 +289,6 @@ pub fn assess(hk: &Hotkey) -> HotkeyStatus {
             HotkeyStatus::Free
         }
         Err(RegisterError::Exclusive) => {
-            // Measured: an exclusive probe *does* collide with this process's
-            // own non-exclusive binding. So inside the process that binds, the
-            // likeliest holder is the app itself, and saying so is the
-            // difference between a warning and a lie.
             if super::holds_this_hotkey(hk) {
                 HotkeyStatus::HeldByNudge
             } else {

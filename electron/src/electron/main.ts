@@ -59,10 +59,9 @@ import { ElectronAutostartProvider } from "./autostart";
 import { backdropAttached, backdropState, frontWindowBounds, hideBackdrop, syncBackdrop } from "./backdrop";
 import { buildTrayIcon, daisyFrame, formatTooltip, type DaisyFrame } from "./trayIcon";
 
-// An uncaught exception in the main process would otherwise come up as a
-// modal "A JavaScript error occurred" box on whatever desktop the app runs
-// on, and stay there until someone clicks it away. This is a workbench that
-// test harnesses launch unattended: die in the terminal instead.
+// Electron's own uncaughtException listener shows an error dialog and keeps the app running,
+// unless another uncaughtException listener is registered.
+// proof: https://github.com/electron/electron/blob/v41.2.0/lib/browser/init.ts#L21-L38
 process.on("uncaughtException", (err) => {
   console.error("Nudge: uncaught exception in the main process", err);
   app.exit(1);
@@ -133,8 +132,9 @@ function applyConfig(next: Config): void {
   }
 }
 
-// Watch the PARENT dir, not the file: an atomic save (tmp + rename) swaps the
-// inode, which a file-level watch would miss after the first write.
+// On Linux and macOS, fs.watch on a path follows its inode: after a new file is renamed over
+// the path, events for that new file are not emitted.
+// proof: https://nodejs.org/docs/v24.14.0/api/fs.md
 function startConfigWatcher(): void {
   const configPath = getConfigPath();
   const dir = dirname(configPath);
@@ -451,12 +451,8 @@ function setSpriteSource(source: SpriteSource | null): void {
 
 let spriteApply = Promise.resolve();
 
-/**
- * Apply a saved sprite change once the popup is hidden, so it never reshapes
- * under the user. Turning the sprite on or off recreates the window, because
- * `transparent` (and with it Acrylic) is fixed at creation; any other change
- * resizes the window and pushes the new layout to the renderer.
- */
+// Electron reads a window's `transparent` option once, at construction, into a const field.
+// proof: https://github.com/electron/electron/blob/v41.2.0/shell/browser/native_window.h#L499-L500
 function applyPendingSprite(): void {
   spriteApply = spriteApply.then(async () => {
     if (!pendingSprite || !win || win.isVisible()) return;

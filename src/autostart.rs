@@ -172,7 +172,8 @@ impl AutostartProvider for WindowsRegistryProvider {
 
         let subkey = to_wide(RUN_SUBKEY);
         let name = to_wide(RUN_VALUE_NAME);
-        // The Run value is a command line; quote the path so spaces survive.
+        // The Run value's data is a command line, so a path with spaces is quoted.
+        // proof: https://learn.microsoft.com/en-us/windows/win32/setupapi/run-and-runonce-registry-keys
         let data = to_wide(&format!("\"{}\"", self.exe.display()));
         let data_bytes = unsafe {
             std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(&data[..]))
@@ -324,26 +325,6 @@ impl MacLaunchAgentProvider {
         }
     }
 
-    /// `launchctl bootstrap gui/<uid> <plist>`, falling back to the pre-10.11
-    /// `launchctl load -w <plist>` when the running launchctl has no
-    /// `bootstrap` subcommand.
-    ///
-    /// # Why it boots the label out first
-    ///
-    /// Bootstrapping a label the domain already holds is an error, and — this
-    /// was measured, not assumed — launchctl on macOS 26 reports it as a bare
-    /// `Bootstrap failed: 5: Input/output error`, with no distinguishing text.
-    /// Exit 5 is also what a genuinely broken plist yields, so the reply cannot
-    /// be classified after the fact: tolerating 5 would swallow real failures,
-    /// and rejecting it would make a second `enable()` fail. Removing the
-    /// precondition is the only way out — after a best-effort `bootout`, the
-    /// domain is known not to hold the label, so any bootstrap error left is a
-    /// real one.
-    ///
-    /// It is also the correct behaviour independent of that: bootstrap ignores
-    /// a plist whose label is already loaded, so re-enabling after the app
-    /// moved (`~/Downloads/Nudge.app` → `/Applications`) would otherwise leave
-    /// launchd pointed at the old path.
     fn register(&self) -> Result<(), String> {
         let _ = self.unregister();
 

@@ -22,19 +22,9 @@ const KEY_OWNER_PID: &str = "kCGWindowOwnerPID";
 const KEY_LAYER: &str = "kCGWindowLayer";
 const KEY_BOUNDS: &str = "kCGWindowBounds";
 
-/// The bounds of the frontmost application's front window — its first
-/// on-screen window at the ordinary window level, the list being ordered
-/// front to back — in CoreGraphics' global space: points, origin at the
-/// primary display's top-left corner, y down.
-///
-/// Ordinary level (layer 0) rather than any, because an application's
-/// menu-bar extras, tooltips and floating panels are windows too, and are
-/// not what the user is looking at. An application's front entry can be a
-/// strip drawn as a window of its own (iTerm2's measured 1470×68), but it
-/// sits on the same display as the window it belongs to.
-///
-/// `None` when no application is frontmost, when it has no such window, or
-/// when the list could not be read.
+// With kCGWindowListOptionOnScreenOnly the list is ordered front to back, so the first
+// entry that matches is the frontmost such window.
+// proof: https://developer.apple.com/documentation/coregraphics/cgwindowlistoption/optiononscreenonly
 pub fn front_window_bounds() -> Option<NSRect> {
     let pid = unsafe {
         NSWorkspace::sharedWorkspace()

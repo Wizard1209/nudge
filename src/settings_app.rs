@@ -424,13 +424,9 @@ pub struct SettingsApp {
 
 impl SettingsApp {
     pub fn new(cc: &eframe::CreationContext<'_>, config: Config, host: SettingsHost) -> Self {
-        // Default eframe visuals — settings is NOT the spotlight. Opaque
-        // panel, normal chrome. We still pin dark mode so the look matches
-        // the popup. set_theme comes first: set_visuals only writes into
-        // the active theme's style, and the default ThemePreference::System
-        // switches to the OS theme after construction — on a light-themed
-        // OS the window would silently render stock light visuals (see the
-        // same pin in NudgeApp::new).
+        // egui's set_visuals writes only the style of the active theme, and under
+        // ThemePreference::System the active theme is the OS theme from raw input.
+        // proof: https://docs.rs/crate/egui/0.34.2/source/src/context.rs#2235
         cc.egui_ctx.set_theme(eframe::egui::ThemePreference::Dark);
         cc.egui_ctx.set_visuals(eframe::egui::Visuals::dark());
         #[cfg(not(target_arch = "wasm32"))]

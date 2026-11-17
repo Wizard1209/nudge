@@ -10,15 +10,9 @@ use crate::word_jump;
 
 pub const CLEAR_COLOR_TRANSPARENT: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
 
-/// Placeholder / hint text colour. egui's dark default is ~gray(120), which
-/// washes out against the translucent card. Bumped to gray(170) so hints
-/// like "Что я делаю?" (the popup's question copy — kept Russian as the
-/// product placeholders) are comfortably legible. Must be applied via
-/// `visuals.weak_text_color`: egui 0.34's TextEdit overwrites any per-hint
-/// RichText color with `visuals.weak_text_color()` (widgets/text_edit/
-/// builder.rs:586), and the computed default — text color gamma-multiplied
-/// by `weak_text_alpha` — renders the hints nearly invisible (~peak 58)
-/// over the dark card.
+// egui's TextEdit recolours every hint atom with visuals.weak_text_color(), so a colour set on
+// the hint's RichText is overridden and the hint colour can only be set through that visual.
+// proof: https://docs.rs/crate/egui/0.34.2/source/src/widgets/text_edit/builder.rs#586
 const HINT_TEXT_COLOR: egui::Color32 = egui::Color32::from_gray(170);
 
 pub(crate) const CARD_RADIUS: u8 = 16;
@@ -154,26 +148,12 @@ impl NudgeApp {
         visuals.widgets.noninteractive.fg_stroke.color = HINT_TEXT_COLOR;
         visuals.widgets.inactive.fg_stroke.color = HINT_TEXT_COLOR;
         visuals.weak_text_color = Some(HINT_TEXT_COLOR);
-        // Pin the theme BEFORE installing the visuals. set_visuals only
-        // writes into the currently-active theme's style, and with the
-        // default ThemePreference::System egui flips to the OS theme
-        // between construction and frame #1 — on a light-themed OS every
-        // override above would sit unused in the dark style while the
-        // popup renders with stock light visuals (observed in the browser
-        // build: theme=Dark in new(), theme=Light by the first frame).
-        // The spotlight card is dark by design, so the theme is not a
-        // user preference here.
+        // egui's set_visuals writes only the style of the active theme, and under
+        // ThemePreference::System the active theme is the OS theme from raw input.
+        // proof: https://docs.rs/crate/egui/0.34.2/source/src/context.rs#2235
         cc.egui_ctx.set_theme(egui::ThemePreference::Dark);
         cc.egui_ctx.set_visuals(visuals);
 
-        // Force frame #1 ourselves. When the process starts without window
-        // activation (autostart at logon, spawn from a background shell) the
-        // OS delivers no input events to the fresh window, and the event
-        // loop never paints on its own: `ui()` never runs, so the window is
-        // never adopted by the platform (its Show/hotkey wakeups need it)
-        // and the launch interval is never armed. Observed live on Windows:
-        // launch unfocused → no frame until the first real input event hits
-        // the window.
         cc.egui_ctx.request_repaint();
 
         Self {
@@ -295,9 +275,6 @@ impl NudgeApp {
             return;
         }
 
-        // TODO: a second monitor is not shielded.
-        // Size first: winit converts the position to AppKit's bottom-left
-        // origin with the window's current height.
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(geometry.work.size()));
         ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(geometry.work.min));
 
@@ -364,9 +341,6 @@ impl NudgeApp {
         self.popup_visible = true;
         self.focus_first = true;
 
-        // Tell egui itself the viewport is visible again — without this
-        // counterpart to the hide_popup `Visible(false)` send, egui keeps
-        // believing the window is hidden and skips painting.
         #[cfg(not(target_arch = "wasm32"))]
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
 
@@ -398,40 +372,6 @@ impl NudgeApp {
         }
     }
 
-    /// Arm the focus-loss check once the popup is observably focused, for the
-    /// platform whose activation call cannot answer synchronously.
-    ///
-    /// # Why a latch and not a snapshot, on macOS
-    ///
-    /// `show_popup` runs from `ui()`, and `ui()` cannot run in the same frame
-    /// as the reveal that preceded it: eframe samples `is_visible` at the top
-    /// of the frame, before `logic()` (and therefore before
-    /// `platform::macos::tick` reveals anything), then gates `app.ui` on that
-    /// sample. So by the time `show_popup` takes its snapshot, the
-    /// `activateIgnoringOtherApps` from the reveal is one or more frames old —
-    /// but `show_popup` has *also* just called `focus_popup` again, microseconds
-    /// earlier, and that call is a request to the window server which no read
-    /// on this thread reflects on return. `NSApplication::isActive` has the
-    /// same property; it is not a stronger reading of the same moment, it is
-    /// the same unanswerable question asked in objc.
-    ///
-    /// Whether the *earlier* activation has landed by then depends on the order
-    /// in which AppKit delivers the occlusion change that makes the window
-    /// visible and the key-window change that gives it the keyboard — which is
-    /// not something this code gets to decide, and not something a locked
-    /// screen can measure. A snapshot is therefore a coin flip, and a coin flip
-    /// that lands wrong reproduces the original bug with a plausible-looking
-    /// fix in place.
-    ///
-    /// A latch does not need the answer. Whichever frame the window becomes
-    /// key on — the one running `show_popup` or a later one — arms us then, and
-    /// the focus event that makes it key is itself a repaint, so the frame
-    /// exists. A window that never becomes key never arms, which is precisely
-    /// what spec §4 asks for.
-    ///
-    /// No-op everywhere else: Windows and WASM already had a true answer in
-    /// `show_popup`, and re-deciding it per frame would change shipped
-    /// behaviour on a platform this port cannot test.
     fn latch_arming(&mut self, focused_now: bool) {
         let _ = focused_now;
 
@@ -524,10 +464,6 @@ impl NudgeApp {
         self.timer.reset(interval);
     }
 
-    /// Take the native window off screen. On macOS a placed window is shrunk
-    /// to one point in this pass and ordered out in the next: AppKit resizes
-    /// the presentation surfaces only of a window that is still on screen,
-    /// and the pass in between paints one transparent 1×1 frame nobody sees.
     #[cfg(not(target_arch = "wasm32"))]
     fn withdraw_window(&mut self, ctx: &egui::Context) {
         #[cfg(target_os = "macos")]
@@ -539,11 +475,6 @@ impl NudgeApp {
             return;
         }
 
-        // Tell egui the viewport is hidden. Without this, egui's event
-        // loop keeps pumping/scheduling for the "visible" viewport even
-        // when the platform hides the native window directly — winit then
-        // burns a full core on the main thread despite update() never being
-        // called.
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
     }
 
@@ -626,12 +557,9 @@ impl NudgeApp {
             egui::TextEdit::singleline(value)
                 .id(field_id)
                 .hint_text(egui::RichText::new(hint).size(16.0))
-                // egui 0.34: a custom `.frame(..)` is used verbatim, so its
-                // inner_margin — NOT `.margin(..)` — is what insets the text.
-                // `.margin()` alone (as in 0.31's `.frame(false)`) leaves the
-                // text jammed in the field's top-left corner. Put the 20/12
-                // inset on the frame; keep `.margin()` matching so the galley's
-                // available width agrees with the frame's content area.
+                // A TextEdit with a custom frame is inset only by that frame's inner_margin;
+                // .margin() still sets the galley width of an empty field (the hint's).
+                // proof: https://docs.rs/crate/egui/0.34.2/source/src/widgets/text_edit/builder.rs
                 .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(20, 12)))
                 .margin(egui::Margin::symmetric(20, 12))
                 .font(egui::FontId::proportional(16.0))
@@ -760,19 +688,8 @@ impl eframe::App for NudgeApp {
         CLEAR_COLOR_TRANSPARENT
     }
 
-    /// Everything that has to keep running while the popup is hidden.
-    ///
-    /// eframe 0.34 calls `logic()` on every tick but `ui()` only while the
-    /// window is visible (`native/epi_integration.rs`). A hidden popup is the
-    /// normal state of this app — it is hidden for the whole interval — so
-    /// anything that has to notice the interval elapsing belongs here.
-    /// Drawing, and the state transitions that depend on what was drawn,
-    /// stay in `ui()`.
-    ///
-    /// A reveal (macOS: the timer, the status item, the hotkey) is ordered in
-    /// here, because `ui()` does not run until the window is visible: placed
-    /// first, then shown and given the keyboard. `ui()` makes the
-    /// `show_popup` transition on the next frame.
+    // eframe calls App::logic on every frame but App::ui only while the viewport is visible.
+    // proof: https://docs.rs/crate/eframe/0.34.2/source/src/native/epi_integration.rs#285
     #[cfg(not(target_arch = "wasm32"))]
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let revealing = crate::platform::tick(ctx);

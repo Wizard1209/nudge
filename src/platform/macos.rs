@@ -1,57 +1,6 @@
-//! macOS backend: the interval timer, the menu-bar status item and the global
-//! hotkey, all driven from eframe's main thread.
-//!
-//! # Why the main thread and not a thread of its own
-//!
-//! Windows drives the popup from the tray thread's message pump. macOS cannot:
-//! `NSStatusItem` is main-thread-only, Carbon's `RegisterEventHotKey` delivers
-//! to the main run loop, and the AppKit call that hands the revealed window its
-//! keyboard focus has to run on the main thread too. So everything here is
-//! polled from `App::logic`, which eframe calls on every tick *including* the
-//! ticks where the window is hidden and `App::ui` is skipped
-//! (`native/epi_integration.rs`: `app.logic(..)` is unconditional, `app.ui(..)`
-//! sits behind `if is_visible`). Putting any of it in `ui()` is exactly why the
-//! port shipped a popup that appeared once and never again — and it is why the
-//! status item would be dead in the one state it exists for.
-//!
-//! # Why the OS objects are built in eframe's creator closure
-//!
-//! [`start`] runs before `eframe::run_native` and only records what to build;
-//! [`start_on_event_loop`] does the building, from the creator closure, where
-//! `NSApplication` exists and we are provably on the main thread. Both the
-//! status item and the hotkey manager need that.
-//!
-//! # Why the event handlers wake the context instead of feeding a channel
-//!
-//! `muda` offers a receiver *or* a global handler, not both, and the status
-//! item's click action ([`status_item`]) and the Carbon hotkey handler
-//! ([`hotkey_carbon`]) are callbacks with no receiver at all. A receiver is
-//! only readable from a tick, and a tick
-//! only happens when something wakes the event loop — which a status-item click
-//! or a Carbon hotkey does not do on its own: winit services the AppKit event,
-//! eframe sees no pending repaint and goes straight back to sleep. Polling a
-//! receiver would therefore make a tray click land whenever the *timer* next
-//! woke us, up to a full interval later.
-//!
-//! So the handlers do what `tray_bridge`'s do on Windows: raise a flag and wake
-//! the app (`request_repaint` here, `force_foreground` there). Every decision
-//! and every side effect still happens in [`tick`] — the handlers hold no
-//! policy, and nothing is handled from `ui()`.
-//!
-//! # Why the repaint request is re-issued on every tick
-//!
-//! `ctx.request_repaint_after(d)` is per-frame output, not a standing timer:
-//! any later frame that does not re-issue it replaces the deadline with
-//! infinity and cancels the wake. Issuing it once before hiding was measured
-//! to never wake the app at all. Re-issuing the remaining time each tick wakes
-//! once, on time, and costs nothing measurable while idle: a hidden app on a
-//! 5-minute interval logged two ticks and no change in accumulated CPU time
-//! across a 60-second window (`ps -o time`, 10 ms resolution — so under
-//! 0.2 ms/s against the project's 25 ms/s ratchet). It is a sleep in the
-//! kernel, not a spin: each pass asks for one wake at the deadline and blocks.
-//!
-//! The status item makes that wake schedule denser — see [`next_wake`] — but
-//! only by what the petal countdown actually needs to be drawn.
+// egui resets each viewport's repaint delay when a pass begins (to Duration::MAX unless a
+// repaint is outstanding), so request_repaint_after holds only if every pass re-issues it.
+// proof: https://docs.rs/crate/egui/0.34.2/source/src/context.rs
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -108,9 +57,9 @@ thread_local! {
 
 struct UiState {
     tray: Option<StatusItem>,
-    /// The status item retains the `NSMenu`, not the muda `Menu` that routes
-    /// its clicks to `MenuEvent`; and the menu keeps only weak references to
-    /// its items. So we own both.
+    // muda's NSMenuItem holds only a raw pointer to the muda item it fires, so the muda Menu
+    // and MenuItem values are kept for as long as the menu can fire.
+    // proof: https://docs.rs/crate/muda/0.15.3/source/src/platform_impl/macos/mod.rs
     _menu: Menu,
     _menu_items: [MenuItem; 3],
     last_icon_key: Option<IconKey>,
@@ -272,6 +221,9 @@ fn reveal(ctx: &egui::Context) {
     ctx.request_repaint();
 }
 
+// kCGWindowBounds is in screen space with its origin at the upper-left corner of the main
+// display.
+// proof: https://developer.apple.com/documentation/coregraphics/kcgwindowbounds
 fn choose_screen(mtm: MainThreadMarker) {
     let screens = NSScreen::screens(mtm);
     let Some(primary) = (unsafe { screens.firstObject() }) else {
@@ -295,22 +247,9 @@ fn choose_screen(mtm: MainThreadMarker) {
     *CHOSEN_SCREEN.lock().unwrap() = frames.get(chosen).copied();
 }
 
-/// Reveal-and-focus, called on every path that puts the popup back on screen.
-///
-/// `ViewportCommand::Focus` alone is not enough: the window appears, but
-/// `viewport().focused` stays false and every keystroke is swallowed — a
-/// popup you cannot dismiss with Esc. A background app has to ask AppKit for
-/// activation first; the viewport command then lands on an app the window
-/// server is willing to give the keyboard to. With
-/// `ActivationPolicy::Accessory` (set in `main`) this activation is the *only*
-/// thing that makes the app able to take the keyboard at all.
-///
-/// `NSApplication` is main-thread-only, and the marker is the type system
-/// saying so. In the app it is always present — eframe calls `logic()` and
-/// `ui()` from the event loop on the main thread. The `None` arm is for
-/// `tests/kittest_card.rs`, which drives a real `NudgeApp` from a libtest
-/// worker thread against no window server at all: there is nothing to
-/// activate there, and asking anyway is the unsound path, not the safe one.
+// winit's macOS focus_window activates the app and keys the window only while the window is
+// visible and not miniaturized; otherwise it does nothing.
+// proof: https://docs.rs/crate/winit/0.30.13/source/src/platform_impl/macos/window_delegate.rs
 pub fn focus_popup(ctx: &egui::Context) {
     if let Some(mtm) = MainThreadMarker::new() {
         remember_front_application();
@@ -342,11 +281,6 @@ pub fn screen_geometry(ctx: &egui::Context, frame: &eframe::Frame) -> Option<Scr
         .map(|s| s.retain())
         .or_else(|| content.window().and_then(|w| w.screen()))
         .or_else(|| NSScreen::mainScreen(mtm))?;
-    // AppKit's screen space has its origin at the primary screen's bottom
-    // left, y up. winit flips through the primary screen's height too, so
-    // what goes back out through `ViewportCommand::OuterPosition` lands where
-    // this read it.
-    // SAFETY: the array is a fresh retained copy; `firstObject` only reads it.
     let primary = unsafe { screens.firstObject() }?;
     let primary_height = primary.frame().size.height;
     let zoom = f64::from(ctx.zoom_factor());
@@ -394,17 +328,6 @@ fn refresh_status_item(countdown: &Countdown) {
     });
 }
 
-/// The combination this app currently holds machine-wide, as far as this
-/// process knows.
-///
-/// Set by whichever process binds — in practice the main one; the settings
-/// window never registers anything. Its one use is telling "we already have
-/// this" apart from "another application has this" when the exclusive probe
-/// refuses, and that case is real and *local*: measured, an exclusive probe
-/// collides with this process's own **non-exclusive** binding, while the same
-/// probe cannot see another process's non-exclusive binding at all. So this
-/// answers a question only the process holding the binding can be asked, and
-/// the settings window has nothing to put in it.
 static NUDGE_HOTKEY: Mutex<Option<Hotkey>> = Mutex::new(None);
 
 pub fn note_own_hotkey(hk: Option<Hotkey>) {

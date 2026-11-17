@@ -26,19 +26,14 @@ pub struct KeyMonitor {
 }
 
 impl KeyMonitor {
-    /// Install the monitor. **Main thread only**, and only where an
-    /// `NSApplication` exists — the eframe creator closure, the same
-    /// precondition `start_on_event_loop` already establishes.
-    ///
-    /// `ctx` is woken on every edge for the reason this module's neighbours
-    /// give: a key that the toolkit never sees also never schedules a repaint,
-    /// so without the wake the recorder would answer a keypress at whatever
-    /// frame the *timer* next produced.
     pub fn install(ctx: egui::Context) -> Option<Self> {
         let shared = Arc::new(Shared::default());
         let handler_shared = Arc::clone(&shared);
         let recorder = RefCell::new(FixtureLog::from_env());
 
+        // A local NSEvent monitor gets copies of this app's events before their dispatch, and a
+        // handler that returns nil stops the dispatching of the event.
+        // proof: https://developer.apple.com/documentation/appkit/nsevent/addlocalmonitorforevents(matching:handler:)
         let block = RcBlock::new(move |event: std::ptr::NonNull<NSEvent>| -> *mut NSEvent {
             let event: &NSEvent = unsafe { event.as_ref() };
             if !handler_shared.armed.load(Ordering::SeqCst) {

@@ -883,10 +883,6 @@ fn left_clicking_the_status_item_opens_the_popup() {
         "a left click on the status item did not bring the popup back"
     );
 
-    // Cleanup, not the assertion. A bare Esc posted the instant the window
-    // is on screen is lost — the reveal's activation has not landed yet — so
-    // this goes the way `popup_reappears_after_the_interval` does, nudge made
-    // frontmost first.
     std::thread::sleep(Duration::from_millis(500));
     dismiss_with_escape();
     assert!(
@@ -1492,8 +1488,9 @@ fn card_passes_the_vision_judge() {
     assert!(pass, "LLM vision judge FAILED: {reason}");
 }
 
-/// Virtual keycode for Return. Sent as a bare keycode with no unicode payload,
-/// because egui reads Return from the keycode and would ignore the text.
+// winit on macOS maps key code 0x24 to NamedKey::Enter and, for a named key,
+// ignores the event's characters: Return comes from the key code alone.
+// proof: https://docs.rs/crate/winit/0.30.13/source/src/platform_impl/macos/event.rs
 const KEYCODE_RETURN: CGKeyCode = 36;
 
 fn event_source() -> core_graphics::event_source::CGEventSource {
@@ -1502,14 +1499,6 @@ fn event_source() -> core_graphics::event_source::CGEventSource {
         .expect("CGEventSourceCreate failed — is there a login session?")
 }
 
-/// Type `text` one character at a time, as `CGEventPost` key-down/key-up pairs
-/// carrying the character in the event's unicode string.
-///
-/// Per character rather than one event with the whole string: AppKit delivers a
-/// key event's unicode payload through a single `insertText:`, so a one-shot
-/// event would test a path no keyboard can produce. The pauses are what let
-/// eframe run a frame between characters — without them the events pile up in
-/// the queue and a dropped one looks like a dropped keystroke.
 fn type_text(text: &str) {
     use core_graphics::event::{CGEvent, CGEventTapLocation};
 
@@ -2109,15 +2098,6 @@ fn sprite_change_applies_while_hidden_and_waits_while_visible() {
     );
 }
 
-/// The faithful launch path for a login item, under the activation contention
-/// a user produces by switching apps while it starts.
-///
-/// Launched by launchd rather than spawned: a launchd job has no parent the
-/// window server can attribute the launch to, and that is the case in which a
-/// popup shown at launch came up centred and never became key — focus loss
-/// cannot close it (it never armed) and Esc goes to whichever app is in
-/// front. Launch is Waiting (spec §4), so nothing may show while it starts;
-/// the first popup is the first deadline's, and it takes the keyboard.
 #[test]
 #[ignore = "needs a GUI session + PostEvent grant; run in the guest via scripts/native-tests-macos.sh"]
 fn launchd_start_under_activation_contention_shows_nothing_until_a_key_popup_at_the_deadline() {
@@ -2490,11 +2470,9 @@ const VK_CONTROL: CGKeyCode = 0x3B;
 const VK_RETURN: CGKeyCode = 0x24;
 const VK_J: CGKeyCode = 0x26;
 
-/// Press and release one key with `modifiers` held, each modifier cap pressed
-/// and released as its own flags-changed edge around it. The window server
-/// keeps its own idea of what is held, and the flags on a key event never tell
-/// it a modifier went up — so a chord posted as one flagged key edge leaves
-/// the modifier stuck for every test after this one.
+// Quartz needs every keystroke of a chord posted, modifier keys included:
+// the modifier goes down, the key goes down, then both are released.
+// proof: https://developer.apple.com/documentation/coregraphics/cgevent/init(keyboardeventsource:virtualkey:keydown:)
 fn press_chord(code: CGKeyCode, modifiers: CGEventFlags) {
     use core_graphics::event::{CGEvent, CGEventTapLocation};
 

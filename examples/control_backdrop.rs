@@ -11,11 +11,9 @@ fn main() -> eframe::Result<()> {
         .unwrap_or_else(|| "checker".to_string());
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            // Screen-filling, but deliberately NOT `with_fullscreen`: native
-            // fullscreen on macOS moves the window into a Space of its own, so
-            // the backdrop and the app under test end up on different desktops
-            // and the capture silently photographs neither. The size is
-            // applied on the first frame instead, once the monitor is known.
+            // macOS native full screen puts the window into a Space of its own, apart from the
+            // app under test, so the window is sized by hand instead of with `with_fullscreen`.
+            // proof: https://developer.apple.com/library/archive/documentation/General/Conceptual/MOSXAppProgrammingGuide/FullScreenApp/FullScreenApp.html
             .with_decorations(false)
             .with_window_level(egui::WindowLevel::AlwaysOnTop)
             .with_active(false),
@@ -28,19 +26,6 @@ fn main() -> eframe::Result<()> {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
-        // Fill the main display: move to its top-left, then size to it. Two
-        // steps over several frames rather than one: the first frame runs
-        // before the window has been moved, so the monitor it reports is
-        // whichever one it happened to open on — with a second display that
-        // is routinely not the main one the app under test picks — and the
-        // move takes a frame to land. Screen origin (0,0) is the main
-        // display's top-left by definition, so the size read after the move
-        // is the right one.
-        //
-        // Each command is sent once per target, never re-sent until the window
-        // matches: macOS keeps a window below the menu bar, so its position
-        // never reads (0,0), and waiting for that would repaint forever and
-        // never reach the resize.
         let monitor = ui.ctx().input(|i| i.viewport().monitor_size);
         if !moved {
             moved = true;

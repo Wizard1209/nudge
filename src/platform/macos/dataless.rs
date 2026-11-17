@@ -1,3 +1,7 @@
+// A process inherits IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES from its parent, and the
+// system default for the process scope is OFF, which disables materialization of dataless files.
+// proof: https://github.com/apple-oss-distributions/xnu/blob/ac9718f/bsd/man/man3/getiopolicy_np.3
+
 use std::ffi::c_int;
 
 unsafe extern "C" {

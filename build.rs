@@ -1,5 +1,6 @@
 fn main() {
-    // The target, not the host: the exe is cross-compiled from Linux.
+    // cfg! and #[cfg] in a build script check the host; CARGO_CFG_TARGET_OS names the target.
+    // proof: https://doc.rust-lang.org/cargo/reference/environment-variables.html
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }

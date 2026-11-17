@@ -1,24 +1,3 @@
-//! Tray icon owned by a dedicated thread.
-//!
-//! Why a separate thread? `tray_icon::TrayIcon` is `!Send` (wraps
-//! `Rc<RefCell<…>>`), so the tray has to live entirely on one thread. The
-//! main thread runs eframe, which `SW_HIDE`s its window between nudges —
-//! and a hidden, layered, transparent window does not get `update()`
-//! callbacks. Driving icon animation from `update()` therefore drops most
-//! frames. Discord and similar apps avoid this by giving the tray its own
-//! thread with its own message pump; we do the same here.
-//!
-//! The tray thread:
-//!   - Owns the `TrayIcon` and the menu items.
-//!   - Runs a `MsgWaitForMultipleObjectsEx`-driven loop that interleaves
-//!     message dispatch with animation frames.
-//!   - Reads the armed timer and the popup's visibility out of
-//!     `platform::shared`, both written by the eframe thread.
-//!   - Wakes from a long wait via `PostThreadMessageW` whenever eframe
-//!     changes state.
-//!   - Fires the popup when the timer expires (raises the timer edge +
-//!     `ShowWindow(SW_RESTORE)` on eframe's HWND).
-
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 use std::thread;
@@ -60,17 +39,9 @@ pub fn load_hwnd() -> Option<isize> {
     if val != 0 { Some(val) } else { None }
 }
 
-/// Force `hwnd` to become the actual foreground window (visible AND focused).
-///
-/// `SetForegroundWindow` alone is restricted by Win32: it silently no-ops
-/// when the caller isn't already the foreground process or hasn't received
-/// recent input. For a timer-fired popup that's exactly the failure case —
-/// the window appears layered-on-top but gets no input focus, so click-outside
-/// and focus-loss detection never see anything to fire on.
-///
-/// Workaround: attach the window's owning thread's input queue to the
-/// current foreground thread's. While attached, Win32 treats SetForegroundWindow
-/// as if it came from the foreground process and grants the activation.
+// The system restricts which processes may set the foreground window, and SetForegroundWindow
+// cannot force a window forward while the user is working with another window.
+// proof: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setforegroundwindow
 pub fn force_foreground(hwnd: HWND) {
     crate::platform::choose_screen(hwnd);
     unsafe {
@@ -113,20 +84,9 @@ pub(crate) fn wake_tray_thread() {
     }
 }
 
-/// Spawn the long-lived tray thread. Call once at startup, before
-/// `eframe::run_native`. The thread creates the tray icon, sets the
-/// global tray / menu event handlers, and runs the animation loop.
-///
-/// `hotkey` (when present) is registered on the tray thread via
-/// `RegisterHotKey`. It must be registered on the same thread that pumps
-/// the message queue, otherwise WM_HOTKEY is delivered to a queue we
-/// aren't reading. None disables the hotkey for this run (e.g. an invalid
-/// config label).
-///
-/// `config_path` and `initial_config` are the launch-time snapshot: the
-/// baseline the tray thread reloads against when the watcher fires, read
-/// from the same file the settings process writes to — including any
-/// `--config` override.
+// RegisterHotKey with a null HWND posts WM_HOTKEY to the calling thread's message queue,
+// and the message must be processed in that thread's message loop.
+// proof: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerhotkey
 pub fn spawn_tray_thread(
     hotkey: Option<Hotkey>,
     config_path: PathBuf,
@@ -366,10 +326,9 @@ fn tray_icon_frame(
     tray_icon::Icon::from_rgba(rgba.to_vec(), size, size)
 }
 
-/// The shell's small-icon size at the system DPI — 16 px at 100 %, 24 at
-/// 150 %, 32 at 200 % — which is what the notification area draws. Asked on
-/// every redraw: it is two cheap calls, and the answer moves when the
-/// process becomes DPI-aware, which winit does when the event loop starts.
+// GetDpiForSystem returns 96 while the calling thread is DPI-unaware and the actual system
+// DPI otherwise, so the system DPI is not to be cached.
+// proof: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getdpiforsystem
 fn tray_icon_pixels() -> u32 {
     use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetSystemMetricsForDpi};
     use windows::Win32::UI::WindowsAndMessaging::SM_CXSMICON;

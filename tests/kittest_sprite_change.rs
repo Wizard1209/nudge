@@ -122,13 +122,9 @@ fn a_sprite_change_while_visible_waits_for_hide() {
     );
 }
 
-/// eframe applies a frame's texture changes only on a frame it paints, and it
-/// paints none while the popup is hidden. A sprite replaced then must not free
-/// its old texture on that frame — the free would be dropped with it and the
-/// texture would stay on the GPU for the life of the process. The harness
-/// paints every frame, so what it can check is the frame the free is on: not
-/// a hidden one, and not the reveal frame either — eframe runs only `logic`
-/// there, the window being hidden when the frame began.
+// eframe's glow loop applies a frame's textures_delta only if the window was visible when
+// the frame began, so a texture freed on a hidden frame stays allocated.
+// proof: https://docs.rs/crate/eframe/0.34.2/source/src/native/glow_integration.rs#675
 #[test]
 fn a_sprite_replaced_while_hidden_is_freed_on_a_painted_frame() {
     let _seam = seam();
