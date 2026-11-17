@@ -297,7 +297,10 @@ mod tests {
 
     #[test]
     fn wake_lands_on_the_next_petal_drop_when_that_comes_first() {
-        assert_eq!(wake_with(Duration::from_secs(181)), Duration::from_secs(1));
+        assert_eq!(
+            wake_with(Duration::from_millis(217_500)),
+            Duration::from_secs(30)
+        );
     }
 
     #[test]
