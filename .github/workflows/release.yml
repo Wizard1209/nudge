@@ -127,7 +127,8 @@ jobs:
           body: |
             ### Windows
 
-            Run the exe; there is no installer. [Code signing policy](https://github.com/Wizard1209/nudge#code-signing-policy)
+            Run the exe; there is no installer. It is not code-signed, so SmartScreen
+            may warn on the first run: `More info` › `Run anyway`.
 
             ### macOS
 

@@ -123,6 +123,9 @@ Download `nudge-v<version>-x86_64-windows.exe` from the Releases page, put it
 in any folder and run it. There is no installer: the exe is the whole program,
 and it lives in the notification area.
 
+The exe is not code-signed, so on the first run SmartScreen may say "Windows
+protected your PC": `More info` › `Run anyway`.
+
 ## Uninstalling
 
 1. In Settings, turn off launch at login. This removes the `HKCU\…\Run\Nudge`
@@ -133,18 +136,9 @@ and it lives in the notification area.
    `%APPDATA%\Nudge` on Windows; `~/Documents/Nudge` and
    `~/Library/Application Support/Nudge` on macOS.
 
-## Code signing policy
+## Privacy
 
-Free code signing provided by [SignPath.io](https://about.signpath.io),
-certificate by [SignPath Foundation](https://signpath.org).
-
-- Committers and reviewers: [Wizard1209](https://github.com/Wizard1209)
-- Approvers: [Wizard1209](https://github.com/Wizard1209)
-
-Every signed release is built by the release workflow in this repository on
-GitHub-hosted runners and approved by hand before it is signed.
-
-Privacy policy: this program will not transfer any information to other
+This program will not transfer any information to other
 networked systems unless specifically requested by the user or the person
 installing or operating it. The journal and the settings stay in local files.
 The only network request it makes is the update check in Settings, sent to
