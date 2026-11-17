@@ -1,23 +1,3 @@
-//! Settings window — opened from the tray menu as a separate process.
-//!
-//! Two layers, deliberately split:
-//!
-//! - [`SettingsForm`] is the **pure state machine**: it holds the field
-//!   strings + bools, parses the numbers, tracks dirty state, and emits a
-//!   `Config` on Save. No egui, no I/O. This is what's unit-tested.
-//!
-//! - [`SettingsApp`] is the eframe shell that renders rows, runs the sprite
-//!   PNG check and `persist` on Save, and routes the autostart checkbox
-//!   through [`crate::autostart::apply_autostart`] so the OS-confirms-first
-//!   rule holds. The shell injects the persistence closure, the PNG check
-//!   and the provider trait object so the same code drives the native
-//!   (file + registry) and the WASM (localStorage + fake provider) builds.
-//!
-//! The render layer renders **rows by hand** rather than going through a
-//! `Setting` trait — a handful of heterogeneous widgets don't justify the
-//! abstraction yet, and inline rendering keeps the spec → screen mapping
-//! direct.
-
 use crate::autostart::{AutostartError, AutostartProvider, apply_autostart};
 use crate::config::{self, Config, ConfigError, IntervalError, SpriteConfig};
 use crate::hotkey::{self, Hotkey};
@@ -25,17 +5,10 @@ use crate::recorder::{self, EdgeSource, Effect, Input, Recorder, Verdict};
 use eframe::egui;
 use std::path::Path;
 
-/// CLI flag that boots `nudge.exe` into the settings UI instead of the
-/// popup. Single source of truth so the tray dispatch (spawn) and the main
-/// dispatch (recognise) can't drift.
 pub const SETTINGS_ARG: &str = "--settings";
 
-/// The tray thread that opened this window, on Windows: where an update's
-/// quit request goes (spec §9 "Updates"). The tray adds it when it spawns the
-/// window; see `tray_bridge::settings_args`.
 pub const TRAY_THREAD_ARG: &str = "--tray-thread";
 
-/// The id after `--tray-thread`, when there is one and it is a number.
 pub fn parse_tray_thread_arg<I, S>(args: I) -> Option<u32>
 where
     I: IntoIterator<Item = S>,
@@ -50,10 +23,6 @@ where
     None
 }
 
-/// Whether `--settings` appears anywhere in `args`. Used by the early
-/// dispatch in `main` to route into the settings UI before the popup
-/// codepath kicks in. Returns true on the first match; the rest of the args
-/// are still available to the normal config-arg parser (`--config <path>`).
 pub fn parse_settings_arg<I, S>(args: I) -> bool
 where
     I: IntoIterator<Item = S>,
@@ -62,45 +31,20 @@ where
     args.into_iter().any(|a| a.as_ref() == SETTINGS_ARG)
 }
 
-/// The pure (no-eframe, no-I/O) settings form state. The render shell holds
-/// one of these and asks it questions; the form never touches the disk.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SettingsForm {
-    /// Hotkey label as a free-text string, typed or put here by the
-    /// recorder; validated via [`crate::hotkey::parse`] only on Save so
-    /// partially-typed values don't flicker errors.
     pub hotkey: String,
-    /// Default interval (minutes) as the literal field text. Parsed via
-    /// [`parse_interval_minutes`] on Save.
     pub interval_text: String,
-    /// Mirrors the persisted autostart bit. The checkbox writes through this
-    /// only AFTER `apply_autostart` confirms the OS change — never optimistically.
     pub autostart: bool,
-    /// The §10 sprite row. The numbers are field text, parsed strictly on
-    /// Save — whole numbers of points, like the interval is a number of
-    /// minutes — and validated whether or not the sprite is on, so a typo
-    /// cannot sit in the file waiting for the checkbox.
     pub sprite_enabled: bool,
     pub sprite_path: String,
     pub sprite_x_text: String,
     pub sprite_y_text: String,
     pub card_width_text: String,
-    /// Snapshot of the loaded config so we can detect a dirty form without
-    /// re-parsing. `is_dirty` compares against this.
     original: Config,
 }
 
 impl SettingsForm {
-    /// Construct from a loaded config — every field starts in sync with disk.
-    ///
-    /// A hotkey that parses is *shown* in this platform's spelling whatever
-    /// the file says, so a config written by the Windows build, seeded by
-    /// first-run, or edited by hand reads as `⌃⇧Space` on a Mac rather than
-    /// `Ctrl+Shift+Space`. The baseline is normalised with it, so re-spelling
-    /// alone does not make the form look edited.
-    ///
-    /// One that does *not* parse is shown verbatim: it is the only copy of
-    /// what the user typed, and they need to see it to fix it.
     pub fn from_config(cfg: Config) -> Self {
         let mut cfg = cfg;
         if let Ok(hk) = hotkey::parse(&cfg.hotkey) {
@@ -119,48 +63,23 @@ impl SettingsForm {
         }
     }
 
-    /// Parse `interval_text` into a valid interval, see
-    /// [`parse_interval_minutes`].
     pub fn parsed_interval(&self) -> Result<f64, IntervalError> {
         parse_interval_minutes(&self.interval_text)
     }
 
-    /// Whether any field differs from the file — what greys `Save` and gates
-    /// [`SettingsApp::save`] (§9). "The file" is the form [`from_config`]
-    /// would build from the baseline, so there is one mapping from a config
-    /// to field text and this is a comparison against it, not a second copy.
-    ///
-    /// [`from_config`]: Self::from_config
     pub fn is_dirty(&self) -> bool {
         *self != Self::from_config(self.original.clone())
     }
 
-    /// The hotkey as last saved — what every cancelling path in the recorder
-    /// puts back.
-    ///
-    /// The *saved* value, deliberately, not a copy of the field taken when the
-    /// recorder armed: cancelling has one meaning, and a typed-but-unsaved edit
-    /// goes with it. That is what lets the recorder hold no state at all.
     pub fn saved_hotkey(&self) -> &str {
         &self.original.hotkey
     }
 
-    /// The typed hotkey, parsed. The field accepts every spelling
-    /// [`hotkey::parse`] does — `⌥⌘J`, `Alt+Cmd+J`, `alt+cmd+j` — and every
-    /// one of them means the same combination.
     pub fn parsed_hotkey(&self) -> Result<Hotkey, hotkey::ParseError> {
         hotkey::parse(&self.hotkey)
     }
 
-    /// Build a `Config` from the current form, validating every typed
-    /// field. The `autostart` field is taken from the form's bool (which the
-    /// caller keeps in sync with the OS via `apply_autostart`). On a
-    /// successful save, the caller should call `mark_clean` so subsequent
-    /// dirty checks don't keep tripping.
     pub fn to_config(&self) -> Result<Config, SettingsValidationError> {
-        // Every field is validated before any is written, so a bad hotkey
-        // cannot leave a saved interval next to an unsaved combo. One
-        // refusal per save, the first in row order.
         let hotkey = self
             .parsed_hotkey()
             .map_err(SettingsValidationError::Hotkey)?;
@@ -177,9 +96,6 @@ impl SettingsForm {
                 SettingsValidationError::CardWidth(self.card_width_text.trim().into())
             })?;
         Ok(Config {
-            // Canonical, not as-typed: the file gets one spelling per
-            // combination, and the field is rehydrated with it on save so the
-            // user sees what was actually stored.
             hotkey: hotkey::format_native(&hotkey),
             default_interval_minutes: interval,
             autostart: self.autostart,
@@ -193,21 +109,10 @@ impl SettingsForm {
         })
     }
 
-    /// Mark the form's current state as the new baseline — called after a
-    /// successful Save so `is_dirty` reflects "diff against last save".
-    /// `saved` is the `Config` that actually reached the disk, not a
-    /// re-derivation of it: the fields are rehydrated from it so what the
-    /// user reads back is the stored text — the canonical hotkey spelling
-    /// rather than however they typed it.
     pub fn mark_clean(&mut self, saved: Config) {
         *self = Self::from_config(saved);
     }
 
-    /// Drive the autostart checkbox through the transactional rule. On
-    /// success, the form's `autostart` bool is flipped to `desired`; on
-    /// failure, the bool is left as it was, and the caller surfaces the
-    /// error string. `persist` is the same persistence closure the form's
-    /// Save uses (native = file write, WASM = localStorage).
     pub fn toggle_autostart<F>(
         &mut self,
         provider: &dyn AutostartProvider,
@@ -217,28 +122,19 @@ impl SettingsForm {
     where
         F: FnOnce(&Config) -> Result<(), ConfigError>,
     {
-        // The transactional rule mutates a Config-shaped buffer. We feed it
-        // the baseline with only the autostart bit taken from the form, so a
-        // successful toggle persists ONLY the autostart change — the other
-        // fields aren't half-saved without the user clicking Save.
         let mut staged = self.original.clone();
         staged.autostart = self.autostart;
         apply_autostart(provider, &mut staged, desired, persist)?;
-        // Provider + persist both succeeded; reflect into the form + baseline.
         self.autostart = desired;
         self.original.autostart = desired;
         Ok(())
     }
 }
 
-/// Validation failure modes for [`SettingsForm::to_config`]. Each variant
-/// carries the underlying parse error so the banner can show the offending
-/// input verbatim.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SettingsValidationError {
     Interval(IntervalError),
     Hotkey(hotkey::ParseError),
-    /// The sprite row's numbers; each carries the trimmed input.
     SpriteX(String),
     SpriteY(String),
     CardWidth(String),
@@ -248,9 +144,6 @@ impl std::fmt::Display for SettingsValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SettingsValidationError::Interval(e) => write!(f, "{e}"),
-            // The parse error says what is wrong with the string; this adds
-            // what a correct one looks like, so the refusal and the remedy
-            // are read together (§9 Saving).
             SettingsValidationError::Hotkey(e) => write!(f, "{e}. {}", hotkey::VOCABULARY),
             SettingsValidationError::SpriteX(_) => {
                 f.write_str("Sprite X must be a whole number of points")
@@ -267,10 +160,6 @@ impl std::fmt::Display for SettingsValidationError {
 
 impl std::error::Error for SettingsValidationError {}
 
-/// Parse the literal interval text against [`config::valid_interval_minutes`].
-/// Whitespace tolerated. Unlike the popup's interval parser, we DON'T fall
-/// back silently on empty / unparseable — the settings UI is the place to
-/// surface the error, not to paper over it.
 pub fn parse_interval_minutes(text: &str) -> Result<f64, IntervalError> {
     let trimmed = text.trim();
     let n: f64 = trimmed.parse().map_err(|_| IntervalError {
@@ -284,9 +173,6 @@ pub fn parse_interval_minutes(text: &str) -> Result<f64, IntervalError> {
     Ok(n)
 }
 
-/// A whole number of points, optionally signed: `^-?\d+$` on the trimmed
-/// text, nothing looser. Strict like the interval — the settings window is
-/// where a typo is surfaced, not papered over.
 fn parse_points(text: &str) -> Option<i32> {
     let trimmed = text.trim();
     let digits = trimmed.strip_prefix('-').unwrap_or(trimmed);
@@ -296,8 +182,6 @@ fn parse_points(text: &str) -> Option<i32> {
     trimmed.parse().ok()
 }
 
-/// Render an f64 as the text we put in the interval field. Whole numbers
-/// print without a trailing `.0`; fractions keep their actual value.
 fn format_interval(n: f64) -> String {
     if n.fract() == 0.0 && n.is_finite() {
         format!("{}", n as i64)
@@ -306,32 +190,10 @@ fn format_interval(n: f64) -> String {
     }
 }
 
-// =============================================================================
-// eframe shell — render & event-loop layer. Cross-platform so it compiles on
-// native AND wasm32; the *callers* differ (native main spawns it as a
-// dedicated process, wasm boots it via the URL query branch in lib.rs).
-// =============================================================================
-
-/// The hotkey row's recorder: the pure table, the row's own hint line, and
-/// the key source that feeds it.
-///
-/// It owns no copy of the field and nothing it would have to remember at arm
-/// time — every cancelling path reads [`SettingsForm::saved_hotkey`]. What it
-/// does own is the arming of the source, because arming is what makes keys
-/// stop reaching the window and the two must not be able to disagree: the
-/// state changes and the source is told, in one place.
 pub struct HotkeyRecorder {
     state: Recorder,
-    /// The line under the row while armed. `None` when idle, where the row
-    /// shows the standing vocabulary instead.
     hint: Option<String>,
-    /// `None` on a platform with no key source — Windows and the browser
-    /// build. The row then renders exactly the typed field it always had, with
-    /// no Record button, because a button that cannot record is worse than no
-    /// button.
     source: Option<Box<dyn EdgeSource>>,
-    /// Last frame's focus, so the *transition* can be turned into one
-    /// `FocusLost` input rather than an input per unfocused frame.
     was_focused: bool,
 }
 
@@ -345,7 +207,6 @@ impl HotkeyRecorder {
         }
     }
 
-    /// Whether this platform can record at all.
     pub fn available(&self) -> bool {
         self.source.is_some()
     }
@@ -354,15 +215,10 @@ impl HotkeyRecorder {
         self.state == Recorder::Armed
     }
 
-    /// The line to show under the row: the prompt, or the refusal that names
-    /// the key that was pressed.
     pub fn hint(&self) -> Option<&str> {
         self.hint.as_deref()
     }
 
-    /// Put one input through the table and keep the row's own state in step
-    /// with the answer. The returned effect is the caller's — it is the only
-    /// thing that touches the field.
     pub fn feed(&mut self, input: &Input) -> Effect {
         let (next, effect) = recorder::step(self.state, input);
         if next != self.state {
@@ -378,9 +234,6 @@ impl HotkeyRecorder {
         effect
     }
 
-    /// Everything that arrived since the last frame, in order: the focus
-    /// transition first, then each press edge, each already judged by the
-    /// source that produced it.
     pub fn pump(&mut self, focused: bool) -> Vec<Effect> {
         let mut effects = Vec::new();
         if self.was_focused && !focused {
@@ -388,9 +241,6 @@ impl HotkeyRecorder {
         }
         self.was_focused = focused;
 
-        // Classified by the source, before the table sees it: whether a key
-        // is bindable is decided outside the table and handed in already
-        // answered.
         let verdicts: Vec<Verdict> = match self.source.as_mut() {
             Some(source) => source
                 .drain()
@@ -406,54 +256,30 @@ impl HotkeyRecorder {
     }
 }
 
-/// Persistence closure: native writes to disk, WASM writes to localStorage.
-/// Boxed so the SettingsApp can hold one across the run loop without a
-/// generic parameter on the App impl (eframe::App is dyn-friendly that way).
 pub type PersistFn = Box<dyn FnMut(&Config) -> Result<(), ConfigError> + Send>;
 
-/// The §10 PNG check Save runs on an enabled sprite: `Err` is the reason the
-/// window shows. Native injects `sprite_png::check_sprite_file`; the browser
-/// build, with no file access, injects a check that accepts everything.
 pub type SpriteCheckFn = Box<dyn Fn(&Path) -> Result<(), String> + Send>;
 
-/// Who else holds a combination, in one line, or `None` when nothing the
-/// platform can see does — the warning a successful save shows (§5). Native
-/// injects `platform::hotkey_conflict`, which asks the OS; the browser build
-/// and the headless tests inject a check that knows of no one, so a save in
-/// a test registers nothing on the machine running it.
 pub type ConflictFn = Box<dyn Fn(&Hotkey) -> Option<String> + Send>;
 
-/// What the settings window needs from whoever opens it: the OS side of the
-/// autostart checkbox, where a save goes, how an enabled sprite's PNG is
-/// checked, and who else holds a combination. The window itself touches no
-/// registry, file or OS table — all of that comes through here.
 pub struct SettingsHost {
     pub provider: Box<dyn AutostartProvider>,
     pub persist: PersistFn,
     pub sprite_check: SpriteCheckFn,
     pub conflict: ConflictFn,
-    /// The Updates group (§9). Absent from the browser build, which has no
-    /// exe to update.
     #[cfg(not(target_arch = "wasm32"))]
     pub updates: UpdateHost,
 }
 
-/// The update check: GitHub's latest release, or the reason the row shows.
-/// Shared rather than boxed, because it runs on a worker thread.
 #[cfg(not(target_arch = "wasm32"))]
 pub type CheckFn = std::sync::Arc<dyn Fn() -> Result<crate::update::Release, String> + Send + Sync>;
 
-/// `Update`'s install of a release, through the hand-off; `Ok` once the new
-/// version has started. Shared for the same reason as [`CheckFn`].
 #[cfg(not(target_arch = "wasm32"))]
 pub type InstallFn =
     std::sync::Arc<dyn Fn(&crate::update::Release) -> Result<(), String> + Send + Sync>;
 
-/// What the Updates row asks of the outside world: the check, `Update`'s
-/// install, and `Open release page`.
 #[cfg(not(target_arch = "wasm32"))]
 pub struct UpdateHost {
-    /// The version the row names and the check compares against.
     pub current: String,
     pub action: crate::update::Action,
     pub check: CheckFn,
@@ -463,8 +289,6 @@ pub struct UpdateHost {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl UpdateHost {
-    /// A row with no network behind it: every check fails, so a test never
-    /// reaches GitHub.
     pub fn offline() -> Self {
         Self {
             current: crate::update::CURRENT.to_string(),
@@ -475,8 +299,6 @@ impl UpdateHost {
         }
     }
 
-    /// The real one: GitHub, this platform's action, and on Windows the
-    /// install over the running exe with the hand-off to `tray_thread`.
     pub fn native(tray_thread: Option<u32>) -> Self {
         #[cfg(target_os = "windows")]
         let install: InstallFn = std::sync::Arc::new(move |release| {
@@ -484,7 +306,6 @@ impl UpdateHost {
                 std::env::current_exe().map_err(|e| format!("Could not replace Nudge: {e}"))?;
             crate::update::install_release(release, &exe, tray_thread)
         });
-        // Elsewhere the action opens the page; there is nothing to install.
         #[cfg(not(target_os = "windows"))]
         let install = {
             let _ = tray_thread;
@@ -501,12 +322,6 @@ impl UpdateHost {
 }
 
 impl SettingsHost {
-    /// A host with nothing behind it: a save succeeds without writing, every
-    /// sprite passes, and no one holds any combination — so a save here never
-    /// asks the OS, which would register a real hotkey on the machine running
-    /// the tests, from every test thread at once. The browser build and the
-    /// headless tests start from this and override what they need; the
-    /// native binary has no caller.
     pub fn headless(provider: Box<dyn AutostartProvider>) -> Self {
         Self {
             provider,
@@ -518,12 +333,6 @@ impl SettingsHost {
         }
     }
 
-    /// The host the native settings process runs on: this machine's autostart
-    /// provider, saves to `config_path` (the file the running app watches),
-    /// the §10 PNG check on the named file, and the platform's conflict
-    /// report (§5), and the update check (§9), whose Windows install asks
-    /// `tray_thread` to quit. `Err` when the provider cannot be constructed —
-    /// the window is then refused rather than opened over a fake.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn native(
         config_path: std::path::PathBuf,
@@ -543,17 +352,12 @@ impl SettingsHost {
     }
 }
 
-/// Save, as the form sees it: validate, check the sprite file when the
-/// sprite is on, write, rebaseline. `Ok` carries what reached the disk;
-/// `Err` the one line the window shows instead, and nothing was written.
 pub fn save_form(
     form: &mut SettingsForm,
     sprite_check: &SpriteCheckFn,
     persist: &mut PersistFn,
 ) -> Result<Config, String> {
     let cfg = form.to_config().map_err(|e| e.to_string())?;
-    // §9: an enabled sprite must be a usable PNG; a disabled one saves as
-    // typed, without touching the file at all.
     if cfg.sprite.enabled {
         sprite_check(Path::new(&cfg.sprite.path))?;
     }
@@ -562,16 +366,8 @@ pub fn save_form(
     Ok(cfg)
 }
 
-/// Put one effect into the form. The effect is the only thing that touches
-/// the field, and of the four exactly two do.
-///
-/// Free-standing rather than a method on the shell, so the replay tier drives
-/// the same code the window does instead of a copy of it that could drift.
-/// Returns whether a combination was *captured*.
 pub fn apply_effect(effect: &Effect, form: &mut SettingsForm) -> bool {
     match effect {
-        // A hint is the row's own line under the field; it changes no value,
-        // and the recorder is still armed behind it.
         Effect::Nothing | Effect::Hint(_) => false,
         Effect::Capture(hk) => {
             form.hotkey = hotkey::format_native(hk);
@@ -584,10 +380,6 @@ pub fn apply_effect(effect: &Effect, form: &mut SettingsForm) -> bool {
     }
 }
 
-/// The OS file picker for the sprite row. `None` when the user cancels — the
-/// field keeps what it had. Blocking, on the main thread, like the window
-/// itself.
-// TODO: Windows Browse… unverified on a desktop.
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 fn pick_sprite_file() -> Option<String> {
     rfd::FileDialog::new()
@@ -597,10 +389,6 @@ fn pick_sprite_file() -> Option<String> {
         .map(|p| p.display().to_string())
 }
 
-/// The form's text fields, by egui id. §9 "Return anywhere in the form is
-/// Save" is decided against this list: the focus is in the form when it is in
-/// one of these or nowhere at all, and a focused button keeps its own Return,
-/// which egui already makes a click.
 const ID_HOTKEY: &str = "settings_hotkey";
 const ID_INTERVAL: &str = "settings_interval";
 const ID_SPRITE_PATH: &str = "settings_sprite_path";
@@ -616,27 +404,16 @@ const FIELD_IDS: [&str; 6] = [
     ID_CARD_WIDTH,
 ];
 
-/// The settings window as an eframe::App. Owns the form state, the provider,
-/// and the persistence closure; renders the §9 form — three groups of rows,
-/// the message line, Cancel and Save.
 pub struct SettingsApp {
     form: SettingsForm,
     provider: Box<dyn AutostartProvider>,
     persist: PersistFn,
     sprite_check: SpriteCheckFn,
     conflict: ConflictFn,
-    /// The hotkey row's recorder — see [`HotkeyRecorder`].
     recorder: HotkeyRecorder,
-    /// Surfaced to the user above the buttons. Cleared on the next interaction.
     banner: Option<String>,
-    /// §9: a save that reached the file says so, beside the buttons, until
-    /// the first edit after it.
     saved: bool,
-    /// When set, the next frame ends the eframe loop. On native this exits
-    /// the dedicated settings process; on WASM it's a no-op (no process).
     quit_requested: bool,
-    /// The Updates row: its host, where its table stands, and the answer of
-    /// the job it is waiting on, if any.
     #[cfg(not(target_arch = "wasm32"))]
     updates: UpdateHost,
     #[cfg(not(target_arch = "wasm32"))]
@@ -656,14 +433,8 @@ impl SettingsApp {
         // same pin in NudgeApp::new).
         cc.egui_ctx.set_theme(eframe::egui::ThemePreference::Dark);
         cc.egui_ctx.set_visuals(eframe::egui::Visuals::dark());
-        // The hotkey row is the only place in the app that renders symbols
-        // outside egui's bundled faces, and on macOS every one of them
-        // (`⌃⌥⇧⌘⎋⇥⌫↩`) is missing from them.
         #[cfg(not(target_arch = "wasm32"))]
         crate::platform::install_native_fonts(&cc.egui_ctx);
-        // The creator closure is the one place with a live `NSApplication` on
-        // the main thread, which is what installing a key monitor needs — the
-        // same precondition the status item has.
         #[cfg(not(target_arch = "wasm32"))]
         let source = crate::platform::new_edge_source(&cc.egui_ctx);
         #[cfg(target_arch = "wasm32")]
@@ -671,8 +442,6 @@ impl SettingsApp {
         Self::with_source(config, host, source)
     }
 
-    /// [`SettingsApp::new`] with the recorder's key source handed in — what
-    /// lets a test arm the recorder with no platform behind it.
     pub fn with_source(
         config: Config,
         host: SettingsHost,
@@ -705,7 +474,6 @@ impl SettingsApp {
         }
     }
 
-    /// One input through the Updates row's table, and its effect run.
     #[cfg(not(target_arch = "wasm32"))]
     fn feed_update(&mut self, input: crate::update::Input, ctx: &egui::Context) {
         use crate::update::{Effect, Input};
@@ -731,8 +499,6 @@ impl SettingsApp {
         }
     }
 
-    /// Run `job` off the UI thread; its answer is fed back on the frame it
-    /// wakes.
     #[cfg(not(target_arch = "wasm32"))]
     fn spawn_update_job(
         &mut self,
@@ -748,7 +514,6 @@ impl SettingsApp {
         self.update_job = Some(rx);
     }
 
-    /// The answer of the job the row is waiting on, once it has one.
     #[cfg(not(target_arch = "wasm32"))]
     fn poll_update_job(&mut self, ctx: &egui::Context) {
         let answer = self.update_job.as_ref().map(|rx| rx.try_recv());
@@ -762,38 +527,25 @@ impl SettingsApp {
         }
     }
 
-    /// Apply everything the recorder produced this frame.
     fn apply_recorder_effects(&mut self, focused: bool) {
         for effect in self.recorder.pump(focused) {
             self.apply_recorder_effect(&effect);
         }
     }
 
-    /// The one place a recorder effect reaches the window: the field through
-    /// [`apply_effect`], and the banner, which a capture answers.
     fn apply_recorder_effect(&mut self, effect: &Effect) {
         if apply_effect(effect, &mut self.form) {
             self.banner = None;
         }
     }
 
-    /// Save path, for the button and for Return alike: [`save_form`], then
-    /// the `Saved` note or the banner.
     fn save(&mut self) {
-        // §9: Save is live only while the form differs from the file — the
-        // one gate for the button and the key, so a greyed button and a
-        // Return on a clean form mean the same nothing.
         if !self.form.is_dirty() {
             return;
         }
         match save_form(&mut self.form, &self.sprite_check, &mut self.persist) {
             Ok(saved) => {
                 self.saved = true;
-                // Who else holds it is a warning next to a successful save,
-                // never a refusal: the OS accepts a taken combination and
-                // registers it, it simply never fires. That is a different
-                // thing from the *unregistrable* one §5 blocks the save on,
-                // which never gets this far.
                 self.banner = hotkey::parse(&saved.hotkey)
                     .ok()
                     .and_then(|hk| (self.conflict)(&hk))
@@ -803,12 +555,7 @@ impl SettingsApp {
         }
     }
 
-    /// Autostart checkbox: route through apply_autostart so the system
-    /// confirms before the form bool flips.
     fn apply_autostart_toggle(&mut self, desired: bool) {
-        // Borrow split: pull the persist closure out by reference. We need
-        // `&mut self.persist` inside the closure, so we shadow it with a
-        // local FnOnce wrapper.
         let persist = &mut self.persist;
         let result = self
             .form
@@ -826,55 +573,27 @@ impl SettingsApp {
     }
 }
 
-// §9 "Window chrome and layout", in points. The spec's layout numbers are
-// these, and the window's inner size is what they add up to.
-
-/// The window's inner size: the form at this width, measured — its last
-/// row's bottom plus the margin (`settings_form_adds_up_to_the_window` in
-/// tests/kittest_card.rs pins the sum).
 pub const WINDOW_SIZE: [f32; 2] = [560.0, 625.0];
 
-/// The Updates row's status, at most this wide: its longest reason is
-/// clipped, so the version and the button keep their places.
 #[cfg(not(target_arch = "wasm32"))]
 const UPDATE_STATUS_WIDTH: f32 = 270.0;
 
-/// The form's inset from the window's edge, every side.
 pub const MARGIN: i8 = 20;
-/// A row's text and controls, inset from its box's border.
 const ROW_PAD: i8 = 12;
-/// A row is at least this tall; the controls sit centred in it.
 const ROW_HEIGHT: f32 = 44.0;
-/// A group box's corners.
 const GROUP_RADIUS: u8 = 10;
-/// The hairline between rows, and the group's border.
 const HAIRLINE: f32 = 1.0;
-/// Between the hotkey group and its footnote.
 const FOOTNOTE_GAP: f32 = 8.0;
-/// The footnote's text: a step under the body's 13 pt, still readable at
-/// one pixel per point — egui's own Small, at 9 pt, is not.
 const FOOTNOTE_SIZE: f32 = 12.0;
-/// Between groups, and on either side of the message line.
 const GROUP_GAP: f32 = 20.0;
-/// The message line, reserved whether or not it has anything to say. The
-/// longest message — a bare key, refused with the vocabulary after it — is
-/// four rows of body text at the form's width, 60 pt; this leaves it air.
-/// Nothing a message quotes can make it longer: what it echoes of the user's
-/// text is bounded ([`hotkey::echoed`]).
 const BANNER_HEIGHT: f32 = 64.0;
-/// A message is a warning and reads as one: amber, not the body's white.
 const BANNER_COLOR: egui::Color32 = egui::Color32::from_rgb(251, 191, 36);
-/// The hotkey field; the interval and position fields.
 const HOTKEY_FIELD_WIDTH: f32 = 200.0;
 const NUMBER_FIELD_WIDTH: f32 = 72.0;
-/// Cancel and Save, and the gap between them and the `Saved` note.
 const BUTTON_SIZE: egui::Vec2 = egui::vec2(72.0, 30.0);
 const BUTTON_GAP: f32 = 12.0;
-/// Save's fill: the one filled button, dimmed rather than recoloured while
-/// greyed.
 const SAVE_FILL: egui::Color32 = egui::Color32::from_rgb(79, 70, 229);
 
-/// A rounded group box: one step lighter than the window, a hairline border.
 fn group(ui: &mut egui::Ui, rows: impl FnOnce(&mut egui::Ui)) {
     let visuals = ui.visuals().clone();
     egui::Frame::new()
@@ -890,8 +609,6 @@ fn group(ui: &mut egui::Ui, rows: impl FnOnce(&mut egui::Ui)) {
         });
 }
 
-/// A group's footnote: small, weak text under its box, wrapped at the form's
-/// width.
 fn footnote(ui: &mut egui::Ui, text: &str) {
     ui.add_space(FOOTNOTE_GAP);
     egui::Frame::new()
@@ -901,7 +618,6 @@ fn footnote(ui: &mut egui::Ui, text: &str) {
         });
 }
 
-/// The hairline between two rows of a group, border to border.
 fn hairline(ui: &mut egui::Ui) {
     let (rect, _) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), HAIRLINE),
@@ -917,8 +633,6 @@ fn hairline(ui: &mut egui::Ui) {
     );
 }
 
-/// `contents`, drawn at the toolkit's disabled opacity when `dim` — the
-/// disabled look without the disabling: it still takes input.
 fn dimmed(ui: &mut egui::Ui, dim: bool, contents: impl FnOnce(&mut egui::Ui)) {
     ui.scope(|ui| {
         if dim {
@@ -928,9 +642,6 @@ fn dimmed(ui: &mut egui::Ui, dim: bool, contents: impl FnOnce(&mut egui::Ui)) {
     });
 }
 
-/// A row: its text at the left, then `rest` over what is left of it, laid
-/// out left to right at the row's height; `rest` is handed the text's
-/// response, for a control the text labels.
 fn row_with(ui: &mut egui::Ui, text: &str, rest: impl FnOnce(&mut egui::Ui, &egui::Response)) {
     egui::Frame::new()
         .inner_margin(egui::Margin::symmetric(ROW_PAD, 0))
@@ -947,16 +658,12 @@ fn row_with(ui: &mut egui::Ui, text: &str, rest: impl FnOnce(&mut egui::Ui, &egu
         });
 }
 
-/// A row whose `controls` end at the right edge, added in reading order so
-/// the Tab order is the visual one.
 fn row(ui: &mut egui::Ui, text: &str, id_salt: &str, controls: impl FnOnce(&mut egui::Ui)) {
     row_with(ui, text, |ui, _| {
         right_aligned(ui, id_salt, ROW_HEIGHT, controls)
     });
 }
 
-/// A row whose control is a checkbox at the right; the row's text is its
-/// label — to a screen reader too. Whether the box was clicked.
 fn checkbox_row(ui: &mut egui::Ui, text: &str, checked: &mut bool) -> bool {
     let mut changed = false;
     row_with(ui, text, |ui, label| {
@@ -964,8 +671,6 @@ fn checkbox_row(ui: &mut egui::Ui, text: &str, checked: &mut bool) -> bool {
             let checkbox = ui
                 .add(egui::Checkbox::without_text(checked))
                 .labelled_by(label.id);
-            // A textless checkbox reports an empty label, which stands in
-            // front of the relation; so the text is set on the node too.
             ui.ctx()
                 .accesskit_node_builder(checkbox.id, |node| node.set_label(text));
             changed = checkbox.changed();
@@ -974,11 +679,6 @@ fn checkbox_row(ui: &mut egui::Ui, text: &str, checked: &mut bool) -> bool {
     changed
 }
 
-/// `contents` laid out left to right but ending at the right edge of the
-/// space left, `height` tall. egui places left to right or right to left,
-/// and right to left would reverse the Tab order; so the contents' width is
-/// remembered from the last pass and the pass redone when it changes, the
-/// way egui's own `Grid` sizes its columns.
 fn right_aligned(
     ui: &mut egui::Ui,
     id_salt: &str,
@@ -1010,7 +710,6 @@ fn right_aligned(
     );
 }
 
-/// Where a remembered width lives: one window, so the salt alone names it.
 fn width_id(id_salt: &str) -> egui::Id {
     egui::Id::new(("settings width", id_salt))
 }
@@ -1019,8 +718,6 @@ fn remembered_width(ui: &egui::Ui, id: egui::Id) -> Option<f32> {
     ui.data(|d| d.get_temp::<f32>(id))
 }
 
-/// Keep `width` for the next pass; a change asks for that pass now, before
-/// anything is painted.
 fn remember_width(ui: &egui::Ui, id: egui::Id, width: f32) {
     if remembered_width(ui, id).is_none_or(|w| (w - width).abs() > 0.5) {
         ui.data_mut(|d| d.insert_temp(id, width));
@@ -1035,20 +732,11 @@ impl eframe::App for SettingsApp {
         let ctx_owned = root_ui.ctx().clone();
         let ctx = &ctx_owned;
 
-        // What the form held when the frame began: §9 takes the `Saved` note
-        // away on the first edit after a save, and an edit is the form
-        // differing at the end of the frame from this — whichever row, key,
-        // click or capture made it differ.
         let before = self.form.clone();
 
-        // Everything the keyboard did since the last frame, before anything is
-        // drawn — so a press and the field it changes land in the same frame.
         let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
         self.apply_recorder_effects(focused);
 
-        // Esc closes the window. While armed it never gets here: the key
-        // source swallows what it reports, which is the same reason ⌘C does
-        // not copy and Tab does not move the focus.
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.quit_requested = true;
         }
@@ -1056,19 +744,11 @@ impl eframe::App for SettingsApp {
             self.quit_requested = true;
         }
 
-        // §9 "Window chrome and layout": three groups of rows in rounded
-        // boxes, a hairline between rows; in every row the text at the left,
-        // the control at the right edge; the vocabulary as the hotkey group's
-        // footnote; a message line that keeps its height above the buttons;
-        // Cancel, then Save — the one filled button — at the bottom right.
-        // Nothing repeats the title: the title bar carries it.
         let armed = self.recorder.is_armed();
         let mut autostart_toggle: Option<bool> = None;
         let mut save_clicked = false;
         #[cfg(not(target_arch = "wasm32"))]
         let mut update_pressed = false;
-        // The answer of a check or an install that finished since the last
-        // frame, before the row is drawn with it.
         #[cfg(not(target_arch = "wasm32"))]
         self.poll_update_job(ctx);
 
@@ -1077,13 +757,8 @@ impl eframe::App for SettingsApp {
             .show(root_ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
 
-                // Group 1: the hotkey — typed in the §5 grammar, or pressed.
                 group(ui, |ui| {
                     row(ui, "Global hotkey", "hotkey", |ui| {
-                        // Armed, the field is not shown at all: it holds the
-                        // *saved* value until a press replaces it, and a text
-                        // box under a "press a combination" prompt reads as
-                        // somewhere to type.
                         if armed {
                             ui.label(
                                 egui::RichText::new(recorder::PROMPT)
@@ -1098,8 +773,6 @@ impl eframe::App for SettingsApp {
                                     .hint_text(hotkey::format_native(&hotkey::default_hotkey())),
                             );
                         }
-                        // No button at all where nothing can record — a Record
-                        // button that cannot record is worse than none.
                         if self.recorder.available() {
                             let label = if armed { "Cancel" } else { "Record" };
                             if ui.button(label).clicked() {
@@ -1110,14 +783,9 @@ impl eframe::App for SettingsApp {
                         }
                     });
                 });
-                // The group's footnote: while armed, what the recorder has to
-                // say — the prompt, or a refusal naming the key. Otherwise
-                // what may be typed, which is standing information rather
-                // than an error message: this is how a hotkey is set.
                 footnote(ui, self.recorder.hint().unwrap_or(hotkey::VOCABULARY));
                 ui.add_space(GROUP_GAP);
 
-                // Group 2: the interval and autostart.
                 group(ui, |ui| {
                     row(ui, "Default interval", "interval", |ui| {
                         ui.add(
@@ -1129,12 +797,6 @@ impl eframe::App for SettingsApp {
                         ui.label(egui::RichText::new("min").weak());
                     });
                     hairline(ui);
-                    // Each OS has its own name for this and its own mechanism
-                    // behind it — a Run key on Windows, a LaunchAgent on
-                    // macOS. Naming the wrong one is not cosmetic: it is the
-                    // label on the control that decides whether the user
-                    // believes the setting applies to them. The toggle goes
-                    // through the transactional rule after the frame.
                     #[cfg(target_os = "macos")]
                     let label = "Open at login";
                     #[cfg(not(target_os = "macos"))]
@@ -1146,18 +808,12 @@ impl eframe::App for SettingsApp {
                 });
                 ui.add_space(GROUP_GAP);
 
-                // Group 3: the §10 sprite — on/off, the PNG, where it sits and
-                // how wide the card is under it. The file is checked on Save,
-                // not here. §9: while it is off the two rows under the
-                // checkbox are dimmed, the hairlines between them not.
                 group(ui, |ui| {
                     checkbox_row(ui, "Sprite", &mut self.form.sprite_enabled);
                     let off = !self.form.sprite_enabled;
                     hairline(ui);
                     dimmed(ui, off, |ui| {
                         row_with(ui, "PNG", |ui, _| {
-                            // The path field takes what the row leaves after the
-                            // button, so the two end at the row's right edge.
                             let field_width = ui.available_width()
                                 - remembered_width(ui, width_id("browse"))
                                     .map_or(0.0, |w| w + ui.spacing().item_spacing.x);
@@ -1167,10 +823,6 @@ impl eframe::App for SettingsApp {
                                     .desired_width(field_width)
                                     .hint_text("Path to a PNG with a transparent background"),
                             );
-                            // A native file dialog takes the focus, which would
-                            // end a recording anyway; not offering it while armed
-                            // keeps the two from racing. The browser build has no
-                            // dialog at all.
                             #[cfg(any(target_os = "windows", target_os = "macos"))]
                             {
                                 let browse = ui.add_enabled(!armed, egui::Button::new("Browse…"));
@@ -1184,8 +836,6 @@ impl eframe::App for SettingsApp {
                         })
                     });
                     hairline(ui);
-                    // §10: the three are in points; the unit is said once, on
-                    // the row.
                     dimmed(ui, off, |ui| {
                         row(ui, "Position (pt)", "position", |ui| {
                             for (name, text, id, hint) in [
@@ -1221,10 +871,6 @@ impl eframe::App for SettingsApp {
                 });
                 ui.add_space(GROUP_GAP);
 
-                // Group 4: the running version and the update check — a
-                // button, never a background check, and a footnote that says
-                // where it looks (§9 "Updates"). The browser build has no exe
-                // to update and no group.
                 #[cfg(not(target_arch = "wasm32"))]
                 {
                     let version = format!("Nudge {}", self.updates.current);
@@ -1249,12 +895,6 @@ impl eframe::App for SettingsApp {
                     ui.add_space(GROUP_GAP);
                 }
 
-                // The message line: reserved, so the window never changes
-                // size. What it says sits right above the buttons; empty, it
-                // is the gap before them. A sprite refusal is a message like
-                // any other and lands here too. The line is allocated first
-                // and the message painted into it afterwards, clipped to it:
-                // the form's shape is the line's, never the message's.
                 let (line, _) = ui.allocate_exact_size(
                     egui::vec2(ui.available_width(), BANNER_HEIGHT),
                     egui::Sense::hover(),
@@ -1270,8 +910,6 @@ impl eframe::App for SettingsApp {
                 }
                 ui.add_space(GROUP_GAP);
 
-                // Cancel, then Save, at the bottom right, the `Saved` note to
-                // their left.
                 right_aligned(ui, "buttons", BUTTON_SIZE.y, |ui| {
                     ui.spacing_mut().item_spacing.x = BUTTON_GAP;
                     if self.saved {
@@ -1283,8 +921,6 @@ impl eframe::App for SettingsApp {
                     {
                         self.quit_requested = true;
                     }
-                    // Greyed while nothing differs from the file (§9): the
-                    // same fill, dimmed.
                     save_clicked = ui
                         .add_enabled(
                             self.form.is_dirty(),
@@ -1310,14 +946,6 @@ impl eframe::App for SettingsApp {
             self.saved = false;
         }
 
-        // §9: Return anywhere in the form is Save. "In the form" is the focus
-        // in one of the fields or nowhere; a focused button or checkbox keeps
-        // its own Return, which egui already makes a click. While the recorder
-        // is armed the key is the recorder's — a press, not a save.
-        // TODO: §9 "a Return that ends an input-method composition is the
-        // composition's" is unverified here — whether winit reports that
-        // Return as a key press at all is unmeasured; the Electron window
-        // pins it.
         let return_in_the_form = !armed
             && ctx.input(|i| i.key_pressed(egui::Key::Enter))
             && ctx
@@ -1349,7 +977,6 @@ mod tests {
         }
     }
 
-    /// `Alt+J` in this platform's spelling — `⌥J` on macOS.
     fn native(label: &str) -> String {
         crate::hotkey::format_native(&crate::hotkey::parse(label).unwrap())
     }
@@ -1365,9 +992,6 @@ mod tests {
 
     #[test]
     fn a_config_written_elsewhere_is_shown_in_this_platforms_spelling() {
-        // Hand-edited files and configs seeded by the other platform's build
-        // both arrive spelled the other way. Showing them verbatim would make
-        // the field the one place in the window that is not native.
         let f = SettingsForm::from_config(cfg_with("  alt + j  ", 10.0, false));
         assert_eq!(f.hotkey, native("Alt+J"));
         assert!(
@@ -1378,15 +1002,12 @@ mod tests {
 
     #[test]
     fn an_unparseable_stored_hotkey_is_shown_exactly_as_stored() {
-        // It is the only copy of what the user typed, and the field is where
-        // they have to fix it.
         let f = SettingsForm::from_config(cfg_with("Ctrl+Hoem", 10.0, false));
         assert_eq!(f.hotkey, "Ctrl+Hoem");
     }
 
     #[test]
     fn fractional_interval_renders_without_trailing_zero_noise() {
-        // 0.5 → "0.5", not "0.5000000".
         let f = SettingsForm::from_config(cfg_with("Ctrl+Shift+Space", 0.5, false));
         assert_eq!(f.interval_text, "0.5");
     }
@@ -1422,8 +1043,6 @@ mod tests {
 
     #[test]
     fn parse_interval_minutes_rejects_garbage() {
-        // Unlike the popup parser, the settings field is the user's
-        // configured value; we MUST surface garbage, never silently fall back.
         for bad in ["", "abc", "0", "-5", "NaN", "Infinity"] {
             assert!(
                 parse_interval_minutes(bad).is_err(),
@@ -1456,9 +1075,6 @@ mod tests {
 
     #[test]
     fn to_config_canonicalises_however_the_hotkey_was_typed() {
-        // Whitespace, case and the choice of spelling are user noise. One
-        // combination gets one representation on disk, whichever of the
-        // accepted forms was typed.
         let canonical = crate::hotkey::format_native(&crate::hotkey::parse("Alt+J").unwrap());
         for typed in ["  Alt+J  ", "alt+j", "Option+J", "⌥J"] {
             let mut f = SettingsForm::from_config(Config::default());
@@ -1473,9 +1089,6 @@ mod tests {
 
     #[test]
     fn a_hotkey_that_cannot_be_registered_blocks_the_save() {
-        // The field is free text, so it is the only place an unregistrable
-        // combination can enter the config. Letting it through means the
-        // banner says "Saved" and the next launch has no hotkey.
         for typed in ["Ctrl+Hoem", "Ctrl+Shift", "", "   ", "Ctrl+A+B"] {
             let mut f = SettingsForm::from_config(Config::default());
             f.hotkey = typed.to_string();
@@ -1491,8 +1104,6 @@ mod tests {
 
     #[test]
     fn the_hotkey_error_names_both_the_fault_and_the_vocabulary() {
-        // The banner is where a user learns what they may type; the parse
-        // error alone says only what went wrong.
         let mut f = SettingsForm::from_config(Config::default());
         f.hotkey = "Ctrl+Shift".to_string();
         let shown = f.to_config().unwrap_err().to_string();
@@ -1515,10 +1126,6 @@ mod tests {
 
     #[test]
     fn after_a_save_the_field_shows_what_was_stored() {
-        // The user types one of the accepted spellings; the file gets the
-        // canonical one. If the field kept the typed text, the form would
-        // read as dirty the moment it was saved, and Cancel would look like
-        // it was discarding a change that had already happened.
         let mut f = SettingsForm::from_config(Config::default());
         f.hotkey = "option+cmd+j".to_string();
         let saved = f.to_config().unwrap();
@@ -1529,8 +1136,6 @@ mod tests {
 
     #[test]
     fn toggle_autostart_success_flips_form_and_persists() {
-        // Provider OK + persist OK: form bool flips, baseline tracks it,
-        // persisted config carries the new value.
         let provider = FakeProvider::new(false);
         let mut f = SettingsForm::from_config(Config::default());
         let saved = std::cell::RefCell::new(None);
@@ -1563,8 +1168,6 @@ mod tests {
 
     #[test]
     fn to_config_carries_the_sprite_block() {
-        // The sprite group's fields round-trip; Save must not delete the
-        // block a hand-edited file carries.
         let f = SettingsForm::from_config(Config {
             sprite: sprite_on(),
             ..Config::default()
@@ -1597,8 +1200,6 @@ mod tests {
 
     #[test]
     fn toggle_autostart_backend_failure_leaves_form_untouched() {
-        // Registry fails: the form bool MUST NOT flip — otherwise the UI
-        // would lie about the OS state.
         let provider = FakeProvider::failing_enable();
         let mut f = SettingsForm::from_config(Config::default());
         let saved = std::cell::RefCell::new(None);
@@ -1615,17 +1216,8 @@ mod tests {
         assert!(saved.borrow().is_none(), "persist never called");
     }
 
-    // === the hotkey row's recorder ==========================================
-    //
-    // Buttons and focus only. Not one of these feeds a key: what a keypress
-    // does is asserted against streams a keyboard actually produced, in
-    // `tests/hotkey_replay.rs`, and a hand-written key event here would be the
-    // suite that passes while the recorder is dead.
-
     #[test]
     fn a_platform_with_no_key_source_shows_no_record_button() {
-        // Windows and the browser build. The row is the typed field it always
-        // was — a Record button that cannot record is worse than none.
         let row = HotkeyRecorder::new(None);
         assert!(!row.available());
         assert!(!row.is_armed());
@@ -1646,9 +1238,6 @@ mod tests {
 
     #[test]
     fn cancelling_restores_the_saved_hotkey_over_a_typed_edit() {
-        // The field may hold something the user typed and never saved. Cancel
-        // has one meaning, and that edit goes with it — which is exactly why
-        // the recorder remembers nothing when it arms.
         let mut form = SettingsForm::from_config(cfg_with("Ctrl+Shift+Space", 10.0, false));
         form.hotkey = "Alt+Q".to_string();
         let mut row = HotkeyRecorder::new(None);
@@ -1663,9 +1252,6 @@ mod tests {
 
     #[test]
     fn losing_the_focus_ends_the_recording() {
-        // *Which* shortcut took the focus is not observable — macOS eats ⌘Tab
-        // and ⌘Space before any app sees them — so the transition is the whole
-        // signal, and it fires once rather than every unfocused frame.
         let mut row = HotkeyRecorder::new(None);
         row.feed(&Input::Record);
         assert_eq!(row.pump(false), vec![Effect::Restore]);
@@ -1679,9 +1265,6 @@ mod tests {
 
     #[test]
     fn parse_settings_arg_recognises_the_flag() {
-        // Present anywhere in the arg list → true; absent → false. We
-        // intentionally don't require positional ordering since the tray
-        // spawn passes only the flag and tests may add scaffolding args.
         assert!(parse_settings_arg(["--settings"]));
         assert!(parse_settings_arg(["nudge.exe", "--settings"]));
         assert!(parse_settings_arg(["--config", "/x.json", "--settings"]));
@@ -1695,7 +1278,6 @@ mod tests {
 
     #[test]
     fn the_tray_thread_is_the_number_after_its_flag() {
-        // §9 Updates: the tray says which thread an update's quit goes to.
         assert_eq!(
             parse_tray_thread_arg(["--settings", "--tray-thread", "4242"]),
             Some(4242)
@@ -1707,9 +1289,6 @@ mod tests {
 
     #[test]
     fn toggle_autostart_persist_failure_surfaces_but_os_still_changed() {
-        // The OS change stuck and was confirmed; only the disk write failed.
-        // form.autostart MUST NOT flip — otherwise the UI claims a state
-        // the persisted config doesn't carry.
         let provider = FakeProvider::new(false);
         let mut f = SettingsForm::from_config(Config::default());
 
@@ -1726,8 +1305,6 @@ mod tests {
         assert!(provider.is_enabled().unwrap(), "OS change still happened");
         assert!(!f.autostart, "form bool not flipped on persist failure");
     }
-
-    // === the sprite row (port of electron/tests/unit/settingsForm.test.ts) ===
 
     fn sprite_cfg() -> Config {
         Config {
@@ -1842,7 +1419,6 @@ mod tests {
 
     #[test]
     fn validation_order_is_hotkey_interval_x_y_width() {
-        // §9: one field is reported per refused save, the first in row order.
         let mut f = SettingsForm::from_config(Config::default());
         f.hotkey = "Ctrl+Shift".to_string();
         f.interval_text = "x".to_string();
@@ -1889,8 +1465,6 @@ mod tests {
         assert_eq!([f.sprite_path, f.sprite_x_text], ["/x.png", "7"]);
     }
 
-    // === Save: the PNG check sits between validation and the write =========
-
     fn recording_persist() -> (PersistFn, std::sync::Arc<std::sync::Mutex<Vec<Config>>>) {
         let persisted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let writer = std::sync::Arc::clone(&persisted);
@@ -1935,11 +1509,6 @@ mod tests {
         assert!(!f.is_dirty());
     }
 
-    // === §9 Saving: Save is live only while the form differs from the file ==
-
-    /// §9 Saving: "a form that reads as unedited is one whose content is on
-    /// disk" — what the form compares against after a save is what the
-    /// closure was handed, not what was typed.
     #[test]
     fn a_save_that_reached_the_file_leaves_nothing_to_save() {
         let check: SpriteCheckFn = Box::new(|_: &Path| Ok(()));
@@ -1962,9 +1531,6 @@ mod tests {
         );
     }
 
-    /// §9 Saving: "`Save` is live only while the form differs from the file"
-    /// — a refused save changes nothing on disk, so the form still differs
-    /// and Save stays live.
     #[test]
     fn a_refused_save_leaves_the_form_dirty() {
         let check: SpriteCheckFn = Box::new(|_: &Path| Ok(()));

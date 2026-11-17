@@ -1,52 +1,7 @@
-//! A full-screen checkerboard to put *behind* the popup while a native test
-//! photographs it.
-//!
-//! Why a controlled background is needed at all: every defect of a
-//! see-through surface is differential against what is behind it. Over a
-//! smooth desktop, "the card blurs its backdrop", "the card merely dims it"
-//! and "the card is opaque" all produce the same picture, so a capture taken
-//! over the developer's wallpaper cannot fail for those causes and carries no
-//! evidence about them.
-//!
-//! A checkerboard separates them, because alpha and blur act on different
-//! things. Alpha scales the checker's contrast but leaves its edges where they
-//! are; a blur destroys the edges and collapses the squares toward their mean.
-//! So the discriminating measurement is high-spatial-frequency energy behind
-//! the card versus beside it — see `card_is_frosted_glass_not_a_tinted_pane` in
-//! `tests/macos_native.rs`. Cells are deliberately small relative to the
-//! card's blur radius: a checker coarser than the radius survives blurring and
-//! would make a correct render look like a failure.
-//!
-//! Two patterns, because one is not enough to pin the surface down. The
-//! checkerboard shows whether the backdrop's *detail* survives; running again
-//! against a flat dark field and comparing the card's tone shows whether the
-//! backdrop reaches it at all. Without the second, an opaque card passes the
-//! first trivially — it too destroys every trace of the checker.
-//!
-//! A third pattern, `light`, is a flat bright field. It exists for measuring
-//! what the app draws *outside* the card — a shadow's falloff has no signal
-//! against a checkerboard, whose own cell edges dwarf it, nor against a dark
-//! field, which a dark shadow cannot darken further.
-//!
-//! Run: `cargo run --example control_backdrop [checker|dark|light]` (Esc or SIGTERM
-//! to quit; `checker` is the default). It takes no focus, so launching it
-//! before the app under test does not trigger the popup's focus-loss
-//! dismissal (spec §4).
-//!
-//! The window paints its first frame at the default size and only then
-//! resizes to the monitor, and anything the OS puts above it (a system alert)
-//! is in the photograph too, so a caller must *verify* the pattern is what it
-//! sampled rather than trust that it is up — see the `BACKDROP_*_LUMA` checks
-//! in `tests/macos_native.rs`.
-
 use eframe::egui;
 
-/// Checker cell, in points. Must stay well under the card's blur radius.
 const CELL: f32 = 8.0;
 
-/// The checker's two tones. Each doubles as a whole flat field — `dark` and
-/// `light` — so a run differs from the checker run only in spatial frequency,
-/// or from the other flat run only in tone.
 const DARK: egui::Color32 = egui::Color32::from_rgb(20, 20, 20);
 const LIGHT: egui::Color32 = egui::Color32::from_rgb(200, 200, 200);
 
@@ -62,14 +17,7 @@ fn main() -> eframe::Result<()> {
             // and the capture silently photographs neither. The size is
             // applied on the first frame instead, once the monitor is known.
             .with_decorations(false)
-            // Above ordinary windows, so the test photographs the card over
-            // *this* and not over whatever the developer left open. Still
-            // below the popup: that is always-on-top too and opens later, so
-            // it wins the tie within the level.
             .with_window_level(egui::WindowLevel::AlwaysOnTop)
-            // Never steal the keyboard: the app under test hides its popup on
-            // focus loss, so a backdrop that activates itself would dismiss
-            // the very window the test is about to photograph.
             .with_active(false),
         ..Default::default()
     };

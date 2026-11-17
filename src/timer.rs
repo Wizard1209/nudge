@@ -2,9 +2,6 @@ use std::time::Duration;
 use web_time::Instant;
 
 pub struct Timer {
-    // None = frozen: timer never expires until `reset()` is called.
-    // The browser build opens on the popup (spec §4), and its timer only
-    // starts ticking after the first close (Submit / Esc / Switch).
     deadline: Option<Instant>,
 }
 

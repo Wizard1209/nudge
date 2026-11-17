@@ -2,7 +2,6 @@ use std::time::Duration;
 
 use crate::config::{self, IntervalError};
 
-/// [`config::DEFAULT_INTERVAL_MINUTES`] as the popup's timer sees it.
 fn default_interval() -> Duration {
     Duration::from_secs_f64(config::DEFAULT_INTERVAL_MINUTES * 60.0)
 }
@@ -17,51 +16,16 @@ pub enum TriggerSource {
 pub enum Action {
     Submit,
     Dismiss,
-    /// User briefly looked away (clicked outside the card or focused another
-    /// window). Per spec §4: hide popup, restart timer, but keep `doing` /
-    /// `bullshit` text so the next open resumes where the user left off.
     SwitchAway,
 }
 
-/// The full plan for closing the popup, computed in one place from the spec
-/// §4 truth table. `decide_close` returns this; the caller (`NudgeApp::
-/// hide_popup`) is a thin executor that performs exactly the I/O the plan
-/// dictates — write the journal iff `journal_minutes` is `Some`,
-/// reset the timer iff `reset_timer` is `Some`, clear the text fields iff
-/// `clear_form`.
-///
-/// Folding the four old `should_*` predicates + interval parsing into one
-/// outcome makes spec §4 a single coherent decision instead of four
-/// disconnected booleans an orchestrator had to re-assemble. The composed
-/// outcome — not the isolated booleans — is what historically broke (e.g.
-/// "timer-fired Esc must still reset or the popup refires"), so it is also
-/// the right test surface.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CloseOutcome {
-    /// Append a journal entry for this close, recording this many minutes as
-    /// the next interval. Only Submit with at least one non-empty text field;
-    /// the empty-Submit path is "change interval without journaling".
     pub journal_minutes: Option<f64>,
-    /// Reset the timer to this interval, or `None` to leave it ticking.
-    /// `Some` whenever the popup was timer-fired (its deadline is already in
-    /// the past — not rescheduling would refire instantly) or the user hit
-    /// Submit (they explicitly chose a new interval).
     pub reset_timer: Option<Duration>,
-    /// Clear `doing` / `bullshit` after close. Only Submit; Esc and Switch
-    /// preserve them so the next open resumes where the user left off.
     pub clear_form: bool,
 }
 
-/// Decide everything that happens when the popup closes, from the spec §4
-/// truth table, in one place. `minutes_text` is the raw contents of the
-/// interval field.
-///
-/// Returns `Err(IntervalError)` only on the one validation path the spec
-/// defines: an explicit Submit carrying a parseably-invalid interval (e.g.
-/// "-5" or "0"). In that case the caller must surface the error and keep the
-/// popup open — there is no valid outcome to execute. Esc / Switch never
-/// error: they fall back to the 10-minute default so the popup always
-/// closes, even with garbage in the field.
 pub fn decide_close(
     source: TriggerSource,
     action: Action,
@@ -69,10 +33,6 @@ pub fn decide_close(
     bullshit: &str,
     minutes_text: &str,
 ) -> Result<CloseOutcome, IntervalError> {
-    // Parse the interval. A parse error means the user typed an explicit
-    // number the interval rule refuses. On Submit that is a validation error
-    // (caller keeps the popup open). On Esc / Switch we silently fall back to
-    // the default so the popup still closes.
     let interval = match parse_interval(minutes_text) {
         Ok(d) => d,
         Err(e) => {
@@ -83,40 +43,22 @@ pub fn decide_close(
         }
     };
 
-    // Timer-fired popup deadline is already in the past, so ANY close must
-    // reschedule; otherwise Submit (user chose a new interval) resets too.
     let reset = matches!(source, TriggerSource::Timer) || matches!(action, Action::Submit);
 
-    // Submit writes only if at least one free-text field is non-empty, and
-    // what it records is the interval the timer is about to be reset to.
     let write_journal =
         action == Action::Submit && !(doing.trim().is_empty() && bullshit.trim().is_empty());
 
     Ok(CloseOutcome {
         journal_minutes: write_journal.then(|| interval.as_secs_f64() / 60.0),
         reset_timer: reset.then_some(interval),
-        // Only Submit clears the form; Esc and Switch preserve it.
         clear_form: matches!(action, Action::Submit),
     })
 }
 
-/// The interval the machine starts with (spec §4: launch is Waiting): the
-/// minutes field as launch fills it, from the configured default. Like a
-/// Leave, it never refuses — a field the interval rule refuses arms the
-/// 10-minute default.
 pub fn launch_interval(minutes_text: &str) -> Duration {
     parse_interval(minutes_text).unwrap_or_else(|_| default_interval())
 }
 
-/// Parse the minutes field into a Duration.
-///
-/// - Empty / whitespace / unparseable text → the default interval (user
-///   didn't provide an explicit number, so we fall back silently).
-/// - A number [`config::valid_interval_minutes`] refuses — ≤ 0, NaN, or
-///   past [`config::MAX_INTERVAL_MINUTES`] → `Err(IntervalError)` — the user
-///   explicitly typed something invalid and should be told, not silently
-///   clamped (journal would otherwise record a number that doesn't match
-///   what the user intended).
 pub fn parse_interval(text: &str) -> Result<Duration, IntervalError> {
     let trimmed = text.trim();
     let Ok(minutes) = trimmed.parse::<f64>() else {
@@ -130,19 +72,11 @@ pub fn parse_interval(text: &str) -> Result<Duration, IntervalError> {
     Ok(Duration::from_secs_f64(minutes * 60.0))
 }
 
-/// The minute number the tray tooltip shows for this much time remaining:
-/// whole minutes rounded UP, 0 for the "now" state. Also the tooltip's dedup
-/// key, so it is refreshed only when the number changes (spec §5: "updated
-/// once per minute") and the two never disagree.
 pub fn displayed_minutes(d: Duration) -> u64 {
     let secs = d.as_secs();
     if secs == 0 { 0 } else { secs.div_ceil(60) }
 }
 
-/// Tray tooltip text for the time remaining until the next nudge.
-/// Spec §5: `~N min` rounded UP to the next whole minute; `now` once the
-/// timer has expired (showing `~0 min` would read as a bug rather than
-/// "popup is about to appear").
 pub fn tooltip_for_remaining(d: Duration) -> String {
     match displayed_minutes(d) {
         0 => "now".to_string(),
@@ -150,15 +84,8 @@ pub fn tooltip_for_remaining(d: Duration) -> String {
     }
 }
 
-/// Labels for the tray context menu, in order. Spec §5: tray language is
-/// English. "Settings" sits between "Show Nudge" and "Quit" — visit-then-bye.
 pub const TRAY_MENU_LABELS: [&str; 3] = ["Show Nudge", "Settings", "Quit"];
 
-/// How often a native `ui()` should re-run. `None` when the popup is
-/// hidden: whatever reveals it — the tray thread on Windows, `tick` on
-/// macOS — wakes the event loop itself, so no periodic wakeup is required,
-/// and a standing one would keep compositing the transparent always-on-top
-/// window for nothing.
 pub fn repaint_interval(popup_visible: bool) -> Option<Duration> {
     if popup_visible {
         Some(Duration::from_secs(1))
@@ -171,22 +98,12 @@ pub fn repaint_interval(popup_visible: bool) -> Option<Duration> {
 mod tests {
     use super::*;
 
-    // === decide_close: the spec §4 close decision, as one composed outcome ===
-    //
-    // These assert the whole `CloseOutcome` per row of the §4 truth table —
-    // the composition is what historically broke, not the isolated booleans
-    // it's built from. `D` is a valid interval ("5" → 5 minutes) so the
-    // reset field carries the parsed value, not a fallback.
-
-    /// 5 minutes as a Duration — the interval `"5"` parses to.
     fn five_min() -> Duration {
         Duration::from_secs(5 * 60)
     }
 
     #[test]
     fn timer_submit_with_content_writes_resets_clears() {
-        // Timer-fired Enter with text: write the journal, reset to the chosen
-        // interval, clear the form.
         let o = decide_close(TriggerSource::Timer, Action::Submit, "doing", "", "5").unwrap();
         assert_eq!(
             o,
@@ -200,10 +117,6 @@ mod tests {
 
     #[test]
     fn timer_dismiss_resets_but_writes_nothing_and_keeps_form() {
-        // Structural rule (autopsy: nudge-electron 2026-04-20): a timer-fired
-        // popup's deadline is already in the past, so Esc MUST reschedule or
-        // the popup refires next frame. It still writes nothing and preserves
-        // the form.
         let o = decide_close(TriggerSource::Timer, Action::Dismiss, "doing", "x", "5").unwrap();
         assert_eq!(
             o.reset_timer,
@@ -216,7 +129,6 @@ mod tests {
 
     #[test]
     fn timer_switch_away_also_resets() {
-        // Same structural reason as the Dismiss case.
         let o = decide_close(TriggerSource::Timer, Action::SwitchAway, "", "", "5").unwrap();
         assert_eq!(o.reset_timer, Some(five_min()));
         assert_eq!(o.journal_minutes, None);
@@ -225,9 +137,6 @@ mod tests {
 
     #[test]
     fn manual_dismiss_leaves_timer_alone() {
-        // User opened the popup manually and changed their mind — the live
-        // timer keeps counting (reset_timer None), nothing is written, the
-        // form is preserved.
         let o = decide_close(TriggerSource::Manual, Action::Dismiss, "doing", "x", "5").unwrap();
         assert_eq!(o.reset_timer, None, "manual Esc must not reschedule");
         assert_eq!(o.journal_minutes, None);
@@ -244,8 +153,6 @@ mod tests {
 
     #[test]
     fn manual_submit_resets_even_though_manual() {
-        // Submit always resets, regardless of trigger source — the user
-        // explicitly chose a new interval.
         let o = decide_close(TriggerSource::Manual, Action::Submit, "doing", "", "5").unwrap();
         assert_eq!(o.reset_timer, Some(five_min()));
         assert!(o.journal_minutes.is_some());
@@ -254,9 +161,6 @@ mod tests {
 
     #[test]
     fn submit_with_empty_fields_is_change_interval_without_journaling() {
-        // The dedicated "rearm the timer without writing anything" path:
-        // Enter on empty fields resets the timer but writes nothing.
-        // Whitespace-only counts as empty.
         for (doing, bullshit) in [("", ""), ("   ", "\t\n")] {
             let o =
                 decide_close(TriggerSource::Manual, Action::Submit, doing, bullshit, "5").unwrap();
@@ -280,9 +184,6 @@ mod tests {
 
     #[test]
     fn submit_with_invalid_interval_is_a_validation_error() {
-        // An explicit Submit carrying a parseably-invalid interval is the one
-        // path that yields no outcome — the caller keeps the popup open and
-        // shows the error.
         for bad in ["0", "-5", "NaN"] {
             let err =
                 decide_close(TriggerSource::Manual, Action::Submit, "doing", "", bad).unwrap_err();
@@ -292,9 +193,6 @@ mod tests {
 
     #[test]
     fn dismiss_with_invalid_interval_falls_back_and_still_closes() {
-        // Esc / Switch never error: a garbage interval falls back to the
-        // 10-minute default so the popup always closes. Combined with a
-        // timer-fired source that means it resets to 10 minutes.
         let o = decide_close(TriggerSource::Timer, Action::Dismiss, "doing", "", "-5").unwrap();
         assert_eq!(o.reset_timer, Some(Duration::from_secs(10 * 60)));
         assert_eq!(o.journal_minutes, None);
@@ -318,9 +216,6 @@ mod tests {
 
     #[test]
     fn manual_dismiss_with_invalid_interval_does_not_reset() {
-        // Garbage interval on a manual Esc: still no error, still no reset
-        // (the fallback interval is computed but unused because manual Esc
-        // doesn't reschedule).
         let o = decide_close(
             TriggerSource::Manual,
             Action::Dismiss,
@@ -331,8 +226,6 @@ mod tests {
         .unwrap();
         assert_eq!(o.reset_timer, None);
     }
-
-    // === launch_interval: what the machine starts with (spec §4) ===
 
     #[test]
     fn launch_arms_the_minutes_field() {
@@ -411,15 +304,11 @@ mod tests {
 
     #[test]
     fn tooltip_zero_remaining_says_now() {
-        // Past expiry — the popup is about to appear, "0 min" reads as a bug.
         assert_eq!(tooltip_for_remaining(Duration::from_secs(0)), "now");
     }
 
     #[test]
     fn displayed_minutes_matches_tooltip_count() {
-        // The tray loop dedupes set_tooltip calls by this value. It must
-        // change exactly when the rendered string's minute number changes,
-        // and collapse the "now" state to 0.
         assert_eq!(displayed_minutes(Duration::from_secs(0)), 0);
         assert_eq!(displayed_minutes(Duration::from_secs(1)), 1);
         assert_eq!(displayed_minutes(Duration::from_secs(60)), 1);
@@ -429,8 +318,6 @@ mod tests {
 
     #[test]
     fn tray_menu_labels_match_spec() {
-        // Spec §5: tray language is English. "Settings" sits between the
-        // show and quit items so the menu reads visit-configure-bye.
         assert_eq!(TRAY_MENU_LABELS, ["Show Nudge", "Settings", "Quit"]);
     }
 
@@ -441,10 +328,6 @@ mod tests {
 
     #[test]
     fn repaint_interval_hidden_is_none() {
-        // When popup is hidden, no periodic repaint should be scheduled.
-        // Tray clicks and the timer-expiry thread wake update() via
-        // ShowWindow — a 1 Hz wakeup would just burn CPU redrawing a
-        // transparent layered window through DWM.
         assert_eq!(repaint_interval(false), None);
     }
 }

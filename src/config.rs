@@ -1,72 +1,30 @@
-//! On-disk user configuration: hotkey, default interval, autostart.
-//!
-//! It lives in the OS's per-user app-settings folder, see
-//! [`resolve_default_config_path`]: `~/Library/Application Support/Nudge/`
-//! on macOS, `%APPDATA%\Nudge\` on Windows. We chose JSON
-//! over TOML so we don't add a parser dependency (serde_json is already in
-//! the tree for the journal). The file is the **source of truth** shared by
-//! the main process and the settings UI (`src/settings_app.rs`, spec §9):
-//! settings writes via `save()`, the main process picks up edits via the
-//! watcher in `src/config_watcher.rs`. It also remains human-editable by
-//! hand — that's the documented fallback when the UI isn't an option.
-//!
-//! Loading is forgiving: a missing file produces a default config, a
-//! malformed file logs to stderr and falls back to the default. We never
-//! refuse to start over a bad config — that would brick a hotkey-less app
-//! launch just to surface a JSON error nobody can read past the splash.
-
 use serde::{Deserialize, Serialize};
 
 use crate::hotkey;
 
-/// Persisted configuration. Add fields conservatively — every field must
-/// have a serde default so old config files keep parsing after we grow new
-/// settings.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Config {
-    /// Hotkey label, e.g. "Ctrl+Shift+Space". Parsed lazily so an invalid
-    /// label in the file doesn't refuse the whole config.
     #[serde(default = "default_hotkey_label")]
     pub hotkey: String,
 
-    /// Default interval (in minutes) shown in the popup's "next nudge"
-    /// field and used to arm the first timer. Validated lazily via
-    /// `resolved_interval_minutes` — see that method for the fallback rule.
     #[serde(default = "default_interval_minutes_value")]
     pub default_interval_minutes: f64,
 
-    /// Whether the app is registered to launch at OS login. Mirrors the
-    /// confirmed system state (registry on Windows): the autostart provider
-    /// writes this `true` only after the OS-level change succeeds. Opt-in, so
-    /// it defaults to false for new installs and pre-field config files.
     #[serde(default)]
     pub autostart: bool,
 
-    /// The optional PNG drawn over the popup card (spec §10). Read through
-    /// [`forgiving_sprite`]: a malformed field in the block falls back alone
-    /// instead of refusing the file.
-    // TODO: a malformed top-level field still drops the whole file (spec §9
-    // gap, out of scope).
     #[serde(default, deserialize_with = "forgiving_sprite")]
     pub sprite: SpriteConfig,
 }
 
-/// The card's width in points while no `card_width` is configured — §2's
-/// "around 480".
 pub const DEFAULT_CARD_WIDTH: u32 = 480;
 
-/// The `sprite` block of `config.json` (spec §10).
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct SpriteConfig {
-    /// Whether the sprite is drawn.
     pub enabled: bool,
-    /// Absolute path to the PNG.
     pub path: String,
-    /// The sprite's top-left corner relative to the card's, in points; either
-    /// may be negative.
     pub x: i32,
     pub y: i32,
-    /// The card's width while the sprite is on, in points.
     pub card_width: u32,
 }
 
@@ -83,8 +41,6 @@ impl Default for SpriteConfig {
 }
 
 impl SpriteConfig {
-    /// Each field that is absent or malformed falls back to its default
-    /// alone; a value that is not an object is an empty block.
     fn from_value(raw: &serde_json::Value) -> Self {
         let default = Self::default();
         let Some(obj) = raw.as_object() else {
@@ -108,25 +64,19 @@ impl SpriteConfig {
     }
 }
 
-/// Never fails: the block is read as a `serde_json::Value` and normalised
-/// field by field, so one typo in it cannot drop the hotkey with it.
 fn forgiving_sprite<'de, D: serde::Deserializer<'de>>(d: D) -> Result<SpriteConfig, D::Error> {
     let raw = serde_json::Value::deserialize(d)?;
     Ok(SpriteConfig::from_value(&raw))
 }
 
-/// Finite number → nearest integer with JS `Math.round` parity (halves go
-/// towards +∞, so `-40.5` is `-40`); anything else → `None`.
 fn rounded_int(value: Option<f64>) -> Option<f64> {
     value.filter(|v| v.is_finite()).map(|v| (v + 0.5).floor())
 }
 
-/// A sprite coordinate, or `0`.
 fn coordinate_or_default(value: Option<f64>) -> i32 {
     rounded_int(value).map_or(0, |v| v.clamp(i32::MIN as f64, i32::MAX as f64) as i32)
 }
 
-/// A card width, or [`DEFAULT_CARD_WIDTH`] when not a positive number.
 fn card_width_or_default(value: Option<f64>) -> u32 {
     match rounded_int(value) {
         Some(w) if w > 0.0 => w.min(u32::MAX as f64) as u32,
@@ -138,38 +88,18 @@ fn default_hotkey_label() -> String {
     hotkey::format(&hotkey::default_hotkey())
 }
 
-/// The interval the product ships with, in minutes (spec §4): the file's
-/// default, what the popup's field falls back to when it holds no number,
-/// and what the browser build starts with.
 pub const DEFAULT_INTERVAL_MINUTES: f64 = 10.0;
 
-/// The longest interval, in minutes: a million, a little under two years.
-///
-/// Fixed rather than derived from the clock. An interval is armed as
-/// `Instant::now() + duration`, and where that overflows depends on the
-/// platform's `Instant` (macOS counts signed seconds, about 1.5e17 minutes;
-/// Windows and the browser count from an epoch, so the limit there shrinks
-/// with uptime) — a bound taken from any of them would hold on one platform
-/// and move on another. A million minutes is longer than any interval anyone
-/// means, round enough to state in a message, and eleven orders of magnitude
-/// short of the smallest of those limits.
 pub const MAX_INTERVAL_MINUTES: f64 = 1_000_000.0;
 
-/// Whether `minutes` is an interval a timer can be armed with: more than 0
-/// and at most [`MAX_INTERVAL_MINUTES`] (NaN fails both comparisons). The one
-/// rule behind the file's fallback, the popup's field, the settings window's
-/// field and the journal's `next_interval_minutes`.
 pub fn valid_interval_minutes(minutes: f64) -> bool {
     minutes > 0.0 && minutes <= MAX_INTERVAL_MINUTES
 }
 
-/// The rule [`valid_interval_minutes`] applies, as every refusal of it says it.
 pub fn interval_rule_text() -> String {
     format!("more than 0 and at most {MAX_INTERVAL_MINUTES} minutes")
 }
 
-/// A typed interval that is a number but not a valid one — what both the
-/// popup and the settings window show for it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct IntervalError {
     pub input: String,
@@ -204,14 +134,6 @@ impl Default for Config {
 }
 
 impl Config {
-    /// The configured hotkey, or `None` when the label does not parse.
-    ///
-    /// An unreadable label leaves the app *unbound* rather than bound to a
-    /// default the user never asked for (design-spec §5): the tray and the
-    /// timer work regardless, so a substituted combination would be the one
-    /// failure they could not tell apart from success. The refusal is
-    /// reported here, once, so launch and live reload say the same thing
-    /// about the same file content.
     pub fn hotkey_or_unbound(&self) -> Option<hotkey::Hotkey> {
         match hotkey::parse(&self.hotkey) {
             Ok(hk) => Some(hk),
@@ -226,11 +148,6 @@ impl Config {
         }
     }
 
-    /// Validate the configured interval, falling back to the built-in
-    /// default if [`valid_interval_minutes`] refuses it. Returns
-    /// `(minutes, was_invalid)` so the caller can log a warning without
-    /// re-validating — a garbage value in the file must never refuse the
-    /// whole config.
     pub fn resolved_interval_minutes(&self) -> (f64, bool) {
         if valid_interval_minutes(self.default_interval_minutes) {
             (self.default_interval_minutes, false)
@@ -240,9 +157,6 @@ impl Config {
     }
 }
 
-/// Read/write failure shared by the native (file) and WASM (localStorage)
-/// stores. `path` is the file path on native or `localStorage:<key>` on WASM
-/// so the message points at the right place regardless of backend.
 #[derive(Debug, Clone)]
 pub enum ConfigError {
     Io { path: String, detail: String },
@@ -260,62 +174,26 @@ impl std::fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-/// `<root>/Nudge/config.json`. The root differs per platform — see
-/// [`resolve_default_config_path`], which is what production calls; this one
-/// takes the root as an argument so it is testable without a real HOME.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn config_path(root: &std::path::Path) -> std::path::PathBuf {
     root.join("Nudge").join("config.json")
 }
 
-/// Where the config lives when `--config` is not given:
-/// `<config dir>/Nudge/config.json`, the config dir being the OS's per-user
-/// app-settings folder — `~/Library/Application Support` on macOS,
-/// `%APPDATA%` (Roaming AppData) on Windows.
-///
-/// Not Documents, where the journal is: the settings belong to one machine
-/// (autostart, the absolute `sprite.path`, a hotkey tuned to its keyboard),
-/// and Documents is synced — iCloud on macOS, OneDrive Known Folder Move on
-/// Windows. A synced config makes machines overwrite each other, and the file
-/// watcher reacts to edits the user did not make. On macOS Documents is also
-/// TCC-gated, so reading a config there would prompt for consent from a
-/// menu-bar agent with no window up.
-///
-/// The root does not depend on where the binary was launched from, so a
-/// build in `target/`, an installed copy and a DMG mount all read and write
-/// the same file.
 #[cfg(not(target_arch = "wasm32"))]
 fn resolve_default_config_path() -> std::path::PathBuf {
     config_path(&config_root())
 }
 
-/// The platform's config root, or `.` if the OS will not name a home
-/// directory (no HOME, or a service account) — the same last-ditch fallback
-/// the journal uses, so the app still starts with a file it can write.
 #[cfg(not(target_arch = "wasm32"))]
 fn config_root() -> std::path::PathBuf {
     dirs::config_dir().unwrap_or_else(|| std::path::PathBuf::from("."))
 }
 
-/// Where earlier versions kept the config, `<Documents>/Nudge/config.json`.
 #[cfg(not(target_arch = "wasm32"))]
 fn legacy_config_path() -> Option<std::path::PathBuf> {
     dirs::document_dir().map(|d| config_path(&d))
 }
 
-/// Move a config left behind in `<Documents>/Nudge/` to the config root,
-/// once, before anything reads it, and return the file to run against.
-///
-/// It is a move, never a copy that stays behind: two live files would have
-/// the settings window writing one while a hand-editing user kept the other.
-/// A rename is tried first. Where it is refused — Documents on another drive
-/// or a network share — the file is copied next to the destination, checked
-/// byte for byte, renamed into place, and only then is the original removed.
-///
-/// If the move fails at any step, the destination stays empty and this
-/// session runs on the legacy file; the next start tries again. Seeding a
-/// default at the destination instead would end the retries and lose the
-/// settings for good.
 #[cfg(not(target_arch = "wasm32"))]
 fn migrate_legacy_config(destination: &std::path::Path) -> std::path::PathBuf {
     match legacy_config_path() {
@@ -326,8 +204,6 @@ fn migrate_legacy_config(destination: &std::path::Path) -> std::path::PathBuf {
     }
 }
 
-/// The body of [`migrate_legacy_config`], with both paths and the rename step
-/// passed in so it can be tested without a synthetic HOME or a second drive.
 #[cfg(not(target_arch = "wasm32"))]
 fn move_config_file(
     legacy: &std::path::Path,
@@ -362,10 +238,6 @@ fn move_config_file(
     }
 }
 
-/// Copy, verify, rename into place, then remove the original. If the original
-/// cannot be removed, the destination is already the live file (the next
-/// start finds it and leaves the original alone), so that is logged rather
-/// than undone.
 #[cfg(not(target_arch = "wasm32"))]
 fn move_by_copy(
     legacy: &std::path::Path,
@@ -399,13 +271,6 @@ fn move_by_copy(
     Ok(())
 }
 
-/// The config file a process runs against, resolved once at startup: the
-/// `--config <path>` override from the command line, or the platform's
-/// default location — after a legacy `<Documents>/Nudge` file has been moved
-/// there, or that legacy file itself if it could not be. An explicit override names exactly the file to use, so
-/// neither the legacy move nor first-run seeding happens beside it: a
-/// throwaway config for the perf test or a sandbox stays the one file that
-/// was named.
 #[cfg(not(target_arch = "wasm32"))]
 pub struct ConfigFile {
     path: std::path::PathBuf,
@@ -414,7 +279,6 @@ pub struct ConfigFile {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl ConfigFile {
-    /// Resolve from the process's arguments (without the program name).
     pub fn from_args<I, S>(args: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -425,8 +289,6 @@ impl ConfigFile {
         })
     }
 
-    /// [`Self::from_args`] with the default resolution — the legacy move
-    /// included — passed in, so a test can see whether it runs.
     pub(crate) fn from_args_or<I, S>(args: I, default: impl FnOnce() -> std::path::PathBuf) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -448,15 +310,10 @@ impl ConfigFile {
         &self.path
     }
 
-    /// Read the file. A missing or malformed one yields the default alongside
-    /// the error to log — a process never refuses to start over its config.
     pub fn load(&self) -> (Config, Option<ConfigError>) {
         load_or_default(&self.path)
     }
 
-    /// First run: write the default so users have a template to edit instead
-    /// of needing to know the schema. Nothing happens under an explicit
-    /// `--config`, or when a file is already there.
     pub fn seed_default_if_missing(&self) -> Result<(), ConfigError> {
         if self.overridden {
             return Ok(());
@@ -465,10 +322,6 @@ impl ConfigFile {
     }
 }
 
-/// Pull a `--config <path>` or `--config=<path>` override out of CLI args.
-/// Returns `None` if the flag is absent or trailing without a value —
-/// silent, since this is a power-user lever rather than a documented
-/// contract.
 #[cfg(not(target_arch = "wasm32"))]
 fn parse_config_arg<I, S>(args: I) -> Option<std::path::PathBuf>
 where
@@ -488,9 +341,6 @@ where
     None
 }
 
-/// Load config from `path`, or return `Config::default()` if the file
-/// doesn't exist or doesn't parse. Errors are returned alongside the
-/// fallback so the caller can log them — we never refuse to start.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn load_or_default(path: &std::path::Path) -> (Config, Option<ConfigError>) {
     use std::fs;
@@ -510,7 +360,6 @@ pub fn load_or_default(path: &std::path::Path) -> (Config, Option<ConfigError>) 
         }
     };
 
-    // A UTF-8 byte order mark, as PowerShell 5.1 and older Notepad write it.
     let json = raw.strip_prefix('\u{FEFF}').unwrap_or(&raw);
     match serde_json::from_str::<Config>(json) {
         Ok(cfg) => (cfg, None),
@@ -524,8 +373,6 @@ pub fn load_or_default(path: &std::path::Path) -> (Config, Option<ConfigError>) 
     }
 }
 
-/// Write the default config to `path` if no file is there yet — the same
-/// atomic write a save is, so a reader never sees a half-written template.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn ensure_default_written(path: &std::path::Path) -> Result<(), ConfigError> {
     if path.exists() {
@@ -534,16 +381,6 @@ pub fn ensure_default_written(path: &std::path::Path) -> Result<(), ConfigError>
     save(path, &Config::default())
 }
 
-/// Atomically persist `config` to `path`. Writes a sibling `<path>.tmp` then
-/// renames it over the target, so a concurrent reader (or a crash mid-write)
-/// never observes a half-written config. Creates parent dirs as needed.
-///
-/// This is the write half of the source-of-truth contract: the settings
-/// process saves here, the running app re-reads via `load_or_default`. The
-/// temp lives in the same directory as the target so the rename stays on one
-/// filesystem (cross-device renames aren't atomic). `std::fs::rename` maps to
-/// `MoveFileExW(MOVEFILE_REPLACE_EXISTING)` on Windows, so it replaces an
-/// existing config in place.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn save(path: &std::path::Path, config: &Config) -> Result<(), ConfigError> {
     use std::fs;
@@ -573,7 +410,6 @@ pub fn save(path: &std::path::Path, config: &Config) -> Result<(), ConfigError> 
     })?;
 
     fs::rename(&tmp, path).map_err(|e| {
-        // A failed rename must not leave the temp file littering the dir.
         let _ = fs::remove_file(&tmp);
         ConfigError::Io {
             path: path_str,
@@ -582,12 +418,9 @@ pub fn save(path: &std::path::Path, config: &Config) -> Result<(), ConfigError> 
     })
 }
 
-/// localStorage key holding the persisted config in the browser build.
 #[cfg(target_arch = "wasm32")]
 const LOCALSTORAGE_KEY: &str = "nudge-config";
 
-/// The browser build's errors name the storage slot where the native ones
-/// name a file.
 #[cfg(target_arch = "wasm32")]
 fn storage_io(detail: impl Into<String>) -> ConfigError {
     ConfigError::Io {
@@ -612,10 +445,6 @@ fn localstorage() -> Result<web_sys::Storage, ConfigError> {
         .ok_or_else(|| storage_io("localStorage unavailable"))
 }
 
-/// Load config from localStorage (WASM), or `Config::default()` if absent or
-/// malformed. The browser analogue of `load_or_default`, with the same
-/// forgiving rule: a missing blob is not an error; a malformed one returns the
-/// default alongside the error so the caller can log it.
 #[cfg(target_arch = "wasm32")]
 pub fn load_from_localstorage() -> (Config, Option<ConfigError>) {
     let storage = match localstorage() {
@@ -633,7 +462,6 @@ pub fn load_from_localstorage() -> (Config, Option<ConfigError>) {
     }
 }
 
-/// Persist config to localStorage (WASM). The browser analogue of `save`.
 #[cfg(target_arch = "wasm32")]
 pub fn save_to_localstorage(config: &Config) -> Result<(), ConfigError> {
     let body = serde_json::to_string(config).map_err(|e| storage_parse(e.to_string()))?;
@@ -666,8 +494,6 @@ mod tests {
 
     #[test]
     fn invalid_hotkey_leaves_the_app_unbound() {
-        // Garbage in the label must not refuse the config, and must not bind
-        // a combination the user never asked for either (spec §5).
         let cfg = Config {
             hotkey: "Notarealkey".to_string(),
             ..Config::default()
@@ -697,8 +523,6 @@ mod tests {
 
     #[test]
     fn resolves_fractional_interval() {
-        // Sub-minute intervals are valid — useful for tests and impatient
-        // users. Just needs to be a finite positive number.
         let cfg = Config {
             default_interval_minutes: 0.5,
             ..Config::default()
@@ -710,9 +534,6 @@ mod tests {
 
     #[test]
     fn invalid_interval_falls_back_silently() {
-        // Anything not a finite positive number: zero, negative, NaN, infinity.
-        // All must fall back to the built-in default rather than refusing the
-        // config — same forgiving rule as the hotkey field.
         for bad in [0.0, -3.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             let cfg = Config {
                 default_interval_minutes: bad,
@@ -726,8 +547,6 @@ mod tests {
 
     #[test]
     fn a_number_too_large_to_arm_is_refused_not_armed() {
-        // Finite and positive, but 6e21 seconds does not fit a `Duration`:
-        // the rule refuses it, so nothing downstream is asked to build one.
         assert!(!valid_interval_minutes(1e20));
         assert_eq!(
             crate::settings_app::parse_interval_minutes("1e20"),
@@ -742,9 +561,6 @@ mod tests {
     fn the_interval_rule_ends_at_a_million_minutes() {
         assert!(valid_interval_minutes(MAX_INTERVAL_MINUTES));
         assert!(!valid_interval_minutes(MAX_INTERVAL_MINUTES.next_up()));
-        // 2e17 minutes fits a `Duration` (u64 seconds) and still cannot be
-        // armed where `Instant` counts signed seconds: a bound at "fits a
-        // Duration" would accept it.
         assert!(std::time::Duration::try_from_secs_f64(2e17 * 60.0).is_ok());
         #[cfg(unix)]
         assert!(
@@ -759,9 +575,6 @@ mod tests {
     fn the_longest_interval_arms() {
         let longest = crate::nudge_state::parse_interval("1000000").expect("the edge is accepted");
         assert_eq!(longest.as_secs_f64(), MAX_INTERVAL_MINUTES * 60.0);
-        // What arming does with it: the deadline the platform is handed
-        // (`web_time::Instant` is `std`'s on native) and the browser build's
-        // own timer.
         let _deadline = web_time::Instant::now() + longest;
         let mut timer = crate::timer::Timer::frozen();
         timer.reset(longest);
@@ -800,7 +613,6 @@ mod tests {
 
     #[test]
     fn autostart_defaults_to_false() {
-        // New installs must never silently register for autostart — opt-in only.
         assert!(!Config::default().autostart);
     }
 
@@ -812,9 +624,6 @@ mod tests {
         assert_eq!(config_path(root), PathBuf::from("/d/Nudge/config.json"));
     }
 
-    /// The point of the macOS root is that it is *not* Documents: that folder
-    /// is TCC-gated and iCloud-synced. Asserting the tail alone would pass on
-    /// `~/Documents/Nudge/config.json` too, so this pins the parent.
     #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
     #[test]
     fn macos_config_lives_in_application_support() {
@@ -837,9 +646,6 @@ mod tests {
         );
     }
 
-    /// The Windows root is Roaming AppData, not Documents, where OneDrive's
-    /// Known Folder Move would sync it between machines. `%APPDATA%` is read
-    /// straight from the environment so the oracle is not the code under test.
     #[cfg(windows)]
     #[test]
     fn windows_config_lives_in_roaming_appdata() {
@@ -858,7 +664,6 @@ mod tests {
     mod migration_tests {
         use super::*;
 
-        /// `dir/Nudge/config.json`, with the file written iff `body` is Some.
         fn seed(dir: &std::path::Path, body: Option<&str>) -> std::path::PathBuf {
             let path = config_path(dir);
             if let Some(body) = body {
@@ -872,13 +677,10 @@ mod tests {
             std::fs::rename(from, to)
         }
 
-        /// What Windows answers when the two folders are on different drives
-        /// (os error 17), and Unix when they are on different volumes.
         fn cross_device() -> std::io::Error {
             std::io::Error::from(std::io::ErrorKind::CrossesDevices)
         }
 
-        /// Everything in `dir`, recursively, so a stray temp file shows up.
         fn files_under(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
             let mut found = Vec::new();
             for entry in std::fs::read_dir(dir).unwrap() {
@@ -920,10 +722,6 @@ mod tests {
 
         #[test]
         fn a_failed_move_runs_on_the_legacy_file_and_seeds_nothing() {
-            // Every rename fails, so the copy cannot be put into place either.
-            // Writing a default to the empty destination would make the next
-            // start skip the move for good and the user's settings would be
-            // lost; running on the old file keeps them.
             let docs = tempfile::tempdir().unwrap();
             let support = tempfile::tempdir().unwrap();
             let body = r#"{"hotkey":"Alt+J"}"#;
@@ -949,7 +747,6 @@ mod tests {
             );
             assert_eq!(std::fs::read_to_string(&legacy).unwrap(), body);
 
-            // The next start tries again.
             assert_eq!(
                 move_config_file(&legacy, &destination, real_rename),
                 destination
@@ -976,9 +773,6 @@ mod tests {
 
         #[test]
         fn an_existing_destination_wins_and_the_legacy_file_is_untouched() {
-            // Both files exist — the app has already run since the move. The
-            // destination is the live one; overwriting it would silently
-            // revert every change made since.
             let docs = tempfile::tempdir().unwrap();
             let support = tempfile::tempdir().unwrap();
             let legacy = seed(docs.path(), Some(r#"{"hotkey":"Alt+J"}"#));
@@ -996,10 +790,6 @@ mod tests {
 
         #[test]
         fn an_explicit_config_never_runs_the_move() {
-            // The settings process is started with the main process's path.
-            // Here that is the legacy file, as after a failed move: if the
-            // settings process moved it now, the two would run on different
-            // files.
             let docs = tempfile::tempdir().unwrap();
             let support = tempfile::tempdir().unwrap();
             let legacy = seed(docs.path(), Some(r#"{"hotkey":"Alt+J"}"#));
@@ -1070,10 +860,6 @@ mod tests {
 
         #[test]
         fn a_utf8_byte_order_mark_is_not_a_parse_error() {
-            // PowerShell 5.1's `Set-Content -Encoding UTF8` and older Notepad
-            // write one. Refusing the file would run the app on defaults and
-            // show them in the settings window, where Save writes them over
-            // the user's file.
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("config.json");
             std::fs::write(&path, "\u{FEFF}{\"hotkey\":\"Alt+J\"}").unwrap();
@@ -1111,8 +897,6 @@ mod tests {
 
         #[test]
         fn missing_interval_field_uses_default() {
-            // A config file written before the interval field existed must
-            // still parse, with the new field taking its serde default.
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("config.json");
             std::fs::write(&path, r#"{"hotkey":"Alt+J"}"#).unwrap();
@@ -1124,7 +908,6 @@ mod tests {
 
         #[test]
         fn unknown_fields_tolerated() {
-            // Forward-compat: future fields shouldn't refuse the file.
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("config.json");
             std::fs::write(&path, r#"{"hotkey":"Ctrl+Shift+Space","future_field":42}"#).unwrap();
@@ -1135,7 +918,6 @@ mod tests {
 
         #[test]
         fn missing_field_falls_back_via_serde_default() {
-            // Empty object: serde fills `hotkey` from the field default.
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("config.json");
             std::fs::write(&path, "{}").unwrap();
@@ -1180,7 +962,6 @@ mod tests {
 
         #[test]
         fn parse_config_arg_with_preceding_args() {
-            // The flag can be anywhere in the arg list, not just first.
             assert_eq!(
                 parse_config_arg(["--verbose", "--config", "/tmp/x.json", "--quiet"]),
                 Some(std::path::PathBuf::from("/tmp/x.json"))
@@ -1189,17 +970,11 @@ mod tests {
 
         #[test]
         fn parse_config_arg_trailing_returns_none() {
-            // `--config` at the end with no value: don't consume something
-            // that isn't there. Silent None — the caller falls back to the
-            // default config path.
             assert_eq!(parse_config_arg(["--other", "--config"]), None);
         }
 
         #[test]
         fn parse_config_arg_first_wins() {
-            // If somebody passes --config twice, take the first one — same
-            // rule as most CLI parsers. (Unlikely in practice; this just
-            // pins the behavior.)
             assert_eq!(
                 parse_config_arg(["--config", "/a.json", "--config", "/b.json"]),
                 Some(std::path::PathBuf::from("/a.json"))
@@ -1208,8 +983,6 @@ mod tests {
 
         #[test]
         fn an_explicit_config_override_is_never_seeded() {
-            // `--config` names exactly the file to use: no template appears
-            // beside a throwaway config.
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("throwaway.json");
             let file = ConfigFile::from_args(["--config", path.to_str().unwrap()]);
@@ -1220,7 +993,6 @@ mod tests {
 
         #[test]
         fn ensure_default_does_not_overwrite() {
-            // User edits get preserved on subsequent launches.
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("config.json");
             std::fs::write(&path, r#"{"hotkey":"Alt+J"}"#).unwrap();
@@ -1241,8 +1013,6 @@ mod tests {
 
         #[test]
         fn missing_autostart_field_defaults_false() {
-            // Configs written before the autostart field existed must still
-            // parse, with autostart taking its serde default of false.
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("config.json");
             std::fs::write(&path, r#"{"hotkey":"Alt+J"}"#).unwrap();
@@ -1253,8 +1023,6 @@ mod tests {
 
         #[test]
         fn save_round_trips_through_load() {
-            // save() then load_or_default() must reproduce the exact config —
-            // this is the source-of-truth contract the settings window relies on.
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("config.json");
             let cfg = Config {
@@ -1269,12 +1037,6 @@ mod tests {
             assert_eq!(loaded, cfg);
         }
 
-        // === the sprite block (spec §10) ===================================
-        //
-        // Per-field fallback: one bad field falls back alone, the rest of the
-        // block and the rest of the file are still read.
-
-        /// Write `body` as a config file and load it, asserting no error.
         fn load(body: &str) -> Config {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("config.json");
@@ -1341,7 +1103,6 @@ mod tests {
 
         #[test]
         fn sprite_rounds_coordinates() {
-            // JS `Math.round` parity: halves round up, towards +∞.
             let cfg = load(r#"{"sprite":{"x":-40.6,"y":12.4,"card_width":679.5}}"#);
             assert_eq!(
                 (cfg.sprite.x, cfg.sprite.y, cfg.sprite.card_width),
@@ -1360,8 +1121,6 @@ mod tests {
 
         #[test]
         fn sprite_non_finite_is_default() {
-            // `1e400` and `NaN` are not valid JSON, so the file path cannot
-            // produce them; the finite guard is pinned on the normaliser.
             assert_eq!(card_width_or_default(Some(f64::INFINITY)), 480);
             assert_eq!(card_width_or_default(Some(f64::NAN)), 480);
             assert_eq!(coordinate_or_default(Some(f64::NEG_INFINITY)), 0);
@@ -1416,8 +1175,6 @@ mod tests {
 
         #[test]
         fn save_leaves_no_temp_file() {
-            // Atomic write writes a sibling temp then renames; the temp must
-            // never survive a successful save.
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("config.json");
             save(&path, &Config::default()).unwrap();

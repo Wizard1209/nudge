@@ -1,21 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-// The binary is the library plus an entry point: every module is declared
-// once, in `lib.rs`, and the bin reaches it through the crate name.
 #[cfg(not(target_arch = "wasm32"))]
 use nudge_web::{app, config, layout, platform, settings_app};
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use nudge_web::{autostart, config_watcher};
 
-/// Exercise the real autostart provider against the live OS — the registry on
-/// Windows, `~/Library/LaunchAgents` plus the launchd domain on macOS — and
-/// report PASS/FAIL, restoring whatever state we found. A manual QA tool,
-/// invoked via `nudge --autostart-selftest`: the registry cannot be unit-tested
-/// in CI/WSL (cross-check with `scripts/autostart-check.ps1`), and on macOS
-/// everything in `tests/macos_autostart.rs` that shells out to `launchctl` is
-/// `#[ignore]`d because `HOME` cannot redirect launchd's per-user domain — so
-/// the launchctl path has no tier that runs unattended, and this command is
-/// how it gets exercised, by hand, before shipping.
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 fn run_autostart_selftest() -> ! {
     macro_rules! fail {
@@ -40,10 +29,6 @@ fn run_autostart_selftest() -> ! {
     let after_enable = provider.is_enabled().unwrap_or(false);
     println!("[selftest] after enable  -> is_enabled = {after_enable} (want true)");
 
-    // Idempotence is a real requirement, not a nicety — the settings checkbox
-    // can be re-affirmed at any time. On macOS it is also the step that would
-    // catch a regression in `register`'s bootout-first ordering: without it,
-    // launchd rejects the second bootstrap with an unclassifiable exit 5.
     if let Err(e) = provider.enable() {
         fail!("enable (second time, must be idempotent): {e}");
     }
@@ -54,7 +39,6 @@ fn run_autostart_selftest() -> ! {
     let after_disable = provider.is_enabled().unwrap_or(true);
     println!("[selftest] after disable -> is_enabled = {after_disable} (want false)");
 
-    // Leave the machine exactly as we found it.
     let restore = if initial {
         provider.enable()
     } else {
@@ -72,38 +56,21 @@ fn run_autostart_selftest() -> ! {
     fail!("enable/disable cycle did not flip the state as expected");
 }
 
-/// Render the settings window. Loads the config from the same source as the
-/// main app, constructs the autostart provider, and hands both to
-/// `SettingsApp`. The window is opaque, has decorations + taskbar entry,
-/// and lives in its own process. The two processes communicate only
-/// through config.json (and the registry for autostart) — except that on
-/// Windows an update asks the tray named by `--tray-thread` to quit.
 #[cfg(not(target_arch = "wasm32"))]
 fn run_settings_ui() -> eframe::Result {
     use eframe::egui;
     use settings_app::SettingsApp;
 
-    // Single-instance guard: the status-item menu spawns one process per
-    // "Settings" click, and without this each click would stack another
-    // window with its own unsynchronised copy of config.json. The guard is
-    // held for the lifetime of the window, and a refusal means someone else
-    // is already showing it — exit silently.
     let Some(_settings_lock) = platform::acquire_settings_singleton() else {
         return Ok(());
     };
 
-    // Load config from the same file the main process uses — it passes that
-    // file as `--config`, so nothing is resolved or moved here: a saved
-    // change reaches the running app through its file watcher.
     let config_file = config::ConfigFile::from_args(std::env::args().skip(1));
     let (cfg, err) = config_file.load();
     if let Some(e) = err {
         eprintln!("[nudge-settings] {e}");
     }
 
-    // Everything the window needs from the OS and the disk, in one place:
-    // refused rather than opened over a fake when the autostart provider
-    // cannot be constructed.
     let tray_thread = settings_app::parse_tray_thread_arg(std::env::args().skip(1));
     let host = match settings_app::SettingsHost::native(
         config_file.path().to_path_buf(),
@@ -119,9 +86,6 @@ fn run_settings_ui() -> eframe::Result {
         }
     };
 
-    // §9: sized to the form and not resizable — the form's height at this
-    // width, its margins and the reserved message line included, so the
-    // window never scrolls and never changes size.
     let viewport = egui::ViewportBuilder::default()
         .with_inner_size(settings_app::WINDOW_SIZE)
         .with_decorations(true)
@@ -144,14 +108,8 @@ fn main() -> eframe::Result {
     use app::NudgeApp;
     use eframe::egui;
 
-    // Before anything opens a file: the journal under Documents may be an
-    // iCloud file evicted to the cloud, and on macOS whether this process may
-    // download it depends on how it was started — see the function.
     platform::allow_evicted_file_downloads();
 
-    // Manual QA hook — runs the autostart lifecycle against the real OS
-    // (registry on Windows, LaunchAgent on macOS) and exits before any GUI /
-    // config work. A no-op stub on platforms with no real provider.
     if std::env::args()
         .skip(1)
         .any(|a| a == "--autostart-selftest")
@@ -165,15 +123,10 @@ fn main() -> eframe::Result {
         }
     }
 
-    // Settings UI dispatch — runs in its own process so the main popup,
-    // tray, and hotkey are untouched. The tray menu spawns nudge.exe with
-    // this flag; we exit when the settings window closes.
     if settings_app::parse_settings_arg(std::env::args().skip(1)) {
         return run_settings_ui();
     }
 
-    // Load the user config (or use defaults). Bad / missing files are
-    // logged but never fatal — the app must always come up.
     let config_file = config::ConfigFile::from_args(std::env::args().skip(1));
     let (config, config_err) = config_file.load();
     if let Some(err) = config_err {
@@ -193,34 +146,8 @@ fn main() -> eframe::Result {
         );
     }
 
-    // Whatever OS integration this platform has, started before the event
-    // loop takes the main thread.
-    //
-    // On Windows that is the tray thread: the tray icon, its menu and the
-    // animation loop all live on one dedicated thread running its own
-    // message pump, so animation keeps ticking even while eframe's popup
-    // window is SW_HIDE'd. The same thread owns the global hotkey
-    // registration (WM_HOTKEY is delivered to the registering thread's
-    // message queue) and applies config-file live-reload.
-    //
-    // On macOS this only *records* what to build: the status item is an
-    // `NSStatusItem` and the hotkey goes through Carbon, and both need the
-    // main thread to already be an event loop. `platform::start_on_event_loop`
-    // (below, in the creator closure) does the building.
     platform::start(configured_hotkey, config_path.clone(), config.clone());
 
-    // Live-reload: watch `config.json` for changes (settings UI saves,
-    // or hand-edits) and ask the platform to re-read + diff — the tray
-    // thread on Windows, `platform::tick` on macOS.
-    // Failures are non-fatal (rare: directory missing, OS watch limit
-    // hit) — the app still works, the user just doesn't get live
-    // reload until the next restart.
-    //
-    // The handle MUST live for the rest of the process — dropping it
-    // stops the watcher. eframe::run_native consumes the event loop
-    // but local bindings here outlive the call, so a plain `let` is
-    // enough; we name it `_watcher` (with the leading underscore) so
-    // clippy doesn't flag the otherwise-unused binding.
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     let _watcher = match config_watcher::spawn(
         config_path.clone(),
@@ -233,9 +160,6 @@ fn main() -> eframe::Result {
         }
     };
 
-    // The window's creation size. On both platforms `NudgeApp::place_window`
-    // makes it the work area on the first frame (spec §1); Windows also
-    // positions it here, so the box is centred until then.
     let win_size = [layout::POPUP_SIZE.0 as f32, layout::POPUP_SIZE.1 as f32];
     #[cfg(target_os = "windows")]
     let viewport = {
@@ -258,24 +182,9 @@ fn main() -> eframe::Result {
             .with_resizable(false)
             .with_transparent(true)
             .with_taskbar(false)
-            // eframe shows the window after the first frame even though
-            // launch is Waiting (§4); winit then shows it without taking the
-            // foreground. Only that first show: later ones activate as usual.
             .with_active(false)
             .with_title("Nudge")
     };
-    // macOS: same chrome as Windows minus the two Win32-shaped calls.
-    // `with_taskbar(false)` has no macOS meaning — the Dock is an *app*
-    // property, set through the activation policy below — and the position
-    // cannot be set here at all, because no screen is knowable before the
-    // event loop exists (`NudgeApp::place_window` reads it through
-    // `platform::screen_geometry` on the first frame, in points, and makes
-    // the window the work area).
-    //
-    // The rest is measured to work: transparency composites (the window's own
-    // surface reads 0,0,0,0 at the corners while the card is opaque at the
-    // centre), and `with_always_on_top` lands the window on level 3, floating
-    // over an active Finder window.
     #[cfg(target_os = "macos")]
     let viewport = egui::ViewportBuilder::default()
         .with_inner_size(win_size)
@@ -323,8 +232,6 @@ fn main() -> eframe::Result {
         "Nudge",
         options,
         Box::new(move |cc| {
-            // The half of the OS integration that needs the main thread to
-            // already be the event loop: the status item and the hotkey.
             platform::start_on_event_loop(&cc.egui_ctx);
             Ok(Box::new(
                 NudgeApp::new(cc, default_minutes).with_sprite_config(&config.sprite),

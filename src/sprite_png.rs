@@ -1,15 +1,9 @@
-//! The sprite PNG's acceptance check (spec §10): "a picture with no
-//! background" is a PNG that can carry transparency and has at least one
-//! fully transparent pixel. Native only: the browser tier has no file access.
-
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::config::SpriteConfig;
 
-/// Why a sprite is not shown. The strings are the product copy the settings
-/// window shows and the log line carries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SpriteError {
     NoPath,
@@ -39,8 +33,6 @@ impl fmt::Display for SpriteError {
 
 impl std::error::Error for SpriteError {}
 
-/// What the header says: size, and whether the PNG can carry transparency
-/// at all (an alpha channel, or a `tRNS` chunk).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PngInfo {
     pub width: u32,
@@ -48,7 +40,6 @@ struct PngInfo {
     pub has_alpha: bool,
 }
 
-/// The sprite's pixels, unmultiplied RGBA, and its size in pixels.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodedSprite {
     pub rgba: Vec<u8>,
@@ -56,7 +47,6 @@ pub struct DecodedSprite {
 }
 
 const PNG_SIGNATURE: [u8; 8] = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
-/// Signature plus the IHDR chunk: the least a PNG can be.
 const PNG_HEADER_LEN: usize = 33;
 
 fn u32_at(bytes: &[u8], at: usize) -> u32 {
@@ -67,9 +57,6 @@ fn chunk_type(bytes: &[u8], at: usize) -> &[u8] {
     &bytes[at + 4..at + 8]
 }
 
-/// Signature, size and alpha from the 33-byte header, then a chunk walk for
-/// a `tRNS` up to the first `IDAT`. No CRC check; a truncated file is simply
-/// not a PNG.
 fn inspect_png(bytes: &[u8]) -> Result<PngInfo, SpriteError> {
     if bytes.len() < PNG_HEADER_LEN || bytes[..8] != PNG_SIGNATURE {
         return Err(SpriteError::NotPng);
@@ -86,7 +73,7 @@ fn inspect_png(bytes: &[u8]) -> Result<PngInfo, SpriteError> {
         let kind = chunk_type(bytes, at);
         has_alpha = kind == b"tRNS";
         if kind == b"IDAT" || kind == b"IEND" {
-            break; // tRNS must precede IDAT
+            break;
         }
         at += 12 + u32_at(bytes, at) as usize;
     }
@@ -97,13 +84,10 @@ fn inspect_png(bytes: &[u8]) -> Result<PngInfo, SpriteError> {
     })
 }
 
-/// True if any pixel of a 4-bytes-per-pixel bitmap has alpha 0.
 fn has_transparent_pixel(pixels: &[u8]) -> bool {
     pixels.as_chunks::<4>().0.iter().any(|p| p[3] == 0)
 }
 
-/// The check, keeping the pixels: `decode` runs only once the header passes,
-/// so a PNG without an alpha channel is refused without being decoded.
 fn checked_pixels(
     bytes: &[u8],
     decode: impl FnOnce(&[u8]) -> Option<Vec<u8>>,
@@ -124,9 +108,6 @@ fn checked_pixels(
     })
 }
 
-/// "A PNG without a background": an alpha channel and at least one fully
-/// transparent pixel. `decode` returns a 4-bytes-per-pixel bitmap, or `None`
-/// when the image cannot be decoded.
 fn check_sprite_png(
     bytes: &[u8],
     decode: impl FnOnce(&[u8]) -> Option<Vec<u8>>,
@@ -134,8 +115,6 @@ fn check_sprite_png(
     checked_pixels(bytes, decode).map(|sprite| sprite.px)
 }
 
-/// Unmultiplied RGBA; a `tRNS` chunk is expanded into the alpha channel.
-/// Decoding only — the §10 check is [`load_sprite`]'s.
 pub fn decode_rgba(bytes: &[u8]) -> Option<DecodedSprite> {
     let img = image::load_from_memory_with_format(bytes, image::ImageFormat::Png)
         .ok()?
@@ -158,15 +137,11 @@ fn read_sprite(path: &Path) -> Result<Vec<u8>, SpriteError> {
     fs::read(path).map_err(|_| SpriteError::NotFound(path.to_path_buf()))
 }
 
-/// The check the settings window runs on Save: the reason when the file is
-/// not a sprite, nothing otherwise.
 pub fn check_sprite_file(path: &Path) -> Result<(), SpriteError> {
     let bytes = read_sprite(path)?;
     check_sprite_png(&bytes, decode).map(|_size| ())
 }
 
-/// The sprite a config asks for: `None` while it is off, otherwise the
-/// decoded pixels or the reason it is not shown.
 pub fn load_sprite(cfg: &SpriteConfig) -> Option<Result<DecodedSprite, SpriteError>> {
     if !cfg.enabled {
         return None;
@@ -192,7 +167,6 @@ mod tests {
         out.into_inner()
     }
 
-    /// A 4×4 RGB PNG — no alpha channel at all.
     fn rgb_png() -> Vec<u8> {
         let img = RgbImage::from_pixel(4, 4, image::Rgb([10, 20, 30]));
         let mut out = Cursor::new(Vec::new());
@@ -200,18 +174,14 @@ mod tests {
         out.into_inner()
     }
 
-    /// A 4×4 RGBA PNG whose every pixel is fully opaque.
     fn opaque_rgba_png() -> Vec<u8> {
         rgba_png(|_| [10, 20, 30, 255])
     }
 
-    /// A 4×4 RGBA PNG with a transparent left half — a valid sprite.
     fn cutout_rgba_png() -> Vec<u8> {
         rgba_png(|x| [10, 20, 30, if x < 2 { 0 } else { 255 }])
     }
 
-    // The hand-rolled encoder mirrors electron/tests/fixtures/png.js: 8-bit,
-    // filter 0 on every row, one stored (uncompressed) IDAT, tRNS before IDAT.
     fn crc32(bytes: &[u8]) -> u32 {
         bytes.iter().fold(!0u32, |crc, &b| {
             (0..8).fold(crc ^ u32::from(b), |c, _| {
@@ -323,7 +293,6 @@ mod tests {
     fn has_transparent_pixel_looks_only_at_the_alpha_byte() {
         assert!(!has_transparent_pixel(&[0, 0, 0, 255, 0, 0, 0, 255]));
         assert!(has_transparent_pixel(&[0, 0, 0, 255, 255, 255, 255, 0]));
-        // Semi-transparent is not "background removed".
         assert!(!has_transparent_pixel(&[0, 0, 0, 1]));
     }
 
@@ -455,8 +424,6 @@ mod tests {
         assert_eq!(load_sprite(&cfg).unwrap().unwrap_err(), SpriteError::NoPath);
     }
 
-    /// Guards against the real sprite being swapped in for the fixture: the
-    /// green one is 720×430 with exactly two pixel values.
     #[test]
     fn the_green_fixture_is_a_test_fixture() {
         let DecodedSprite { rgba, px } = decode_rgba(GREEN).unwrap();
