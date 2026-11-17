@@ -103,8 +103,8 @@ describe.skipIf(process.platform !== 'darwin')('macOS popup window', () => {
       expect(after.visible).toBe(true);
       expect(inside(after.bounds, wa), `bounds ${JSON.stringify(after.bounds)} outside workArea ${JSON.stringify(wa)}`).toBe(true);
       const { bounds: mon } = await display();
-      expect(after.bounds.y).toBe(Math.round(mon.y + mon.height * 0.25) + 80);
-      expect(after.bounds.x).toBe(Math.round(mon.x + (mon.width - after.bounds.width) / 2));
+      expect(after.bounds.y).toBe(Math.floor(mon.y + mon.height * 0.25) + 80);
+      expect(after.bounds.x).toBe(Math.floor(mon.x + (mon.width - after.bounds.width) / 2));
       expect(after.focused).toBe(true);
     } finally {
       if (!(await waitFor(probeHome, 1000))) input.click(wall.x, wall.y);
