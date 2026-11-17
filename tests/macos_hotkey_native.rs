@@ -913,26 +913,14 @@ fn window_present(pid: u32, require_elevated: bool) -> bool {
     false
 }
 
-/// Dismiss the popup Nudge shows the moment it launches, and wait until it is
-/// really gone.
-///
-/// Measured, and pinned independently by `tests/macos_native.rs`
-/// (`popup_reappears_after_the_interval` asserts it): a fresh main instance
-/// puts its popup up straight away. So "the popup is visible" only means "the
-/// hotkey fired" *after* the startup one has been cleared — without this, the
-/// two-process bullets would be asserting something that was already true.
-///
-/// Call it while this is the only live `nudge`: the Esc is posted to whatever
-/// has the focus, and a settings window would take it and close.
-fn quiesce_popup(pid: u32) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(15);
-    while popup_visible(pid) && std::time::Instant::now() < deadline {
-        press_chord(VK_ESCAPE, CGEventFlags::CGEventFlagNull);
-    }
+/// A fresh main instance shows no popup: launch is Waiting (spec §4), and
+/// the seeded interval is an hour. So "the popup is visible" afterwards means
+/// "the hotkey fired" — asserted, because the two-process bullets rest on it.
+fn assert_no_popup_at_launch(pid: u32) {
     assert!(
         !popup_visible(pid),
-        "the startup popup would not go away, so nothing below could tell it \
-         apart from a popup the hotkey opened"
+        "the main instance put a popup up at launch, so nothing below could tell \
+         it apart from a popup the hotkey opened"
     );
 }
 
@@ -1599,9 +1587,7 @@ fn the_apps_own_hotkey_opens_the_popup_instead_of_recording() {
     );
 
     let main = Sandboxed::main_instance("Alt+Cmd+J");
-    // Its startup popup opens on top and takes the focus, so the Esc lands
-    // there rather than on the settings window.
-    quiesce_popup(main.pid());
+    assert_no_popup_at_launch(main.pid());
 
     arm();
     settings.truncate_keystream();
@@ -1803,12 +1789,10 @@ fn a_captured_hotkey_survives_save_and_a_relaunch() {
     );
 
     // The value is not only stored, it binds: a main instance on the same HOME
-    // must answer the captured combination. The settings window goes first —
-    // the startup popup has to be dismissed with an Esc, and a settings window
-    // is what would otherwise take it.
+    // must answer the captured combination.
     app.kill_child();
     let main = app.spawn_main_on_same_home();
-    quiesce_popup(main.pid());
+    assert_no_popup_at_launch(main.pid());
     press("Alt+Cmd+J");
     assert!(
         popup_visible(main.pid()),

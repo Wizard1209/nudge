@@ -10,7 +10,8 @@
 //! regression reproduces there.
 //!
 //! This test screen-captures the monitor via GDI `BitBlt`+`GetDIBits` once
-//! before launching the real binary and once with its popup up. Screen capture
+//! before launching the real binary and once with its popup up — the first
+//! deadline's, since launch is Waiting (spec §4). Screen capture
 //! reads the DWM-composited output, so it works for GPU content (unlike
 //! `PrintWindow`, which returns black for GPU surfaces). Spec §1 is what it
 //! holds the popup to:
@@ -55,9 +56,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::BOOL;
 
-/// Spawn → popup on screen and placed. eframe init + tray bootstrap +
-/// foregrounding, under x64 emulation in the test VM.
-const STARTUP_WAIT: Duration = Duration::from_secs(8);
+/// Spawn → popup on screen and placed: the first interval ([`CONFIG`], 3 s),
+/// plus eframe init + tray bootstrap + foregrounding, under x64 emulation in
+/// the test VM.
+const STARTUP_WAIT: Duration = Duration::from_secs(11);
+
+/// A 3-second interval, so the first popup comes soon after launch.
+const CONFIG: &str = r#"{"hotkey":"Ctrl+Shift+Space","default_interval_minutes":0.05}"#;
 
 /// A pixel counts as "card" when its brightness is in this band: above the
 /// opaque-black surround / transparent-over-dark (~0) and the card's own dark
@@ -98,7 +103,7 @@ fn spawn_and_capture() -> Shot {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
 
-    // The popup grabs foreground on launch and — per spec §4 — hides the
+    // The popup grabs foreground when it shows and — per spec §4 — hides the
     // moment it loses focus again. On a desktop the user is actively using,
     // any keystroke or click between our spawn and our screenshot kills the
     // window, so a single fixed sleep is a coin flip (see the 2026-05-25
@@ -129,11 +134,7 @@ fn spawn_and_capture() -> Shot {
 fn try_spawn_and_capture() -> Option<Shot> {
     let tmp = tempfile::tempdir().expect("tempdir");
     let config_path = tmp.path().join("config.json");
-    std::fs::write(
-        &config_path,
-        r#"{"hotkey":"Ctrl+Shift+Space","default_interval_minutes":10.0}"#,
-    )
-    .expect("write throwaway config");
+    std::fs::write(&config_path, CONFIG).expect("write throwaway config");
 
     let (primary, _) = monitor_of(None);
     let before = Capture::of(primary);

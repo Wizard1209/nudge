@@ -156,9 +156,18 @@ screen, because that is what decides how a close behaves:
 | **Asking·Timer** | visible | overdue | The popup was opened *because the interval elapsed*. The deadline is already in the past. |
 | **Asking·Manual** | visible | running | The user opened the popup themselves. The deadline is still ahead. |
 
-`Asking·Timer` is the initial state: the first launch shows the popup as if
-the interval had elapsed. It is not a special case, it is where the machine
-starts.
+`Waiting` is the initial state, on every launch alike — by hand, at login,
+after an update — with the timer armed for `default_interval_minutes`. The
+first popup is the first `Deadline`'s; the tray icon and the hotkey open one
+sooner. Launch never shows the popup because at login the OS usually refuses
+the foreground to a process that has just started: a popup shown then opens
+without the keyboard, so the focus trigger never arms, `Esc` cannot reach
+it, and once other windows are above it nothing closes it while the timer
+stands still.
+
+The browser build is the exception. It is a harness for the card, with no OS
+that launches it, and starts in `Asking·Timer`, as if the interval had
+elapsed.
 
 ### Events
 
@@ -664,10 +673,11 @@ popup: the main app drops the old system-wide registration and binds the
 new combination right away. The other fields are re-read and cached for
 consistency but have no active UI effect:
 
-- `default_interval_minutes` — the popup picks it up at startup and then
-  owns its own "next nudge in" field; live-reload does not overwrite
-  whatever the user is currently typing. A value the §4 interval rule
-  refuses is not used: the popup starts on 10 minutes.
+- `default_interval_minutes` — the popup picks it up at startup, as the
+  interval launch arms (§4) and the value of its own "next nudge in"
+  field, which it then owns; live-reload does not overwrite whatever the
+  user is currently typing. A value the §4 interval rule refuses is not
+  used: the popup starts on 10 minutes.
 - `autostart` — managed transactionally from the settings window (see
   above); the main app does not touch the registry and does not try to
   reconcile it against `config.json` — that is an adjacent concern.

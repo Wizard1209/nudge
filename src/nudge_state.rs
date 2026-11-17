@@ -100,6 +100,14 @@ pub fn decide_close(
     })
 }
 
+/// The interval the machine starts with (spec §4: launch is Waiting): the
+/// minutes field as launch fills it, from the configured default. Like a
+/// Leave, it never refuses — a field the interval rule refuses arms the
+/// 10-minute default.
+pub fn launch_interval(minutes_text: &str) -> Duration {
+    parse_interval(minutes_text).unwrap_or_else(|_| default_interval())
+}
+
 /// Parse the minutes field into a Duration.
 ///
 /// - Empty / whitespace / unparseable text → the default interval (user
@@ -322,6 +330,21 @@ mod tests {
         )
         .unwrap();
         assert_eq!(o.reset_timer, None);
+    }
+
+    // === launch_interval: what the machine starts with (spec §4) ===
+
+    #[test]
+    fn launch_arms_the_minutes_field() {
+        assert_eq!(launch_interval("7"), Duration::from_secs(7 * 60));
+        assert_eq!(launch_interval("0.05"), Duration::from_secs(3));
+    }
+
+    #[test]
+    fn launch_never_refuses_a_field_and_arms_the_default_instead() {
+        for text in ["", "abc", "0", "-5", "NaN", "1e20"] {
+            assert_eq!(launch_interval(text), Duration::from_secs(600), "{text:?}");
+        }
     }
 
     #[test]
