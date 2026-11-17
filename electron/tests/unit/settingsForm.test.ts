@@ -7,9 +7,6 @@ const cfg = (over: Partial<Config> = {}): Config => ({
   ...over,
 });
 
-// Every form here names its platform: §5 has one canonical spelling per
-// platform, so a form that read the host's would assert a different string on
-// a Mac than on a PC.
 const form = (over: Partial<Config> = {}, platform: "macos" | "windows" = "windows") =>
   SettingsForm.fromConfig(cfg(over), platform);
 
@@ -33,8 +30,6 @@ describe("SettingsForm.fromConfig", () => {
   });
 
   it("shows a value that does not parse exactly as stored", () => {
-    // It is the only copy of what the user typed, and the field is where they
-    // fix it.
     expect(form({ hotkey: "Ctrl+Nonsense" }, "macos").hotkey).toBe("Ctrl+Nonsense");
   });
 
@@ -77,6 +72,16 @@ describe("SettingsForm.parsedInterval", () => {
     for (const bad of ["", "abc", "0", "-5"]) {
       f.intervalText = bad;
       expect(f.parsedInterval().ok).toBe(false);
+    }
+  });
+
+  it("accepts exactly 1 000 000 minutes and refuses anything longer", () => {
+    const f = form();
+    f.intervalText = "1000000";
+    expect(f.parsedInterval()).toEqual({ ok: true, value: 1_000_000 });
+    for (const bad of ["1000000.0000000001", "1000001", "1e12", "Infinity"]) {
+      f.intervalText = bad;
+      expect(f.parsedInterval()).toEqual({ ok: false, input: bad });
     }
   });
 });

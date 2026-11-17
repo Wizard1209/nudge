@@ -1,22 +1,3 @@
-//! Idle CPU regression test for nudge.exe.
-//!
-//! Launches the real binary with a throwaway config (`default_interval_minutes`
-//! = 1.0 — short enough that petal-animation drifts hit several times inside
-//! our observation window), lets it settle into Waiting — where launch puts
-//! it, popup hidden (spec §4) — then measures kernel+user CPU time over a
-//! 30-second window via GetProcessTimes.
-//!
-//! Threshold ratchets DOWN as code improves: bump `THRESHOLD_MS_PER_SEC`
-//! lower after each fix. Initial value is intentionally permissive — the
-//! first run is a calibration. The follow-up tightens it to `actual + 20%`
-//! and that becomes the regression guard.
-//!
-//! Why `#[ignore]`: ~35s wall time and only meaningful on Windows. Run with
-//!
-//! ```text
-//! cargo test --target x86_64-pc-windows-gnu --test perf_idle -- --ignored --nocapture
-//! ```
-
 #![cfg(target_os = "windows")]
 
 use std::path::PathBuf;
@@ -33,31 +14,10 @@ use windows::Win32::System::Threading::{
     TerminateProcess,
 };
 
-/// Acceptable CPU-time per wall-second while idle (popup hidden).
-///
-/// The bug this guards against: a hidden eframe window busy-looped winit's
-/// main thread at ~1000 ms/s (a full core) in release builds — eframe ≤0.33
-/// would `request_redraw()` an invisible window, get no `RedrawRequested`
-/// back, and leave `ControlFlow` stuck on `Poll`. eframe 0.34 fixed it by
-/// painting invisible windows directly on a throttled interval; measured
-/// idle is now effectively 0 ms/s here.
-///
-/// 25 ms/s = 2.5% of one core: ~40× headroom below the busy-loop, with slack
-/// for the throttled invisible-window repaints and measurement noise. Do not
-/// raise this back toward 100 without a reason — that was the calibration
-/// value from before the fix landed.
 const THRESHOLD_MS_PER_SEC: f64 = 25.0;
 
-/// Time after spawn before opening the measurement window. eframe init +
-/// tray-thread bootstrap + the first frame's hide into Waiting — 5s is
-/// comfortably above worst-case cold-start.
 const STARTUP_WAIT: Duration = Duration::from_secs(5);
 
-/// Observation window. At a 60s timer interval (16 petals → 3.75s/petal),
-/// this catches several drift events — enough averaging to keep the
-/// measurement repeatable. Startup plus this stays comfortably under the 60s
-/// interval, so the first popup never fires mid-measurement (which would be
-/// a wholly different code path with much higher CPU).
 const MEASURE_WINDOW: Duration = Duration::from_secs(30);
 
 #[test]
@@ -78,8 +38,6 @@ fn idle_cpu_is_under_threshold() {
         .spawn()
         .expect("spawn nudge.exe");
 
-    // RAII: kill the child on any return path (panic, early return,
-    // normal completion). Avoids a lingering nudge.exe if an assert fails.
     let mut guard = ChildGuard(child);
     let pid = guard.0.id();
 
@@ -96,7 +54,6 @@ fn idle_cpu_is_under_threshold() {
     let threads_after = enumerate_thread_cpu(pid);
     let wall_elapsed = wall_start.elapsed();
 
-    // Per-thread CPU breakdown — points at the actual offending thread.
     let mut deltas: Vec<(u32, Duration)> = threads_after
         .iter()
         .map(|(tid, after)| {
@@ -120,8 +77,6 @@ fn idle_cpu_is_under_threshold() {
         let _ = CloseHandle(handle);
     }
 
-    // Kill before asserting so a failure doesn't leave nudge.exe behind
-    // even with the RAII guard (defense in depth).
     let _ = guard.0.kill();
     let _ = guard.0.wait();
 
@@ -151,9 +106,6 @@ fn process_cpu_time(handle: HANDLE) -> Duration {
     filetime_to_duration(kernel) + filetime_to_duration(user)
 }
 
-/// Best-effort thread name via GetThreadDescription. Libraries that set
-/// names via SetThreadDescription (Rust's std, tokio, winit, etc.) show
-/// up here; OS threads typically don't.
 fn thread_description(tid: u32) -> Option<String> {
     unsafe {
         let h = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, false, tid).ok()?;
@@ -164,16 +116,10 @@ fn thread_description(tid: u32) -> Option<String> {
             return None;
         }
         let s = name_ptr.to_string().ok();
-        // Intentionally not LocalFree'ing the buffer — diagnostic-only,
-        // process exits shortly anyway.
         s.filter(|s| !s.is_empty())
     }
 }
 
-/// Walk every thread of the process and snapshot its accumulated
-/// kernel+user CPU time. Returns a map of TID → total. Threads created
-/// or destroyed mid-window are handled gracefully via the diff caller:
-/// `unwrap_or_default()` on missing keys.
 fn enumerate_thread_cpu(pid: u32) -> std::collections::HashMap<u32, Duration> {
     let mut times = std::collections::HashMap::new();
     let snapshot = match unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) } {
@@ -201,7 +147,6 @@ fn enumerate_thread_cpu(pid: u32) -> std::collections::HashMap<u32, Duration> {
                     }
                     let _ = CloseHandle(h);
                 }
-                // Reset dwSize on each iteration — required by the API.
                 entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
                 if Thread32Next(snapshot, &mut entry).is_err() {
                     break;
@@ -214,7 +159,6 @@ fn enumerate_thread_cpu(pid: u32) -> std::collections::HashMap<u32, Duration> {
 }
 
 fn filetime_to_duration(ft: FILETIME) -> Duration {
-    // FILETIME = number of 100-nanosecond intervals.
     let ticks = ((ft.dwHighDateTime as u64) << 32) | (ft.dwLowDateTime as u64);
     Duration::from_nanos(ticks.saturating_mul(100))
 }
@@ -223,9 +167,6 @@ struct ChildGuard(Child);
 
 impl Drop for ChildGuard {
     fn drop(&mut self) {
-        // Best-effort: if the test already killed cleanly, kill returns
-        // an error we can ignore. We also brute-force terminate via the
-        // PID in case the Child handle is in a weird state.
         let pid = self.0.id();
         let _ = self.0.kill();
         let _ = self.0.wait();

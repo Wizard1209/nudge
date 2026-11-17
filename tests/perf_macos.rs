@@ -1,52 +1,3 @@
-//! Memory, idle CPU and show latency of the real `nudge` binary on macOS.
-//!
-//! The macOS counterpart of `tests/perf_idle.rs`, widened to memory: a menu-bar
-//! agent spends almost all of its life hidden, so what it holds while hidden is
-//! what it costs the user. The numbers come from `proc_pid_rusage`
-//! (`RUSAGE_INFO_V4`) — `ri_phys_footprint` is the figure Activity Monitor's
-//! "Memory" column shows, and unlike `vmmap`'s header it counts graphics memory
-//! the process owns but has not mapped.
-//!
-//! One test, two sandboxed launches. Launch is Waiting (spec §4), so each
-//! popup is a timer's:
-//!
-//! * **steady** — a 45-second interval, longer than what is sampled after the
-//!   hide, so nothing re-shows the popup: (a) startup to the first deadline's
-//!   popup on screen, then hide; (b) 30 s of hidden samples — footprint, CPU,
-//!   wakeups — and the `footprint` category table.
-//! * **cycles** — a 21-second interval: hide the first popup, then let the
-//!   timer re-show it [`CYCLES`] times, hiding each one and sampling every
-//!   hidden gap. The last gap against the first re-show's is the leak guard;
-//!   the deadline-to-screen delay of each re-show is the show latency.
-//!
-//! Every run prints one `PERF_MACOS_JSON {...}` line on stdout, before any
-//! assertion, so a failing run still reports its numbers.
-//! `scripts/perf-macos.sh` is the runner.
-//!
-//! # Running
-//!
-//! ```sh
-//! cargo test --release --test perf_macos -- --ignored --nocapture --test-threads=1
-//! ```
-//!
-//! `--release` matters: `CARGO_BIN_EXE_nudge` is the binary of the profile the
-//! test was built with, and a debug build's footprint and CPU are not what
-//! ships.
-//!
-//! # Hiding without a grant
-//!
-//! The popup is hidden by spec §4's focus trigger: once it has held the
-//! keyboard, losing it is a Leave. [`take_activation`] runs a JXA script that
-//! makes `osascript` itself the active application for a moment, which needs no
-//! Accessibility, Automation or Screen Recording grant and leaves no window
-//! behind. A Leave from a timer-opened popup resets the timer to the minutes
-//! field, which is what drives the cycles.
-//!
-//! Requirements: a logged-in, unlocked GUI session with no full-screen app in
-//! front, and no other `nudge` popup contending for activation while it runs.
-//! The test takes the keyboard away from the user every few seconds for about
-//! four minutes.
-
 #![cfg(target_os = "macos")]
 
 use std::path::Path;
@@ -64,77 +15,36 @@ use core_graphics::window::{
     kCGWindowBounds, kCGWindowIsOnscreen, kCGWindowLayer, kCGWindowOwnerPID,
 };
 
-/// Hidden footprint ceiling, MiB: ~10% over the worst measured with the
-/// hidden window shrunk to one point (`NudgeApp::hide_popup`; release, a
-/// 1470×956 pt display at 2x). Before the hidden window was shrunk it held
-/// ~134, 94 MiB of it IOSurfaces — a hide that keeps the window's surfaces
-/// again fails here.
 const BUDGET_HIDDEN_MB: f64 = 47.0;
 
-/// The same ceiling after [`CYCLES`] timer re-shows, MiB — the state a
-/// long-running instance lives in. ~10% over the worst measured.
 const BUDGET_HIDDEN_AFTER_CYCLES_MB: f64 = 45.0;
 
-/// How much re-shows 2 to [`CYCLES`] may add to the hidden footprint, MiB.
-/// The gaps move by whole ~6.5 MiB steps either way, so this admits one step
-/// and not two — and not one more work-area surface (a 2940×1666 BGRA buffer
-/// is 18.7 MiB).
 const BUDGET_CYCLE_GROWTH_MB: f64 = 10.0;
 
-/// Hidden CPU ceiling, ms of CPU per wall second — the same 2.5%-of-a-core
-/// budget `tests/perf_idle.rs` holds the Windows build to.
 const BUDGET_HIDDEN_CPU_MS_PER_S: f64 = 25.0;
 
-/// Deadline to on-screen, ms. Includes the last petal's 250 ms fall
-/// (`daisy::frame_at`) and the window server's order-in, ~330–400 at the
-/// cycles interval both before and after the hidden window was shrunk.
-/// Generous so a loaded machine does not fail it,
-/// tight enough to catch a re-show that waits for some unrelated wake.
 const BUDGET_SHOW_LATENCY_MS: f64 = 1500.0;
 
-/// What launch may add to the first interval before its popup is on screen.
-/// This polls, so the ceiling only bounds a launch that never shows.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// From the popup being on screen to it being key. The focus trigger only
-/// fires after the popup has held the keyboard (spec §4), so hiding before
-/// this would be a no-op.
 const KEY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Each half of a hide: activation leaving the popup, then the popup going
-/// off screen. Master measures ~0.1 s and ~0.33 s.
 const HIDE_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// After the hide, before sampling: lets the last frame, the timer reset and
-/// any deferred AppKit release settle.
 const SETTLE: Duration = Duration::from_secs(2);
 
-/// Hidden samples in the steady launch, one per second. Thirty matches the
-/// Windows idle test's window, which holds several status-item refreshes.
 const HIDDEN_SAMPLES: usize = 30;
 
-/// Interval of the steady launch, minutes: 45 s, so its first popup comes
-/// soon and the [`SETTLE`] plus [`HIDDEN_SAMPLES`] after the hide fit before
-/// the next.
 const STEADY_INTERVAL_MIN: f64 = 0.75;
 
-/// Interval of the cycles launch, minutes: 21 s, long enough for
-/// [`CYCLE_SETTLE`] and [`CYCLE_SAMPLES`] samples to fit between two shows.
 const CYCLE_INTERVAL_MIN: f64 = 0.35;
 
-/// From a hide to the first gap sample of the cycles launch. A hidden
-/// window's memory goes back in steps, the last about 10 s after the hide;
-/// a gap sampled before that reads the release, not what a re-show kept.
 const CYCLE_SETTLE: Duration = Duration::from_secs(15);
 
-/// Show/hide cycles driven by the timer.
 const CYCLES: usize = 5;
 
-/// Samples taken in each hidden gap of the cycles launch.
 const CYCLE_SAMPLES: usize = 3;
 
-/// A combination the developer's own Nudge is not using, so the sandboxed
-/// one's registration never collides with it.
 const HOTKEY: &str = "Ctrl+Alt+Shift+F19";
 
 const MIB: f64 = 1024.0 * 1024.0;
@@ -145,8 +55,6 @@ fn hidden_footprint_cpu_and_show_latency_stay_in_budget() {
     let steady = measure_steady();
     let cycles = measure_cycles();
 
-    // From the gap after the first re-show, not the first show's: every gap
-    // but that one follows a re-show, so only re-shows are compared.
     let after_first_reshow_mb = cycles.hidden_mb[1];
     let after_cycles_mb = *cycles.hidden_mb.last().expect("one gap per cycle");
     let growth = after_cycles_mb - after_first_reshow_mb;
@@ -223,8 +131,6 @@ struct Steady {
     unmapped_graphics_mb: Option<f64>,
 }
 
-/// Phases (a) and (b): one launch, shown once by its first deadline and
-/// never re-shown.
 fn measure_steady() -> Steady {
     let launched = Instant::now();
     let app = SandboxedApp::launch(STEADY_INTERVAL_MIN);
@@ -237,11 +143,8 @@ fn measure_steady() -> Steady {
          of the interval — is the session unlocked? app log: {}",
         app.log()
     );
-    // Launch to on-screen, less the interval it spent Waiting.
     let startup_ms = (launched.elapsed().as_secs_f64() - interval.as_secs_f64()) * 1e3;
     wait_for_key(&app);
-    // A popup sampled the instant it lands reads anywhere from ~100 to ~200
-    // MiB on the same build: its surfaces are still being allocated.
     std::thread::sleep(SETTLE);
     let visible_mb = sample(pid).footprint as f64 / MIB;
 
@@ -288,14 +191,11 @@ fn measure_steady() -> Steady {
 }
 
 struct Cycles {
-    /// Hidden footprint in each gap: after the first popup, then after each
-    /// timer re-show.
     hidden_mb: Vec<f64>,
     lifetime_max_mb: f64,
     show_latency_ms: Vec<f64>,
 }
 
-/// Phase (c): timer-driven re-shows in a second launch.
 fn measure_cycles() -> Cycles {
     let app = SandboxedApp::launch(CYCLE_INTERVAL_MIN);
     let pid = app.pid();
@@ -318,8 +218,6 @@ fn measure_cycles() -> Cycles {
             app.log()
         );
         let shown = Instant::now();
-        // Signed, not saturating: a negative latency means the anchor is
-        // wrong, and has to read as such rather than as a perfect zero.
         let deadline = hidden.left + interval;
         show_latency_ms.push(if shown >= deadline {
             (shown - deadline).as_secs_f64() * 1e3
@@ -338,8 +236,6 @@ fn measure_cycles() -> Cycles {
     }
 }
 
-/// The median footprint of [`CYCLE_SAMPLES`] samples taken one per second
-/// after [`CYCLE_SETTLE`], all inside one hidden gap of the cycles launch.
 fn hidden_gap_footprint(pid: u32) -> f64 {
     std::thread::sleep(CYCLE_SETTLE);
     let mut v = Vec::with_capacity(CYCLE_SAMPLES);
@@ -355,12 +251,6 @@ fn hidden_gap_footprint(pid: u32) -> f64 {
     median(&v)
 }
 
-// ---------- the sandboxed app ------------------------------------------------
-
-/// A running `nudge` with `HOME` redirected into a temp dir, killed on drop.
-/// The same isolation as `macos_native.rs`'s `SandboxedApp`: `dirs` resolves
-/// the journal and the config from `$HOME`, so nothing reaches the
-/// developer's own files.
 struct SandboxedApp {
     child: Child,
     home: tempfile::TempDir,
@@ -409,17 +299,10 @@ impl Drop for SandboxedApp {
     }
 }
 
-/// The binary of the profile this test was built with — `--release` measures
-/// the release build.
 fn binary() -> &'static Path {
     Path::new(env!("CARGO_BIN_EXE_nudge"))
 }
 
-// ---------- hiding -----------------------------------------------------------
-
-/// Wait until the popup is the active application and a frame has seen it
-/// key — the condition spec §4's focus trigger needs before losing focus
-/// counts as a Leave.
 fn wait_for_key(app: &SandboxedApp) {
     let pid = app.pid();
     assert!(
@@ -428,29 +311,20 @@ fn wait_for_key(app: &SandboxedApp) {
          cannot hide it; frontmost is pid {:?}",
         frontmost_pid()
     );
-    // The arming latch runs in a frame; a key change wakes one at once.
     std::thread::sleep(Duration::from_millis(300));
 }
 
-/// When a hide happened, bracketed from both sides.
 struct Hidden {
-    /// Launch Services first reported another application in front. The
-    /// Leave runs in the frame that sees the window resign key, so this is
-    /// the timer reset to within a poll — the show-latency anchor.
     left: Instant,
-    /// The window list first reported the popup off screen.
     off_screen: Instant,
 }
 
 impl Hidden {
-    /// Focus loss to off screen, ms.
     fn hide_ms(&self) -> f64 {
         (self.off_screen - self.left).as_secs_f64() * 1e3
     }
 }
 
-/// Hide the popup by taking the keyboard away from it. Panics if it does not
-/// go off screen.
 fn hide(app: &SandboxedApp) -> Hidden {
     let pid = app.pid();
     let mut activator = take_activation();
@@ -476,10 +350,6 @@ fn hide(app: &SandboxedApp) -> Hidden {
     }
 }
 
-/// Make `osascript` the active application for a couple of seconds. AppKit
-/// lets any process with a window-server connection activate itself; no TCC
-/// grant is involved, and an accessory-policy app shows no Dock icon and opens
-/// no window.
 fn take_activation() -> Child {
     Command::new("osascript")
         .args([
@@ -494,7 +364,6 @@ fn take_activation() -> Child {
         .expect("osascript not runnable")
 }
 
-/// The pid of the frontmost application, as Launch Services sees it.
 fn frontmost_pid() -> Option<u32> {
     let asn = Command::new("lsappinfo").arg("front").output().ok()?;
     let asn = String::from_utf8_lossy(&asn.stdout).trim().to_string();
@@ -509,13 +378,6 @@ fn frontmost_pid() -> Option<u32> {
         .ok()
 }
 
-// ---------- the window -------------------------------------------------------
-
-/// Whether `pid`'s popup is on screen: its largest window on a nonzero layer
-/// (the popup is always-on-top) has `kCGWindowIsOnscreen`. Built on
-/// `kCGWindowListOptionAll`, so an ordered-out window is still listed and
-/// reads `false` instead of vanishing — the same reading as
-/// `macos_native.rs::popup_visible`, without its geometry.
 fn popup_visible(pid: u32) -> bool {
     let Some(windows) = CGDisplay::window_list_info(kCGWindowListOptionAll, None) else {
         return false;
@@ -561,13 +423,10 @@ fn popup_visible(pid: u32) -> bool {
     best.is_some_and(|(_, on_screen)| on_screen)
 }
 
-// ---------- measuring --------------------------------------------------------
-
 #[derive(Clone, Copy)]
 struct Sample {
     footprint: u64,
     lifetime_max: u64,
-    /// Mach absolute time units, not ns — see [`timebase`].
     user: u64,
     system: u64,
     idle_wakeups: u64,
@@ -575,8 +434,6 @@ struct Sample {
 }
 
 fn sample(pid: u32) -> Sample {
-    // SAFETY: a plain-old-data out-parameter the kernel fills; flavor V4 is
-    // exactly `rusage_info_v4`.
     let mut ri: libc::rusage_info_v4 = unsafe { std::mem::zeroed() };
     let rc = unsafe {
         libc::proc_pid_rusage(
@@ -617,18 +474,13 @@ unsafe extern "C" {
     fn mach_timebase_info(info: *mut Timebase) -> libc::c_int;
 }
 
-/// `ri_user_time` and `ri_system_time` are in mach absolute time units: 1 ns
-/// on Intel, 125/3 ns on Apple silicon.
 fn timebase() -> Timebase {
     let mut tb = Timebase { numer: 0, denom: 0 };
-    // SAFETY: fills a two-u32 struct; cannot fail on a running system.
     let rc = unsafe { mach_timebase_info(&mut tb) };
     assert!(rc == 0 && tb.denom != 0, "mach_timebase_info failed");
     tb
 }
 
-/// `footprint <pid>`'s summary table, which lists IOSurface memory as its own
-/// category. Empty when the tool is missing or refuses.
 fn footprint_table(pid: u32) -> String {
     Command::new("footprint")
         .arg(pid.to_string())
@@ -637,14 +489,11 @@ fn footprint_table(pid: u32) -> String {
         .unwrap_or_default()
 }
 
-/// The dirty column of one category row of [`footprint_table`], in MiB —
-/// e.g. `  94 MB   0 B   0 B   6    IOSurface`. `None` when the row is absent.
 fn footprint_row_mb(table: &str, category: &str) -> Option<f64> {
     table.lines().find_map(|line| {
         let mut words = line.split_whitespace();
         let value: f64 = words.next()?.parse().ok()?;
         let unit = words.next()?;
-        // Dirty, Clean, Reclaimable as value-unit pairs, then the region count.
         let rest: Vec<&str> = words.skip(5).collect();
         if rest.join(" ") != category {
             return None;
@@ -659,8 +508,6 @@ fn footprint_row_mb(table: &str, category: &str) -> Option<f64> {
         Some(value * scale)
     })
 }
-
-// ---------- small helpers ----------------------------------------------------
 
 fn median(v: &[f64]) -> f64 {
     let mut s = v.to_vec();

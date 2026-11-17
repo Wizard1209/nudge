@@ -1,12 +1,3 @@
-//! The card at its layout rect and the sprite painted over it (spec §1,
-//! §10), driven headless through the real `NudgeApp` by `egui_kittest` as
-//! `tests/kittest_card.rs` does. The harness has no OS window, so the
-//! screen geometry is injected; what the real window does with it is
-//! `tests/macos_native.rs`'s business.
-//!
-//! Node rects come back in physical pixels; every assertion here is in
-//! points, so they are divided by the harness's scale first.
-
 use eframe::egui::accesskit::Role;
 use eframe::egui::{self, Rect, TextureOptions, pos2, vec2};
 use egui_kittest::Harness;
@@ -24,7 +15,6 @@ const GREEN: &[u8] = include_bytes!(concat!(
     "/electron/tests/e2e/fixtures/sprite-green.png"
 ));
 
-/// This host: 1470×956 with a 33 pt menu bar.
 fn g1() -> ScreenGeometry {
     ScreenGeometry {
         monitor: Rect::from_min_size(pos2(0.0, 0.0), vec2(1470.0, 956.0)),
@@ -36,7 +26,6 @@ fn green_sprite() -> DecodedSprite {
     decode_rgba(GREEN).expect("the green fixture decodes")
 }
 
-/// Our sprite's config: hanging above and left of a 679 pt card.
 fn green_config() -> SpriteConfig {
     SpriteConfig {
         enabled: true,
@@ -56,15 +45,11 @@ fn harness<'a>(
         .with_pixels_per_point(PPP)
         .build_eframe(|cc| build(cc));
     harness.run();
-    // The app launches in Waiting (spec §4): the card is what the first
-    // Deadline opens.
     harness.state_mut().deliver_deadline();
     harness.run();
     harness
 }
 
-/// The first field's rect in points. The card frame has no inner margin,
-/// so the field's top-left corner is the card's.
 fn first_field(harness: &Harness<'_, NudgeApp>) -> Rect {
     let px = harness
         .get_all_by_role(Role::TextInput)
@@ -86,7 +71,6 @@ fn sprite_textures(harness: &Harness<'_, NudgeApp>) -> Vec<([usize; 2], TextureO
 
 #[test]
 fn plain_card_sits_where_the_shield_layout_says() {
-    // 495 = floor((1470 − 480) / 2); 286 = floor(956 / 4) + 80 − 33.
     let harness = harness(vec2(1470.0, 833.0), |cc| {
         NudgeApp::new(cc, 10.0).with_screen_geometry(g1())
     });
@@ -97,9 +81,6 @@ fn plain_card_sits_where_the_shield_layout_says() {
 
 #[test]
 fn card_moves_by_the_sprite_layout_offset() {
-    // The card widens to 679 and re-centres: 395 = floor((1470 − 679) / 2).
-    // The sprite's top lands at 286 − 277 = 9, inside the window, so the
-    // card keeps its anchor.
     let harness = harness(vec2(1470.0, 833.0), |cc| {
         NudgeApp::new(cc, 10.0)
             .with_screen_geometry(g1())
@@ -112,7 +93,6 @@ fn card_moves_by_the_sprite_layout_offset() {
 
 #[test]
 fn sprite_uploads_one_nearest_texture() {
-    // Native pixel density, never resampled (§10): NEAREST, at the PNG's size.
     let harness = harness(vec2(1470.0, 833.0), |cc| {
         NudgeApp::new(cc, 10.0)
             .with_screen_geometry(g1())
@@ -134,15 +114,12 @@ fn no_sprite_uploads_nothing() {
 
 #[test]
 fn without_injected_geometry_the_card_is_in_the_box() {
-    // No screen to lay out on: the card sits in the window as it always
-    // has — centred, top at a quarter of the height, 48 pt kept free.
     let harness = harness(vec2(520.0, 320.0), |cc| NudgeApp::new(cc, 10.0));
     let field = first_field(&harness);
     assert_eq!(field.min, pos2(24.0, 80.0));
     assert_eq!(field.width(), 472.0);
 }
 
-/// A primary click at `pos` (points), as the OS would deliver it.
 fn click_at(harness: &Harness<'_, NudgeApp>, pos: egui::Pos2) {
     harness.event(egui::Event::PointerMoved(pos));
     for pressed in [true, false] {
@@ -157,10 +134,6 @@ fn click_at(harness: &Harness<'_, NudgeApp>, pos: egui::Pos2) {
 
 #[test]
 fn sprite_takes_no_clicks() {
-    // The sprite is a painting, not a widget (§10): over the card a click
-    // goes to the field beneath, off the card it is the click outside that
-    // closes the popup (§4). The green sprite at (0, 0) is 360×215 pt, so it
-    // covers rows 1–3 of the 130 pt card and 85 pt of air below it.
     let mut harness = harness(vec2(1470.0, 833.0), |cc| {
         NudgeApp::new(cc, 10.0)
             .with_screen_geometry(g1())
@@ -176,14 +149,12 @@ fn sprite_takes_no_clicks() {
     let card_top = first_field(&harness).top();
     assert_eq!(card_top, 286.0);
 
-    // Row 2, under the sprite: the field takes the click.
     click_at(&harness, pos2(450.0, card_top + 60.0));
     harness.run();
     let inputs: Vec<_> = harness.get_all_by_role(Role::TextInput).collect();
     assert_eq!(inputs.len(), 3, "the popup is still up");
     assert!(inputs[1].is_focused(), "the click reached the second field");
 
-    // The sprite's lower part, below the card: a click outside (§4).
     click_at(&harness, pos2(450.0, card_top + 130.0 + 40.0));
     harness.run();
     assert_eq!(harness.query_all_by_role(Role::TextInput).count(), 0);

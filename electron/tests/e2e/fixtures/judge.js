@@ -2,7 +2,6 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// OPENAI_API_KEY comes from the environment or the repo-root .env.
 function apiKey() {
     if (process.env.OPENAI_API_KEY) return process.env.OPENAI_API_KEY;
     const envPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../.env');
@@ -11,12 +10,6 @@ function apiKey() {
     return line.slice('OPENAI_API_KEY='.length).trim().replace(/^["']|["']$/g, '');
 }
 
-/**
- * Ask a vision model whether a screenshot satisfies ONE atomic visual fact.
- * Default gpt-5.4-mini: these are fine geometric judgments (gaps, which side
- * of an edge), beyond what nano does reliably. Override: OPENAI_JUDGE_MODEL,
- * OPENAI_JUDGE_EFFORT.
- */
 export async function visualAssert(pngBase64, assertion) {
     const model = process.env.OPENAI_JUDGE_MODEL ?? 'gpt-5.4-mini';
     const isReasoning = model.startsWith('gpt-5') || model.startsWith('o');
@@ -26,8 +19,6 @@ export async function visualAssert(pngBase64, assertion) {
         body: JSON.stringify({
             model,
             response_format: { type: 'json_object' },
-            // Reasoning models reject max_tokens/temperature and spend hidden
-            // reasoning tokens from this cap.
             ...(isReasoning
                 ? { max_completion_tokens: 2000, reasoning_effort: process.env.OPENAI_JUDGE_EFFORT ?? 'low' }
                 : { max_tokens: 200, temperature: 0 }),

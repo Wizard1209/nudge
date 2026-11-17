@@ -1,29 +1,16 @@
-/**
- * Pure config shape + coercion. No I/O — safe to import from the browser
- * Settings sub-app as well as the Electron main process. The node-only file
- * read/write/path lives in `src/electron/config.ts`, which re-exports these.
- */
-
 import { CARD_WIDTH } from "./sprite";
 
-/** Optional PNG drawn 1:1 in front of the popup card. */
 export interface SpriteConfig {
   enabled: boolean;
-  /** Absolute path to the PNG. */
   path: string;
-  /** Sprite top-left relative to the card top-left, px; may be negative. */
   x: number;
   y: number;
-  /** Card width while the sprite is on, px. Ignored when off. */
   card_width: number;
 }
 
 export interface Config {
-  /** Global hotkey label in the §5 format, e.g. "Ctrl+Shift+Space". */
   hotkey: string;
-  /** Default "next nudge in" interval, in minutes. Finite and > 0. */
   default_interval_minutes: number;
-  /** Whether the app is registered to launch with the OS session. */
   autostart: boolean;
   sprite: SpriteConfig;
 }
@@ -43,13 +30,17 @@ export const DEFAULT_CONFIG: Config = {
   sprite: DEFAULT_SPRITE,
 };
 
-/** Finite number → nearest integer (never -0); anything else → null. */
+export const MAX_INTERVAL_MINUTES = 1_000_000;
+
+export function validIntervalMinutes(minutes: number): boolean {
+  return minutes > 0 && minutes <= MAX_INTERVAL_MINUTES;
+}
+
 function roundedInt(value: unknown): number | null {
   if (typeof value !== "number" || !Number.isFinite(value)) return null;
   return Math.round(value) + 0;
 }
 
-/** Same forgiving rule as the top level: each bad field falls back alone. */
 export function normalizeSprite(raw: unknown): SpriteConfig {
   const obj =
     raw && typeof raw === "object" && !Array.isArray(raw)
@@ -65,11 +56,6 @@ export function normalizeSprite(raw: unknown): SpriteConfig {
   };
 }
 
-/**
- * Coerce arbitrary parsed JSON into a valid Config. Each field that is absent
- * or invalid silently falls back to its default — a hand-edited or
- * partially-written config never crashes the app (spec §9: forgiving load).
- */
 export function normalize(raw: unknown): Config {
   const obj = (raw ?? {}) as Record<string, unknown>;
   return {
@@ -79,8 +65,7 @@ export function normalize(raw: unknown): Config {
         : DEFAULT_CONFIG.hotkey,
     default_interval_minutes:
       typeof obj.default_interval_minutes === "number" &&
-      Number.isFinite(obj.default_interval_minutes) &&
-      obj.default_interval_minutes > 0
+      validIntervalMinutes(obj.default_interval_minutes)
         ? obj.default_interval_minutes
         : DEFAULT_CONFIG.default_interval_minutes,
     autostart:
@@ -98,12 +83,6 @@ export interface ConfigDiff {
   sprite: boolean;
 }
 
-/**
- * Per-field change report between two configs. The file watcher uses this to
- * decide what to re-apply live — per spec §9 only a hotkey change has a live
- * effect; interval/autostart are cached for the next nudge / next launch. A
- * sprite change is applied while the popup is hidden.
- */
 export function diffConfig(prev: Config, next: Config): ConfigDiff {
   return {
     hotkey: prev.hotkey !== next.hotkey,

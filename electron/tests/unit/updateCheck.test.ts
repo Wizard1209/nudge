@@ -33,7 +33,7 @@ describe("version order (§9: a newer release only)", () => {
     expect(isNewer("v0.3.0", "0.2.2")).toBe(true);
     expect(isNewer("0.2.3", "0.2.2")).toBe(true);
     expect(isNewer("v1.0.0", "0.99.99")).toBe(true);
-    expect(isNewer("v0.10.0", "0.9.0")).toBe(true); // numeric, not lexical
+    expect(isNewer("v0.10.0", "0.9.0")).toBe(true);
   });
 
   it("the same or an older latest is up to date", () => {

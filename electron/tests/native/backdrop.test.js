@@ -8,12 +8,6 @@ import { launchApp, popupState } from './fixtures/electron.js';
 const FIXTURE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../e2e/fixtures/sprite-green.png');
 const REAL = { enabled: true, path: FIXTURE, x: -41, y: -277, card_width: 679 };
 
-// Spec §2: on macOS the frost behind the card is the system's own material,
-// an NSVisualEffectView clipped to the card and sitting under the page. The
-// page cannot see it, so these ask the main process where it put the view,
-// in the page's own coordinates (origin top-left of the window's content).
-// The glass is the card's 129.5 pt (§2), not the 130 pt window row that
-// holds it: the half point under the bottom hairline stays bare.
 describe.skipIf(process.platform !== 'darwin')('card backdrop (macOS glass)', () => {
   let app;
   afterEach(async () => {
@@ -54,7 +48,6 @@ describe.skipIf(process.platform !== 'darwin')('card backdrop (macOS glass)', ()
       frame: { x: 0, y: 0, width: 480, height: 129.5 },
       radius: 16,
     });
-    // The renderer is told the glass is there, so its fill only tints it.
     expect(await popupPage().evaluate(() => window.nudge.backdrop)).toBe(true);
   });
 

@@ -6,12 +6,6 @@ mod wasm_entry {
     use crate::settings_app::{SettingsApp, SettingsHost};
     use wasm_bindgen::prelude::*;
 
-    /// True when the page wants the settings UI instead of the main popup.
-    /// We accept the marker in *either* the query string (`?settings`) or
-    /// the path (`/settings.html`) so a static-server setup that doesn't
-    /// rewrite query strings still routes correctly. The Puppeteer e2e
-    /// test for settings hits `settings.html` which matches the path
-    /// branch; native testing via `?settings` matches the query branch.
     fn page_wants_settings() -> bool {
         let Some(window) = web_sys::window() else {
             return false;
@@ -34,19 +28,11 @@ mod wasm_entry {
             .unwrap();
 
         if page_wants_settings() {
-            // Settings UI on the same canvas. Provider is a fake (no
-            // registry in the browser); persistence writes the same
-            // localStorage key the native code reads when running under
-            // wasm-bindgen (`nudge-config`). This is what the e2e
-            // settings.test.ts asserts against.
             wasm_bindgen_futures::spawn_local(async move {
                 let (cfg, err) = config::load_from_localstorage();
                 if let Some(e) = err {
                     web_sys::console::warn_1(&format!("[nudge-settings] {e}").into());
                 }
-                // A headless host — the browser has no file to check a sprite
-                // against and cannot ask who else holds a combination — that
-                // persists to localStorage.
                 let host = SettingsHost {
                     persist: Box::new(|c: &config::Config| config::save_to_localstorage(c)),
                     ..SettingsHost::headless(Box::new(FakeProvider::new(cfg.autostart)))
@@ -69,8 +55,6 @@ mod wasm_entry {
                 .start(
                     canvas,
                     web_options,
-                    // WASM has no on-disk config; the popup's minutes field
-                    // starts at the product default.
                     Box::new(|cc| {
                         Ok(Box::new(NudgeApp::new(
                             cc,

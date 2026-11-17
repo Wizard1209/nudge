@@ -3,12 +3,6 @@ import { writeFileSync } from 'node:fs';
 import { launchBrowser, createPage } from './fixtures/browser.js';
 import { visualAssert } from './fixtures/judge.js';
 
-// §9 "Window chrome and layout", one prompt per bullet, each quoting the
-// sentence it judges and asking only whether the capture shows that. The
-// capture is the browser build of settings.html at the window's own size.
-// Two negative arms prove the judge can tell the layout apart from a broken
-// one: the same prompt must FAIL once the footnote is hidden or the buttons
-// are swapped.
 const VIEWPORT = { width: 560, height: 582 };
 
 const THREE_GROUPS =
@@ -96,8 +90,6 @@ describe('settings layout (LLM-judged)', () => {
         expect(await judge(NO_HEADING)).toBe(true);
     });
 
-    // Photographed with something to save: greyed, the fill is dimmed (§9
-    // Saving), and "the one filled button" is a sentence about the live one.
     it('Cancel, then Save, at the bottom right, Save filled', async () => {
         await page.click('[data-testid="settings-interval"]', { clickCount: 3 });
         await page.type('[data-testid="settings-interval"]', '11');
@@ -105,8 +97,6 @@ describe('settings layout (LLM-judged)', () => {
     });
 
     it('negative arm: swapped buttons are caught', async () => {
-        // Save sent to the far left of the button line: the one arrangement the
-        // sentence rules out.
         await withStyle('[data-testid="settings-save"] { order: -1; margin-right: auto }', async () => {
             expect(await judge(BUTTONS)).toBe(false);
         });

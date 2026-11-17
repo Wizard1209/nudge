@@ -1,11 +1,3 @@
-//! Backend for every other target — in practice a Linux dev host.
-//!
-//! All no-ops. The property being preserved is the one the old
-//! `cfg(not(any(windows, macos)))` arms in `main.rs` and `autostart.rs`
-//! already had: the tree builds and the popup runs on a machine that is
-//! neither of the two shipping platforms, so a developer there can work on
-//! the portable half. It never nudges, and never did.
-
 use eframe::egui;
 
 use crate::config;
@@ -14,7 +6,6 @@ use crate::layout::ScreenGeometry;
 
 pub use super::shared::set_popup_visible;
 
-/// Nothing to wake: no thread and no tick acts on the shared state here.
 pub(super) fn wake() {}
 
 pub fn allow_evicted_file_downloads() {}
@@ -25,14 +16,10 @@ pub fn start_on_event_loop(_ctx: &egui::Context) {}
 
 pub fn adopt_window(_frame: &eframe::Frame) {}
 
-/// Never: this host has no OS integration at all — it never nudges, nothing
-/// activates the window, and a focus-loss close would be the only spec §4
-/// behaviour present on a platform that has none of the rest.
 pub fn popup_is_foreground(_ctx: &egui::Context) -> bool {
     false
 }
 
-/// Nothing summons the popup manually here, so this raises nothing.
 pub fn request_manual_open() {}
 
 pub fn focus_popup(_ctx: &egui::Context) {}
@@ -49,17 +36,12 @@ pub fn screen_geometry(_ctx: &egui::Context, _frame: &eframe::Frame) -> Option<S
 
 pub fn install_native_fonts(_ctx: &egui::Context) {}
 
-/// No single-instance guard here: this host has no menu to open the settings
-/// window from, so nothing can open it twice.
 pub struct SettingsLock;
 
 pub fn acquire_settings_singleton() -> Option<SettingsLock> {
     Some(SettingsLock)
 }
 
-/// No key source here, so the settings window's hotkey row is the plain typed
-/// field it has always been. `None` is the whole answer: the row asks for a
-/// source and renders a Record button only if it gets one.
 pub fn new_edge_source(_ctx: &egui::Context) -> Option<Box<dyn crate::recorder::EdgeSource>> {
     None
 }

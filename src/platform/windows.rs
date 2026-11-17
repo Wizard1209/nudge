@@ -1,12 +1,3 @@
-//! Windows backend: the tray thread in `tray_bridge`, plus the window.
-//!
-//! The tray thread owns the countdown, the hotkey and the popup wakeup.
-//! What lives here is the rest of the seam: everything that touches the
-//! popup's `HWND` (adopting it, hiding it, asking whether it is foreground),
-//! the screen the popup is laid out on (spec §1), which
-//! `tray_bridge::force_foreground` picks at show time, and the settings
-//! window's single-instance guard. `HWND` never crosses the seam.
-
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicIsize, Ordering};
 
@@ -29,32 +20,20 @@ use crate::config;
 use crate::hotkey::Hotkey;
 use crate::layout::ScreenGeometry;
 
-/// The seam's entry for a manual summons. The tray thread's own handlers
-/// call `tray_bridge` directly, so in the binary nothing reaches it through
-/// here; the kittests do.
 pub use crate::tray_bridge::request_manual_open;
 
-/// Wake the tray thread's message pump, so a write to the shared state is
-/// acted on now rather than at its next scheduled pass.
 pub(super) fn wake() {
     crate::tray_bridge::wake_tray_thread();
 }
 
-/// No-op: the launch-dependent policy the macOS arm overrides is macOS's own.
 pub fn allow_evicted_file_downloads() {}
 
-/// Start the OS-integration machinery: here, the tray thread, which also
-/// owns the global hotkey and the config-reload diff.
 pub fn start(hotkey: Option<Hotkey>, config_path: std::path::PathBuf, initial: config::Config) {
     super::shared::record_config_path(config_path.clone());
     crate::tray_bridge::spawn_tray_thread(hotkey, config_path, initial);
     remove_replaced_exe();
 }
 
-/// Delete the exe an update set aside (spec §9 "Updates"), off the main
-/// thread. The settings window that started this process is still running
-/// from that file for a moment after the start, and Windows refuses to
-/// delete an exe while it runs, so a refusal is retried for a few seconds.
 fn remove_replaced_exe() {
     let Ok(exe) = std::env::current_exe() else {
         return;
@@ -73,17 +52,8 @@ fn remove_replaced_exe() {
     });
 }
 
-/// How long [`hand_over`] waits for the old app to end.
 const QUIT_TIMEOUT_MS: u32 = 10_000;
 
-/// The second half of `Update` (spec §9 "Updates"), run by the settings window
-/// once the new exe is at `exe`: ask the tray at `tray_thread` to quit, wait
-/// for its process to end, and only then start `exe` — a process started
-/// while the old one still held the global hotkey could not register it.
-///
-/// A thread that no longer exists means its app is already gone, and the new
-/// one starts. No thread at all — a window opened by hand rather than from the
-/// tray — starts nothing: there may be an app this window does not know of.
 pub fn hand_over(exe: &std::path::Path, tray_thread: Option<u32>) -> Result<(), String> {
     use ::windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
     use ::windows::Win32::System::Threading::{
@@ -94,8 +64,6 @@ pub fn hand_over(exe: &std::path::Path, tray_thread: Option<u32>) -> Result<(), 
 
     const NOT_QUIT: &str = "Nudge did not quit; restart it to finish";
     let tid = tray_thread.ok_or(NOT_QUIT)?;
-    // SAFETY: plain handle calls on ids from the command line; every handle
-    // opened here is closed before return, and a stale id fails the open.
     unsafe {
         let process = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, false, tid)
             .ok()
@@ -117,20 +85,17 @@ pub fn hand_over(exe: &std::path::Path, tray_thread: Option<u32>) -> Result<(), 
             }
         }
     }
+    // RegisterHotKey fails for keystrokes already registered for another hot key, so the old
+    // process must have ended before the new exe can register the same combination.
+    // proof: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerhotkey
     std::process::Command::new(exe)
         .spawn()
         .map(drop)
         .map_err(|e| format!("Could not start the new Nudge: {e}"))
 }
 
-/// No-op: `start` already built everything on its own thread, and none of it
-/// needs the event loop. The macOS arm is the one with work here — its status
-/// item and hotkey cannot exist until the main thread is the event loop's.
 pub fn start_on_event_loop(_ctx: &egui::Context) {}
 
-/// Take the popup's `HWND` from the native window: store it for the tray
-/// thread's wakeups and the foreground check, and keep the tool-window bit
-/// on it for its whole life.
 pub fn adopt_window(frame: &eframe::Frame) {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     if let Ok(wh) = frame.window_handle()
@@ -142,12 +107,8 @@ pub fn adopt_window(frame: &eframe::Frame) {
     }
 }
 
-/// The shared flag, plus hiding the `HWND` itself on the way out. The
-/// viewport's `Visible(false)` is what stops winit burning a core; this is
-/// what the tray thread's `ShowWindow(SW_RESTORE)` later undoes.
 pub fn set_popup_visible(visible: bool) {
     if !visible && let Some(hwnd) = crate::tray_bridge::load_hwnd() {
-        // SAFETY: `hwnd` is the popup window `adopt_window` stored.
         unsafe {
             let _ = ShowWindow(HWND(hwnd as *mut _), SW_HIDE);
         }
@@ -155,39 +116,29 @@ pub fn set_popup_visible(visible: bool) {
     super::shared::set_popup_visible(visible);
 }
 
-/// Whether the popup is the foreground window right now. Asked of Win32
-/// rather than read from eframe's `viewport().focused`, which is filled from
-/// a window event and so lags a frame behind `WM_ACTIVATE`.
 pub fn popup_is_foreground(_ctx: &egui::Context) -> bool {
     let Some(hwnd) = crate::tray_bridge::load_hwnd() else {
         return false;
     };
-    // SAFETY: a plain query with no arguments.
     let fg = unsafe { GetForegroundWindow() };
     !fg.0.is_null() && fg.0 as isize == hwnd
 }
 
-/// winit's window procedure, which `keep_tool_window` chains to.
 static WINIT_WNDPROC: AtomicIsize = AtomicIsize::new(0);
 
-/// Keep `WS_EX_TOOLWINDOW` on the popup for its whole life. winit rewrites
-/// the extended style wholesale on every show and hide, which drops the bit.
-/// The bit keeps the popup out of Alt+Tab, and it is what Chromium-based apps
-/// beneath read to not count the transparent, screen-sized popup as covering
-/// them — without it they stop painting while it is up and show black.
+// winit's set_visible rewrites GWL_EXSTYLE from its own window flags, which never include
+// WS_EX_TOOLWINDOW, so every show and hide clears that bit.
+// proof: https://docs.rs/crate/winit/0.30.13/source/src/platform_impl/windows/window_state.rs
 fn keep_tool_window(handle: isize) {
     unsafe extern "system" fn proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
         if msg == WM_STYLECHANGING && w.0 as i32 == GWL_EXSTYLE.0 {
-            // SAFETY: for GWL_EXSTYLE, `l` points at the STYLESTRUCT being applied.
             let change = unsafe { &mut *(l.0 as *mut STYLESTRUCT) };
             change.styleNew |= WS_EX_TOOLWINDOW.0;
         }
-        // SAFETY: the value `keep_tool_window` stored is winit's WNDPROC.
         let winit: WNDPROC = unsafe { std::mem::transmute(WINIT_WNDPROC.load(Ordering::Relaxed)) };
         unsafe { CallWindowProcW(winit, h, msg, w, l) }
     }
     let hwnd = HWND(handle as *mut _);
-    // SAFETY: `hwnd` is the live popup window, and this runs on its thread.
     unsafe {
         let winit = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, proc as *const () as isize);
         WINIT_WNDPROC.store(winit, Ordering::Relaxed);
@@ -196,37 +147,22 @@ fn keep_tool_window(handle: isize) {
     }
 }
 
-/// Make the popup the foreground window. Reads the stored handle itself so
-/// `HWND` stays inside the Windows arm; `ctx` is unused because Win32 does
-/// the whole job here (macOS needs a viewport command as well).
 pub fn focus_popup(_ctx: &egui::Context) {
     if let Some(hwnd) = crate::tray_bridge::load_hwnd() {
         crate::tray_bridge::force_foreground(HWND(hwnd as *mut _));
     }
 }
 
-/// No-op: the tray thread already polls the deadline on its own message
-/// pump and `ShowWindow`s the popup when it expires, so no tick here ever
-/// claims a reveal.
 pub fn tick(_ctx: &egui::Context) -> bool {
     false
 }
 
-/// No-op: the frosted glass behind the card (spec §2) is a macOS
-/// `NSVisualEffectView`. The Windows counterpart would be a DWM backdrop, and
-/// it is not implemented — the card there is a plain translucent fill, as it
-/// has always been.
 pub fn sync_card_backdrop(_ctx: &egui::Context, _frame: &eframe::Frame, _card: egui::Rect) {}
 
-/// The monitor `choose_screen` picked for the last show: its `rcMonitor` and
-/// `shield_area`, in physical pixels of the virtual screen.
 static CHOSEN_SCREEN: Mutex<Option<(RECT, RECT)>> = Mutex::new(None);
 
-/// Every monitor's `rcMonitor` and `shield_area`, the primary first — the order
-/// `screen_pick::pick_screen` falls back on.
 fn monitors() -> Vec<(RECT, RECT)> {
     unsafe extern "system" fn push(m: HMONITOR, _: HDC, _: *mut RECT, out: LPARAM) -> BOOL {
-        // SAFETY: `out` is the `&mut Vec` `monitors` passed, alive for the call.
         let out = unsafe { &mut *(out.0 as *mut Vec<(RECT, RECT)>) };
         let mut info = MONITORINFO {
             cbSize: std::mem::size_of::<MONITORINFO>() as u32,
@@ -243,20 +179,14 @@ fn monitors() -> Vec<(RECT, RECT)> {
         TRUE
     }
     let mut out: Vec<(RECT, RECT)> = Vec::new();
-    // SAFETY: the callback only runs inside this call, while `out` is alive.
     unsafe {
         let _ = EnumDisplayMonitors(None, None, Some(push), LPARAM(&mut out as *mut _ as isize));
     }
     out
 }
 
-/// What an auto-hidden taskbar keeps on screen: the strip the pointer
-/// reveals it from.
 const AUTOHIDE_STRIP_PX: i32 = 2;
 
-/// The part of a monitor the popup may cover. `rcWork` leaves out a docked
-/// taskbar but not an auto-hidden one, so each auto-hide edge gives up its
-/// reveal strip — the taskbar stays reachable above the popup (spec §1).
 fn shield_area(monitor: RECT, work: RECT) -> RECT {
     let mut area = work;
     for edge in [ABE_LEFT, ABE_TOP, ABE_RIGHT, ABE_BOTTOM] {
@@ -266,7 +196,6 @@ fn shield_area(monitor: RECT, work: RECT) -> RECT {
             rc: monitor,
             ..Default::default()
         };
-        // SAFETY: `bar` is a valid APPBARDATA for the call's duration.
         if unsafe { SHAppBarMessage(ABM_GETAUTOHIDEBAREX, &mut bar) } == 0 {
             continue;
         }
@@ -287,16 +216,11 @@ fn px_rect(r: RECT) -> egui::Rect {
     )
 }
 
-/// Pick the popup's monitor (spec §1) and keep it for `screen_geometry`.
-/// Called at show time, before the popup takes the foreground, so the
-/// foreground window is still the one the user was in. With the popup
-/// itself in front — a re-show while visible — the last choice stands.
 pub fn choose_screen(popup: HWND) {
     let screens = monitors();
     if screens.is_empty() {
         return;
     }
-    // SAFETY: plain Win32 reads into locals.
     let (fg, pointer) = unsafe {
         let mut p = POINT::default();
         let _ = GetCursorPos(&mut p);
@@ -309,7 +233,6 @@ pub fn choose_screen(popup: HWND) {
     let front = (!fg.0.is_null() && fg != popup)
         .then(|| {
             let mut r = RECT::default();
-            // SAFETY: `fg` came from the OS just now; a stale handle fails the call.
             unsafe { GetWindowRect(fg, &mut r) }
                 .ok()
                 .map(|_| px_rect(r))
@@ -320,14 +243,8 @@ pub fn choose_screen(popup: HWND) {
     *chosen = screens.get(i).copied();
 }
 
-/// The monitor `choose_screen` picked, in points; the primary until the first
-/// show. Pixels over the window's `pixels_per_point`, because that is what
-/// egui multiplies a viewport command's points by on the way back out.
-// TODO: a monitor with a different scale factor from the one the window is
-// on — the conversion uses the window's current factor, not the target's.
 pub fn screen_geometry(ctx: &egui::Context, frame: &eframe::Frame) -> Option<ScreenGeometry> {
     use raw_window_handle::HasWindowHandle;
-    // No native window, as under a test harness: no screen to lay out on.
     frame.window_handle().ok()?;
     let (monitor, work) = {
         let mut chosen = CHOSEN_SCREEN.lock().unwrap();
@@ -350,28 +267,16 @@ pub fn screen_geometry(ctx: &egui::Context, frame: &eframe::Frame) -> Option<Scr
     })
 }
 
-/// Permission to be the settings window: a named kernel mutex, held for the
-/// life of the process. Not released explicitly — Windows reclaims it when
-/// the process exits, which is exactly when the window is gone.
 pub struct SettingsLock {
     _mutex: HANDLE,
 }
 
-/// Acquire the settings window's single-instance guard, or `None` when
-/// another settings process already holds it and this one should exit
-/// silently. A failure to create the mutex yields an unheld lock rather than
-/// `None`: "we could not tell" must not turn the Settings menu item into a
-/// no-op.
 pub fn acquire_settings_singleton() -> Option<SettingsLock> {
     use ::windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
     use ::windows::Win32::System::Threading::CreateMutexW;
     use ::windows::core::PCWSTR;
 
-    // Name lives in the kernel namespace global to the user session;
-    // `Global\` would require admin rights, so use a per-session name and
-    // accept that two users on the same machine each get one window.
     let name: Vec<u16> = "Local\\NudgeSettings\0".encode_utf16().collect();
-    // SAFETY: `name` is a NUL-terminated UTF-16 string that outlives the call.
     unsafe {
         let mutex = match CreateMutexW(None, true, PCWSTR(name.as_ptr())) {
             Ok(h) => h,
@@ -388,25 +293,12 @@ pub fn acquire_settings_singleton() -> Option<SettingsLock> {
     }
 }
 
-/// No-op on Windows: the shortcut vocabulary here is words (`Ctrl+Shift+A`),
-/// and every glyph in that is in egui's default fonts.
 pub fn install_native_fonts(_ctx: &egui::Context) {}
 
-/// No key source on Windows yet, so the hotkey row stays the typed field it
-/// has always been — which is the point of returning `None` rather than
-/// wiring a half-measure: **nothing on this platform has been measured**
-/// (`docs/TASK-hotkey-native.md`), and a recorder built against documentation
-/// is what that task exists to stop. The order of work there puts Windows
-/// after its facts.
 pub fn new_edge_source(_ctx: &egui::Context) -> Option<Box<dyn crate::recorder::EdgeSource>> {
     None
 }
 
-/// No conflict report on Windows. `RegisterHotKey` is *documented* to
-/// arbitrate across processes and to return an already-registered error — but
-/// documented is not measured, and this is the platform the task doc forbids
-/// relying on documentation for. Saying nothing is the honest answer until
-/// somebody runs the probe here.
 pub fn hotkey_conflict(_hk: &Hotkey) -> Option<String> {
     None
 }

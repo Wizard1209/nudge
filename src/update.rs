@@ -1,31 +1,15 @@
-//! The Settings window's update check (spec §9 "Updates").
-//!
-//! - **The pure half** — version order, which asset is the Windows download,
-//!   what a `digest` says, the replace sequence on a directory, and the row's
-//!   table ([`step`]). No network; unit-tested here.
-//! - **The network half** — [`fetch_latest`] and [`download`], the only two
-//!   requests the app ever makes, each run on a worker thread when the row's
-//!   button is pressed.
-//!
-//! Not compiled for wasm: the browser build has no Updates group.
-
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 
-/// Where the check looks, as the row's footnote names it.
 pub const REPO: &str = "github.com/Wizard1209/nudge";
 
-/// The one request the check makes.
 pub const LATEST_URL: &str = "https://api.github.com/repos/Wizard1209/nudge/releases/latest";
 
-/// The footnote under the Updates group: where it looks, and when.
 pub const FOOTNOTE: &str =
     "Checks github.com/Wizard1209/nudge for new releases, only when pressed.";
 
-/// The running version, as the row shows it and the check compares against.
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 
-/// The fields of GitHub's release object the check reads.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 pub struct Release {
     pub tag_name: String,
@@ -37,13 +21,11 @@ pub struct Release {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 pub struct Asset {
     pub name: String,
-    /// `sha256:<hex>`; absent on a release GitHub has not hashed.
     #[serde(default)]
     pub digest: Option<String>,
     pub browser_download_url: String,
 }
 
-/// The release object in GitHub's reply, or the reason the row shows.
 pub fn parse_release(body: &str) -> Result<Release, String> {
     serde_json::from_str(body).map_err(|_| UNREADABLE.to_string())
 }
@@ -51,8 +33,6 @@ pub fn parse_release(body: &str) -> Result<Release, String> {
 const UNREADABLE: &str = "GitHub sent a reply Nudge cannot read";
 const OFFLINE: &str = "Offline: could not reach GitHub";
 
-/// A version by semver's precedence rules: the `X.Y.Z` core, then its
-/// pre-release identifiers. Build metadata is dropped, as precedence does.
 #[derive(Debug, PartialEq, Eq)]
 struct Semver<'a> {
     core: [u64; 3],
@@ -81,9 +61,9 @@ fn parse_version(text: &str) -> Option<Semver<'_>> {
 
 impl Ord for Semver<'_> {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.core.cmp(&other.core).then_with(|| {
-            match (self.pre.is_empty(), other.pre.is_empty()) {
-                // A release outranks every pre-release of its own core.
+        self.core
+            .cmp(&other.core)
+            .then_with(|| match (self.pre.is_empty(), other.pre.is_empty()) {
                 (true, true) => Ordering::Equal,
                 (true, false) => Ordering::Greater,
                 (false, true) => Ordering::Less,
@@ -91,7 +71,6 @@ impl Ord for Semver<'_> {
                     for (a, b) in self.pre.iter().zip(&other.pre) {
                         let order = match (a.parse::<u64>(), b.parse::<u64>()) {
                             (Ok(a), Ok(b)) => a.cmp(&b),
-                            // Numeric identifiers rank below alphanumeric ones.
                             (Ok(_), Err(_)) => Ordering::Less,
                             (Err(_), Ok(_)) => Ordering::Greater,
                             (Err(_), Err(_)) => a.cmp(b),
@@ -102,8 +81,7 @@ impl Ord for Semver<'_> {
                     }
                     self.pre.len().cmp(&other.pre.len())
                 }
-            }
-        })
+            })
     }
 }
 
@@ -113,9 +91,6 @@ impl PartialOrd for Semver<'_> {
     }
 }
 
-/// Whether `tag` names a version newer than `current` — semver precedence,
-/// `v` stripped. An older or equal latest, or a tag that is not a version,
-/// is not an update.
 pub fn is_newer(tag: &str, current: &str) -> bool {
     match (parse_version(tag), parse_version(current)) {
         (Some(tag), Some(current)) => tag > current,
@@ -123,23 +98,17 @@ pub fn is_newer(tag: &str, current: &str) -> bool {
     }
 }
 
-/// The version a tag names, as the row shows it: `v0.3.0` → `0.3.0`.
 pub fn version_of(tag: &str) -> &str {
     let tag = tag.trim();
     tag.strip_prefix('v').unwrap_or(tag)
 }
 
-/// What `Update` fetches, and what it must hash to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Download {
     pub url: String,
     pub sha256: [u8; 32],
 }
 
-/// The release's Windows exe — by the name the release workflow gives it —
-/// and its SHA-256, or the reason the update is refused. A missing or
-/// unreadable digest refuses: the exe that replaces the running one is
-/// installed only when it can be checked.
 pub fn windows_download(release: &Release) -> Result<Download, String> {
     let name = format!(
         "nudge-v{}-x86_64-windows.exe",
@@ -161,7 +130,6 @@ pub fn windows_download(release: &Release) -> Result<Download, String> {
     })
 }
 
-/// `sha256:<64 hex digits>`, in either case.
 fn parse_digest(digest: &str) -> Option<[u8; 32]> {
     let hex = digest.strip_prefix("sha256:")?;
     if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -174,7 +142,6 @@ fn parse_digest(digest: &str) -> Option<[u8; 32]> {
     Some(out)
 }
 
-/// `Ok` when `bytes` hash to `sha256`.
 pub fn verify(bytes: &[u8], sha256: &[u8; 32]) -> Result<(), String> {
     let actual = ring::digest::digest(&ring::digest::SHA256, bytes);
     if actual.as_ref() == sha256 {
@@ -184,7 +151,6 @@ pub fn verify(bytes: &[u8], sha256: &[u8; 32]) -> Result<(), String> {
     }
 }
 
-/// Where the replaced exe is kept until the new one starts: `<exe>.old`.
 pub fn old_path(exe: &Path) -> PathBuf {
     with_suffix(exe, ".old")
 }
@@ -195,12 +161,6 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     name.into()
 }
 
-/// Put `bytes` at `exe`'s path, keeping the running exe as `<exe>.old`.
-///
-/// A running exe can be renamed but not overwritten, so: write the new one
-/// beside it, rename the running one aside, rename the new one into place.
-/// A failure of that last rename puts the old one back, so `exe` is never
-/// left missing.
 pub fn install_over(exe: &Path, bytes: &[u8]) -> Result<(), String> {
     let failed = |e: std::io::Error| format!("Could not replace Nudge: {e}");
     let new = with_suffix(exe, ".new");
@@ -212,7 +172,6 @@ pub fn install_over(exe: &Path, bytes: &[u8]) -> Result<(), String> {
         file.sync_all()
     };
     let swap = || -> std::io::Result<()> {
-        // What an earlier update set aside, if its app never got to delete it.
         match std::fs::remove_file(&old) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
             _ => {}
@@ -228,8 +187,6 @@ pub fn install_over(exe: &Path, bytes: &[u8]) -> Result<(), String> {
     })
 }
 
-/// Delete what [`install_over`] set aside, if it is there. `Ok(false)` when
-/// there was nothing to delete.
 pub fn remove_old(exe: &Path) -> std::io::Result<bool> {
     match std::fs::remove_file(old_path(exe)) {
         Ok(()) => Ok(true),
@@ -238,10 +195,6 @@ pub fn remove_old(exe: &Path) -> std::io::Result<bool> {
     }
 }
 
-// ---------- the network: the app's only two requests -----------------------
-
-/// Upper bound on the download. The exe is about 21 MB; a body far past that
-/// is not it, and is not worth holding in memory to find out.
 const MAX_DOWNLOAD: u64 = 64 * 1024 * 1024;
 
 fn agent() -> ureq::Agent {
@@ -252,7 +205,6 @@ fn agent() -> ureq::Agent {
         .build()
 }
 
-/// A failed request as the row says it: no network, or GitHub said no.
 fn describe(e: ureq::Error) -> String {
     match e {
         ureq::Error::Status(code, _) => format!("GitHub refused the request (HTTP {code})"),
@@ -265,7 +217,6 @@ fn describe(e: ureq::Error) -> String {
     }
 }
 
-/// The check: the latest release of this repository, as GitHub reports it.
 pub fn fetch_latest() -> Result<Release, String> {
     let body = agent()
         .get(LATEST_URL)
@@ -277,7 +228,6 @@ pub fn fetch_latest() -> Result<Release, String> {
     parse_release(&body)
 }
 
-/// `Update`'s download: the bytes at `url`, bounded by [`MAX_DOWNLOAD`].
 pub fn download(url: &str) -> Result<Vec<u8>, String> {
     use std::io::Read;
     let response = agent().get(url).call().map_err(describe)?;
@@ -293,9 +243,6 @@ pub fn download(url: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-/// `Update`, start to finish: fetch the Windows exe, check it, put it at
-/// `exe`'s path, then hand over — the tray that opened this window quits, and
-/// only then does the new exe start.
 #[cfg(target_os = "windows")]
 pub fn install_release(
     release: &Release,
@@ -309,7 +256,6 @@ pub fn install_release(
     crate::platform::hand_over(exe, tray_thread)
 }
 
-/// `Open release page`: the page in the default browser.
 pub fn open_page(url: &str) {
     #[cfg(target_os = "macos")]
     let opener = "open";
@@ -322,18 +268,12 @@ pub fn open_page(url: &str) {
     }
 }
 
-// ---------- the row (§9 "Updates") -----------------------------------------
-
-/// What the row's button does once a newer release is found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
-    /// Windows: download, verify, replace, restart.
     Install,
-    /// macOS: the release's page in the browser.
     OpenPage,
 }
 
-/// This platform's action.
 pub const ACTION: Action = if cfg!(target_os = "windows") {
     Action::Install
 } else {
@@ -347,14 +287,12 @@ pub enum Row {
     UpToDate,
     Available(Release),
     Installing,
-    /// The new exe is in place and started; the window is closing.
     Restarting,
     Failed(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Input {
-    /// The row's one button, whose meaning is the state's.
     Press,
     Checked(Result<Release, String>),
     Installed(Result<(), String>),
@@ -366,12 +304,9 @@ pub enum Effect {
     Check,
     Install(Release),
     OpenPage(String),
-    /// Close the window: the new version is starting.
     Close,
 }
 
-/// One input through the row's table. A result that arrives in a state that
-/// did not ask for it changes nothing.
 pub fn step(row: &Row, input: Input, current: &str, action: Action) -> (Row, Effect) {
     let stay = (row.clone(), Effect::Nothing);
     match (row, input) {
@@ -399,7 +334,6 @@ pub fn step(row: &Row, input: Input, current: &str, action: Action) -> (Row, Eff
 }
 
 impl Row {
-    /// The status left of the button; empty before the first press.
     pub fn status(&self) -> String {
         match self {
             Row::Idle => String::new(),
@@ -412,7 +346,6 @@ impl Row {
         }
     }
 
-    /// The button's label, and whether it can be pressed.
     pub fn button(&self, action: Action) -> (&'static str, bool) {
         match (self, action) {
             (Row::Available(_), Action::Install) => ("Update", true),
@@ -429,7 +362,6 @@ mod tests {
     use super::*;
 
     const HEX: &str = "b48b42654c96ae880e1fec6786ab7ad67f63a9dd44d99b2b815b84c10239694e";
-    /// SHA-256 of `abc` (FIPS 180-2, appendix B.1).
     const ABC: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 
     fn bytes_of(hex: &str) -> [u8; 32] {
@@ -455,8 +387,6 @@ mod tests {
             browser_download_url: format!("https://example.invalid/{tag}.exe"),
         }
     }
-
-    // ----- version order: §9 "a newer release only" ------------------------
 
     #[test]
     fn a_higher_tag_is_newer_with_or_without_its_v() {
@@ -511,8 +441,6 @@ mod tests {
         assert_eq!(version_of("0.3.0"), "0.3.0");
     }
 
-    // ----- GitHub's reply --------------------------------------------------
-
     #[test]
     fn a_release_reads_the_fields_it_needs_and_ignores_the_rest() {
         let body = r#"{"tag_name":"v0.2.2","html_url":"https://github.com/Wizard1209/nudge/releases/tag/v0.2.2",
@@ -537,8 +465,6 @@ mod tests {
             );
         }
     }
-
-    // ----- the Windows download --------------------------------------------
 
     #[test]
     fn the_windows_download_is_the_asset_named_for_the_tag() {
@@ -614,8 +540,6 @@ mod tests {
         );
     }
 
-    // ----- the replace sequence, on a directory ----------------------------
-
     #[test]
     fn install_puts_the_new_exe_at_the_path_and_keeps_the_old_aside() {
         let dir = tempfile::tempdir().unwrap();
@@ -657,7 +581,7 @@ mod tests {
     #[test]
     fn a_failed_install_leaves_nothing_of_itself_behind() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("nudge.exe"); // never created
+        let path = dir.path().join("nudge.exe");
         let err = install_over(&path, b"new").unwrap_err();
         assert!(err.starts_with("Could not replace Nudge: "), "{err}");
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
@@ -675,8 +599,6 @@ mod tests {
         assert!(path.exists());
         assert!(!remove_old(&path).unwrap(), "nothing left to remove");
     }
-
-    // ----- the row's table -------------------------------------------------
 
     fn run(inputs: Vec<Input>, action: Action) -> (Row, Vec<Effect>) {
         let mut row = Row::Idle;
@@ -710,7 +632,6 @@ mod tests {
         assert_eq!(effects, [Effect::Check]);
         assert_eq!(row.status(), "Checking…");
         assert_eq!(row.button(Action::Install), ("Check for updates", false));
-        // A second press while checking asks nothing more.
         let (_, again) = step(&row, Input::Press, "0.2.2", Action::Install);
         assert_eq!(again, Effect::Nothing);
     }
@@ -829,8 +750,6 @@ mod tests {
         assert_eq!(step(&row, found("v0.3.0"), "0.2.2", Action::Install).0, row);
     }
 
-    // ----- what a failed request says --------------------------------------
-
     #[test]
     fn a_refusal_names_githubs_status() {
         let refused = ureq::Error::Status(403, ureq::Response::new(403, "Forbidden", "").unwrap());
@@ -839,7 +758,6 @@ mod tests {
 
     #[test]
     fn no_connection_reads_as_offline() {
-        // Port 1 on loopback: refused at once, and nothing leaves the machine.
         let err = agent().get("http://127.0.0.1:1/").call().unwrap_err();
         assert_eq!(describe(err), "Offline: could not reach GitHub");
     }

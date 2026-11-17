@@ -116,8 +116,6 @@ describe("spriteLayout with a sprite measured in half points", () => {
 });
 
 describe("windowOrigin", () => {
-  // This host: 1470×956 pt with a 33 pt menu bar. 25% of 956 is 239, plus 80
-  // puts the card top at 319.
   const display = {
     bounds: { x: 0, y: 0, width: 1470, height: 956 },
     workArea: { x: 0, y: 33, width: 1470, height: 833 },
@@ -161,8 +159,6 @@ describe("windowOrigin", () => {
       workArea: { x: 0, y: 25, width: 1280, height: 695 },
     };
     const card = { x: 41, y: 277, width: 679, height: 130 };
-    // 180 + 80 − 277 = −17, which is above the work area; the card then
-    // sits 277 below the work area's top instead.
     expect(windowOrigin(short, card)).toEqual({ x: 300 - 41, y: 25 });
   });
 
@@ -213,7 +209,6 @@ describe("hasTransparentPixel", () => {
   it("looks only at the alpha byte of each 4-byte pixel", () => {
     expect(hasTransparentPixel(new Uint8Array([0, 0, 0, 255, 0, 0, 0, 255]))).toBe(false);
     expect(hasTransparentPixel(new Uint8Array([0, 0, 0, 255, 255, 255, 255, 0]))).toBe(true);
-    // Semi-transparent is not "background removed".
     expect(hasTransparentPixel(new Uint8Array([0, 0, 0, 1]))).toBe(false);
   });
 });

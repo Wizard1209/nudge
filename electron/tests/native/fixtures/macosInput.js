@@ -6,9 +6,6 @@ import { fileURLToPath } from 'node:url';
 
 const SOURCE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'macos-input.swift');
 
-// Compiles macos-input.swift once per test file into a temp dir and wraps its
-// commands. The binary posts real CGEvents, so the process running the tests
-// needs the Accessibility permission (the terminal's, when run from one).
 export function macosInput() {
   const bin = path.join(mkdtempSync(path.join(os.tmpdir(), 'nudge-input-')), 'macos-input');
   execFileSync('swiftc', ['-O', '-o', bin, SOURCE], { stdio: 'inherit' });
@@ -19,9 +16,7 @@ export function macosInput() {
     frontPid: () => Number(run('front').trim()),
     locked: () => run('locked').trim() === '1',
     windows: () => run('windows').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)),
-    /** Frames of the process's menu bar extras (status items), in screen points. */
     extras: (pid) => run('extras', pid).trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)),
-    /** Re-activate `bundleId` every `ms` until the returned stop() is called. */
     contend(bundleId, ms) {
       const child = spawn(bin, ['activate', bundleId, String(ms)], { stdio: 'ignore' });
       return () => new Promise((resolve) => {

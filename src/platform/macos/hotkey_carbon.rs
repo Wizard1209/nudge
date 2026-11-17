@@ -1,31 +1,3 @@
-//! Registering the global hotkey, by calling the OS directly.
-//!
-//! `RegisterEventHotKey` is what `global-hotkey` called on our behalf, and the
-//! crate is gone for two reasons the task doc measured rather than assumed:
-//! it cannot reach the exclusive registration mode, and on macOS its error
-//! type never reports a conflict for a real key — a check written against it
-//! works on Windows and silently never fires here.
-//!
-//! # What the call does and does not do (measured, macOS 26.5)
-//!
-//! - It **validates no key code**. A nonsense value registers and returns
-//!   `noErr`, and the binding then never fires. This is why
-//!   [`super::keycode::keycode_for`] returning `None` has to be a refusal here
-//!   rather than a guess.
-//! - It **does not report a combination another process holds**. `⌘Space`,
-//!   `⌘Tab` and the screenshot shortcuts all register with no complaint.
-//!   Nothing in this module derives "somebody else has it" from the outcome of
-//!   the call; that question is [`assess`]'s, and it uses different calls.
-//!
-//! # No header, still a stable ABI
-//!
-//! The macOS 26 SDK ships no Carbon Event Manager declarations at all — the
-//! symbols are still exported by `HIToolbox` (they are in the `.tbd`), but the
-//! headers that declared them are gone. So the `extern` block below is the
-//! declaration, written from the ABI: `OSStatus` is `SInt32`, `ItemCount` and
-//! `ByteCount` are `unsigned long`, `OptionBits` is `UInt32`, and
-//! `EventHotKeyID` is two 32-bit words passed by value.
-
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -33,8 +5,6 @@ use crate::hotkey::{self, Hotkey};
 
 use super::keycode;
 use super::symbolic;
-
-// ---------- the ABI --------------------------------------------------------
 
 #[allow(non_camel_case_types)]
 type OSStatus = i32;
@@ -95,50 +65,25 @@ unsafe extern "C" {
     ) -> OSStatus;
 }
 
-/// `'keyb'`, the Carbon event class hotkeys arrive on.
 const K_EVENT_CLASS_KEYBOARD: u32 = u32::from_be_bytes(*b"keyb");
-/// `kEventHotKeyPressed`. The release edge (`6`) is deliberately **not**
-/// subscribed: Carbon delivers both, and acting on the release would re-open a
-/// popup the user just dismissed with the same chord. Not filtering it out —
-/// never asking for it.
 const K_EVENT_HOT_KEY_PRESSED: u32 = 5;
-/// `kEventParamDirectObject` (`'----'`) as a `typeEventHotKeyID` (`'hkid'`) —
-/// how a handler learns *which* hotkey fired.
 const K_EVENT_PARAM_DIRECT_OBJECT: u32 = u32::from_be_bytes(*b"----");
 const TYPE_EVENT_HOT_KEY_ID: u32 = u32::from_be_bytes(*b"hkid");
 
-/// `kEventHotKeyExclusive`. Asks the OS to refuse the registration if another
-/// *exclusive* holder already has the combination — the only arbitration
-/// macOS offers, and half of what [`assess`] reports.
 const K_EVENT_HOT_KEY_EXCLUSIVE: u32 = 1;
 const K_EVENT_HOT_KEY_NO_OPTIONS: u32 = 0;
 
-/// `eventHotKeyExistsErr` — an exclusive registration refused because someone
-/// else holds the combination exclusively.
 pub const EVENT_HOT_KEY_EXISTS_ERR: OSStatus = -9878;
 
-/// Our four-character signature, and the two ids under it: the binding the app
-/// actually runs on, and the throwaway one [`assess`]'s probe uses. Separate
-/// so the press handler can ignore a probe's registration, and so a probe that
-/// collides with our own binding is recognisable as ours.
 const NUDGE_SIGNATURE: u32 = u32::from_be_bytes(*b"NDGE");
 const BINDING_ID: u32 = 1;
 const PROBE_ID: u32 = 2;
 
-// ---------- registration ---------------------------------------------------
-
-/// A live registration. Unregisters on drop, which is what makes the live
-/// config reload a matter of dropping one value and building another.
 pub struct Registration {
     reference: EventHotKeyRef,
-    /// What was bound, for the log line at reload time.
     hotkey: Hotkey,
 }
 
-// The `EventHotKeyRef` is an opaque pointer into HIToolbox's own bookkeeping;
-// it is never dereferenced here and only ever unregistered from the thread
-// that owns the run loop. `Send` is asserted so `Registration` can live in the
-// same struct as the rest of the reload state.
 unsafe impl Send for Registration {}
 
 impl Drop for Registration {
@@ -155,15 +100,8 @@ impl Drop for Registration {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RegisterError {
-    /// §5 accepts the combination but this platform has no key code for it —
-    /// `F21`–`F24`. Refused rather than guessed: a guessed code registers
-    /// happily and then never fires.
     Unbindable(String),
-    /// An exclusive holder already has it. Only reachable from the probe;
-    /// the app's own binding is never exclusive.
     Exclusive,
-    /// The call reported success and handed back no reference — nothing to
-    /// unregister later, so it is not treated as a binding.
     NoReference,
     Os(OSStatus),
 }
@@ -189,31 +127,17 @@ impl std::fmt::Display for RegisterError {
     }
 }
 
-/// Bind `hk` system-wide, non-exclusively.
-///
-/// Non-exclusive on purpose: exclusivity is a detection tool
-/// ([`assess`]), and taking it here would let a detection concern cost the
-/// user their hotkey.
 pub fn register(hk: &Hotkey) -> Result<Registration, RegisterError> {
-    // Refuse before installing anything: a key with no code leaves no
-    // handler behind.
     let key = carbon_key(hk).ok_or_else(|| unbindable(hk))?;
     install_press_handler();
     bind_key(hk, key, BINDING_ID, K_EVENT_HOT_KEY_NO_OPTIONS)
 }
 
-/// The Carbon key code and modifier bits for `hk`; `None` when the platform
-/// has no key code for the key (`F21`–`F24`), which both [`bind`] and
-/// [`assess`] report as unbindable rather than guess.
 fn carbon_key(hk: &Hotkey) -> Option<(u16, u32)> {
     let code = keycode::keycode_for(hk.key.as_str())?;
     Some((code, keycode::carbon_modifiers(hk.modifiers)))
 }
 
-/// One registration under our signature: translate, call, wrap. The binding
-/// the app runs on, the probe's exclusive registration and the probe inside
-/// [`assess`] all come through here, so what a `Registration` is — and that
-/// dropping it is what unregisters — is decided once.
 fn bind(hk: &Hotkey, id: u32, options: u32) -> Result<Registration, RegisterError> {
     let key = carbon_key(hk).ok_or_else(|| unbindable(hk))?;
     bind_key(hk, key, id, options)
@@ -236,13 +160,6 @@ fn bind_key(
     })
 }
 
-/// Register `hk` **exclusively** and keep it. Not what the app binds with —
-/// exclusivity is a detection tool, and taking it for the real binding would
-/// let a detection concern cost the user their hotkey. Its one caller is
-/// `examples/hotkey_probe.rs`, which has to *hold* a combination while another
-/// process asks [`assess`] about it: that is the only way to find out whether
-/// the exclusive mode arbitrates across processes at all, and the answer is
-/// what decides whether source 2 of the conflict report is worth having.
 pub fn register_exclusive(hk: &Hotkey) -> Result<Registration, RegisterError> {
     bind(hk, PROBE_ID, K_EVENT_HOT_KEY_EXCLUSIVE)
 }
@@ -275,9 +192,6 @@ fn register_raw(
     }
 }
 
-/// Install the one `kEventHotKeyPressed` handler on the application event
-/// target. Idempotent — the handler outlives every individual binding, so a
-/// live reload re-registers the hotkey and not this.
 fn install_press_handler() {
     static INSTALLED: AtomicBool = AtomicBool::new(false);
     if INSTALLED.swap(true, Ordering::SeqCst) {
@@ -303,10 +217,6 @@ fn install_press_handler() {
     }
 }
 
-/// The handler. It holds no policy — it raises the same flag the status-item
-/// click raises and wakes the event loop, and [`super::tick`] decides what that
-/// means. Same shape as every other handler in this module, for the reason its
-/// header gives.
 extern "C" fn hotkey_pressed(
     _call: EventHandlerCallRef,
     event: EventRef,
@@ -327,38 +237,18 @@ extern "C" fn hotkey_pressed(
             (&raw mut fired).cast::<c_void>(),
         )
     };
-    // A probe's registration is live for microseconds, but it *is* live, and
-    // opening the popup because a conflict check was running would be a bug
-    // with a very confusing report.
     if status == 0 && fired.signature == NUDGE_SIGNATURE && fired.id == BINDING_ID {
         super::request_manual_open();
     }
-    // `noErr`: the event is ours and handled. Returning `eventNotHandledErr`
-    // would pass it on, and nothing else is listening for it.
     0
 }
 
-// ---------- conflict, best-effort, from two sources ------------------------
-
-/// What we can say about a combination without binding it for real.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HotkeyStatus {
-    /// Neither source found a holder. Not a promise: this is the answer both
-    /// sources give when they simply cannot see the holder.
     Free,
-    /// macOS's own shortcut table has it — `⌘Space`, `⌘Tab`, the screenshot
-    /// shortcuts. Registration reports nothing about these; the hotkey would
-    /// bind and never fire. Which function holds it is not reported: the
-    /// table's dictionaries carry no identifier, only a row index.
     HeldBySystem,
-    /// Another application registered it exclusively.
     HeldExclusively,
-    /// The running Nudge instance holds it. Distinguished from a foreign
-    /// conflict because the settings window is a separate process and would
-    /// otherwise report the app's own binding as somebody else's.
     HeldByNudge,
-    /// §5 accepts it but this platform cannot bind it at all — the same
-    /// refusal [`register`] makes, reported before any binding is tried.
     Unbindable(String),
 }
 
@@ -383,50 +273,22 @@ impl std::fmt::Display for HotkeyStatus {
     }
 }
 
-/// Ask both sources who holds `hk`, and say which one answered.
-///
-/// Deliberately read-mostly and deliberately separate from [`register`]: the
-/// system table is a pure read, and the exclusive probe unregisters
-/// immediately, so nothing here can leave a binding behind or take one away.
-///
-/// # What each source can and cannot see (measured — `examples/hotkey_probe`)
-///
-/// The system table cannot see another application's registration, and the
-/// exclusive probe cannot see the system's own shortcuts. That much was the
-/// reason for having two. The probe is also **narrower than it looks**:
-/// exclusive mode arbitrates against any registration inside the *same*
-/// process, but across processes only against another *exclusive* holder — and
-/// almost nothing registers exclusively. So the probe is the source that
-/// rarely fires and is certain when it does, while the system table is the one
-/// that catches the case a user actually meets (`⌘Space`).
-///
-/// The same measurement is why [`HotkeyStatus::HeldByNudge`] exists and why
-/// only the process that binds can ever report it: our own non-exclusive
-/// binding refuses our own probe, and is invisible to anybody else's.
 pub fn assess(hk: &Hotkey) -> HotkeyStatus {
     let Some((code, carbon_mods)) = carbon_key(hk) else {
         return HotkeyStatus::Unbindable(hk.key.as_str().to_string());
     };
 
-    // Source 1: the system's own table. First because it is the one that
-    // costs nothing and catches ⌘Space.
     let table = symbolic::read_symbolic_hotkeys();
     if symbolic::held_by_system(&table, code, carbon_mods).is_some() {
         return HotkeyStatus::HeldBySystem;
     }
 
-    // Source 2: an exclusive registration, immediately dropped — and dropping
-    // is unregistering, the same way the app's own binding goes away.
     match bind(hk, PROBE_ID, K_EVENT_HOT_KEY_EXCLUSIVE) {
         Ok(probe) => {
             drop(probe);
             HotkeyStatus::Free
         }
         Err(RegisterError::Exclusive) => {
-            // Measured: an exclusive probe *does* collide with this process's
-            // own non-exclusive binding. So inside the process that binds, the
-            // likeliest holder is the app itself, and saying so is the
-            // difference between a warning and a lie.
             if super::holds_this_hotkey(hk) {
                 HotkeyStatus::HeldByNudge
             } else {
@@ -446,16 +308,12 @@ mod tests {
 
     #[test]
     fn the_four_character_codes_are_the_carbon_ones() {
-        // Written as byte literals so they read as the codes Apple documents;
-        // asserted as numbers so a typo in the literal is caught rather than
-        // shipped into an extern call.
         assert_eq!(K_EVENT_CLASS_KEYBOARD, 0x6B657962);
         assert_eq!(K_EVENT_PARAM_DIRECT_OBJECT, 0x2D2D2D2D);
         assert_eq!(TYPE_EVENT_HOT_KEY_ID, 0x686B6964);
         assert_eq!(NUDGE_SIGNATURE, 0x4E444745);
     }
 
-    /// The table row means nothing to a user; where to look does.
     #[test]
     fn a_system_shortcut_is_reported_by_where_to_change_it() {
         let text = HotkeyStatus::HeldBySystem.to_string();
@@ -465,9 +323,6 @@ mod tests {
 
     #[test]
     fn a_key_without_a_macos_code_is_refused_rather_than_guessed() {
-        // F21..F24 parse (Windows can bind them) and macOS has no kVK for
-        // them. Registration validates nothing, so a guessed code would
-        // return success and never fire — this is the one place that says no.
         for token in keycode::TOKENS_WITHOUT_A_KEY_CODE {
             let hk = hotkey::parse(&format!("Ctrl+{token}")).expect("must parse");
             assert_eq!(
@@ -483,13 +338,6 @@ mod tests {
         }
     }
 
-    /// The measurement `HeldByNudge` exists for, asserted against the real OS
-    /// rather than quoted from a probe run.
-    ///
-    /// `#[ignore]` because it takes a machine-wide combination for the length
-    /// of the test — `⌃⌥⇧⌘F19`, four modifiers on a key most keyboards do not
-    /// have, so even a leaked registration takes nothing pressable. Run it
-    /// with `cargo test --lib -- --ignored exclusive`.
     #[test]
     #[ignore = "registers a real system-wide hotkey"]
     fn an_exclusive_probe_collides_with_our_own_non_exclusive_binding() {
@@ -514,8 +362,6 @@ mod tests {
 
     #[test]
     fn the_event_hot_key_id_is_two_words_by_value() {
-        // The extern block is the only declaration of this struct in the
-        // process — the SDK ships none — so its shape is asserted here.
         assert_eq!(std::mem::size_of::<EventHotKeyID>(), 8);
         assert_eq!(std::mem::align_of::<EventHotKeyID>(), 4);
         assert_eq!(std::mem::size_of::<EventTypeSpec>(), 8);

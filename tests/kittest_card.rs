@@ -1,22 +1,3 @@
-//! Headless AccessKit-driven tests against the real `NudgeApp` and
-//! `SettingsApp`, via `egui_kittest::Harness::new_eframe`. No window is
-//! opened and no display server is touched.
-//!
-//! `src/lib.rs` exposes `pub mod app;` unconditionally (it used to be
-//! `#[cfg(target_arch = "wasm32")] mod app;`) purely so this integration
-//! test crate — a separate compilation unit outside `nudge_web` — can reach
-//! `NudgeApp`. `app.rs`'s own internal cfgs are untouched.
-//!
-//! ## Positional addressing, not labels
-//!
-//! The spotlight card's three fields are built with `TextEdit::hint_text`
-//! only — no `ui.label()` + `labelled_by`, so the AccessKit tree carries no
-//! accessible name for any of them (see `hint_text_alone_produces_no_accesskit_label`
-//! in the probe this recipe came from). Adding labels would fix that, but it
-//! would also change the card's layout, which the WASM e2e tier pixel-tests.
-//! So every NudgeApp field below is addressed positionally, via
-//! `get_all_by_role(Role::TextInput)` in draw order.
-
 use eframe::egui;
 use eframe::egui::accesskit::Role;
 use egui_kittest::Harness;
@@ -33,12 +14,6 @@ use nudge_web::settings_app::{
 };
 use nudge_web::update::{self, Action, Release};
 
-// =============================================================================
-// NudgeApp — the spotlight card
-// =============================================================================
-
-/// Launch, then the first Deadline: the app starts in Waiting (spec §4), and
-/// the card is what the interval elapsing opens.
 fn nudge_harness<'a>(default_minutes: f64) -> Harness<'a, NudgeApp> {
     let mut harness = Harness::new_eframe(move |cc| NudgeApp::new(cc, default_minutes));
     harness.run();
@@ -51,10 +26,6 @@ fn first_deadline(harness: &mut Harness<'_, NudgeApp>) {
     harness.run();
 }
 
-/// Pins the phantom-fourth-Tab-stop regression: `egui::Area` implies a
-/// focusable click widget unless `.interactable(false)` is set on it
-/// (src/app.rs:340-343). Without that, the Area itself becomes a 4th
-/// Tab stop between the real fields.
 #[test]
 fn boots_and_exposes_exactly_three_text_inputs() {
     let harness = nudge_harness(10.0);
@@ -62,7 +33,6 @@ fn boots_and_exposes_exactly_three_text_inputs() {
     let inputs: Vec<_> = harness.get_all_by_role(Role::TextInput).collect();
     assert_eq!(inputs.len(), 3, "spotlight card has exactly three fields");
 
-    // hint_text-only fields carry no AccessKit label.
     assert!(inputs.iter().all(|n| n.accesskit_node().label().is_none()));
 }
 
@@ -102,17 +72,12 @@ fn tab_walks_the_three_fields_in_order_and_does_not_escape_the_card() {
     harness.key_press(egui::Key::Tab);
     harness.run();
     assert_eq!(focused_index(&harness), Some(1), "Tab moved 1 -> 2");
-    // Total field count is still exactly three: no phantom widget stole a
-    // Tab stop between fields.
     assert_eq!(harness.get_all_by_role(Role::TextInput).count(), 3);
 
     harness.key_press(egui::Key::Tab);
     harness.run();
     assert_eq!(focused_index(&harness), Some(2), "Tab moved 2 -> 3");
 
-    // One more Tab must land back on a real field of the card (index 0 or
-    // 2, depending on whether egui wraps or the Area's own extra stop would
-    // have absorbed it) — never on a fourth, nameless widget.
     harness.key_press(egui::Key::Tab);
     harness.run();
     assert_eq!(harness.get_all_by_role(Role::TextInput).count(), 3);
@@ -126,10 +91,6 @@ fn tab_walks_the_three_fields_in_order_and_does_not_escape_the_card() {
 fn typing_round_trips_including_cyrillic() {
     let mut harness = nudge_harness(10.0);
 
-    // `Node::type_text` does not focus the node — it queues an untargeted
-    // text event that lands on whatever egui focus currently is. Field 1 is
-    // already focused by `focus_first`, so no explicit `.focus()` is needed
-    // here, but field 3 below needs one.
     harness
         .get_all_by_role(Role::TextInput)
         .next()
@@ -162,14 +123,32 @@ fn typing_round_trips_including_cyrillic() {
             .unwrap()
             .value()
             .as_deref(),
-        Some("1025"), // field started at "10", typed text is inserted at caret 0 by kittest
+        Some("1025"),
     );
 }
 
-/// Enter runs the real Submit path against a recording journal sink — the
-/// same seam `SettingsApp` has for persistence — so the write never reaches
-/// the developer's own `~/Documents`. One event, carrying the typed text and
-/// the interval field's value.
+#[test]
+fn ctrl_backspace_deletes_one_cyrillic_word_once() {
+    let mut harness = nudge_harness(10.0);
+    type_into_card(&mut harness, 0, "привет мир");
+
+    harness.key_press_modifiers(
+        egui::Modifiers::CTRL | egui::Modifiers::COMMAND,
+        egui::Key::Backspace,
+    );
+    harness.run();
+
+    assert_eq!(
+        harness
+            .get_all_by_role(Role::TextInput)
+            .next()
+            .unwrap()
+            .value()
+            .as_deref(),
+        Some("привет "),
+    );
+}
+
 #[test]
 fn enter_submits_one_journal_event() {
     let events: std::rc::Rc<std::cell::RefCell<Vec<JournalEvent>>> = Default::default();
@@ -199,7 +178,6 @@ fn enter_submits_one_journal_event() {
     assert_eq!(events[0].next_interval_minutes, 10.0);
 }
 
-/// Escape runs the real Dismiss path.
 #[test]
 fn escape_dismisses_the_card() {
     let mut harness = nudge_harness(10.0);
@@ -211,8 +189,6 @@ fn escape_dismisses_the_card() {
     assert_eq!(harness.query_all_by_role(Role::TextInput).count(), 0);
 }
 
-/// A card whose journal is recorded rather than written, for the interval
-/// tests below.
 fn recording_nudge_harness<'a>(
     default_minutes: f64,
 ) -> (
@@ -232,7 +208,6 @@ fn recording_nudge_harness<'a>(
     (harness, events)
 }
 
-/// Type into the n-th field of the card.
 fn type_into_card(harness: &mut Harness<'_, NudgeApp>, nth: usize, text: &str) {
     harness
         .get_all_by_role(Role::TextInput)
@@ -248,8 +223,6 @@ fn type_into_card(harness: &mut Harness<'_, NudgeApp>, nth: usize, text: &str) {
     harness.run();
 }
 
-/// Spec §4 "Failed submits stay put": an interval past the bound is refused
-/// like any other invalid one — the popup stays, says why, writes nothing.
 #[test]
 fn submitting_an_interval_too_large_to_arm_is_refused() {
     let (mut harness, events) = recording_nudge_harness(1.0);
@@ -280,8 +253,6 @@ fn submitting_an_interval_too_large_to_arm_is_refused() {
     );
 }
 
-/// Spec §4: `Leave` never validates — an interval past the bound falls back
-/// to the default and the popup closes.
 #[test]
 fn leaving_with_an_interval_too_large_to_arm_closes() {
     let (mut harness, events) = recording_nudge_harness(1.0);
@@ -296,7 +267,6 @@ fn leaving_with_an_interval_too_large_to_arm_closes() {
         Some("1e20")
     );
 
-    // A click off the card, as the OS would deliver it.
     let pos = egui::pos2(2.0, 2.0);
     harness.event(egui::Event::PointerMoved(pos));
     for pressed in [true, false] {
@@ -317,9 +287,6 @@ fn leaving_with_an_interval_too_large_to_arm_closes() {
     assert!(events.borrow().is_empty());
 }
 
-/// A `default_interval_minutes` past the bound in `config.json` is refused at
-/// launch the way `main` reads it: the popup opens on the 10-minute default,
-/// and its first submit records that.
 #[test]
 fn a_configured_interval_too_large_to_arm_starts_the_popup_on_the_default() {
     let dir = tempfile::tempdir().unwrap();
@@ -351,14 +318,6 @@ fn a_configured_interval_too_large_to_arm_starts_the_popup_on_the_default() {
     assert_eq!(events[0].next_interval_minutes, 10.0);
 }
 
-// =============================================================================
-// SettingsApp
-// =============================================================================
-
-/// Autostart provider test double. Records every call so a test can assert
-/// the toggle went through the injected seam rather than any real OS
-/// mechanism. Held behind `Arc` so a clone can be kept for post-hoc
-/// assertions after the original is moved into `SettingsApp::new`.
 struct RecordingProvider {
     enabled: std::sync::Arc<std::sync::atomic::AtomicBool>,
     enable_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -404,8 +363,6 @@ fn cfg(hotkey: &str, minutes: f64, autostart: bool) -> Config {
     }
 }
 
-/// The autostart checkbox, by its platform label — there are two checkboxes
-/// in the window now, and the sprite's is the other one.
 #[cfg(target_os = "macos")]
 const AUTOSTART_LABEL: &str = "Open at login";
 #[cfg(not(target_os = "macos"))]
@@ -423,19 +380,12 @@ fn settings_form_populates_from_a_config() {
     });
     harness.run();
 
-    // Hotkey row, then interval row, then the sprite's path, X, Y and card
-    // width: all TextEdit::singleline with hint_text only, same unlabelled
-    // shape as the spotlight card's fields (the row labels are separate
-    // ui.label()s, not wired via .labelled_by()).
     let inputs: Vec<_> = harness.get_all_by_role(Role::TextInput).collect();
     assert_eq!(
         inputs.len(),
         6,
         "hotkey, interval, sprite path, X, Y, card width"
     );
-    // The stored spelling is the cross-platform one; the field shows this
-    // platform's — `⌥J` on macOS. Deriving the expectation the same way the
-    // window does would assert nothing, so this states both forms.
     #[cfg(target_os = "macos")]
     assert_eq!(inputs[0].value().as_deref(), Some("⌥J"));
     #[cfg(not(target_os = "macos"))]
@@ -450,16 +400,6 @@ fn settings_form_populates_from_a_config() {
     );
 }
 
-/// `SettingsForm` (src/settings_app.rs) is the pure, no-eframe, no-I/O state
-/// machine `SettingsApp` wraps — its own module doc calls it out as "what's
-/// unit-tested". `is_dirty` is exercised here directly rather than through
-/// the eframe shell because `SettingsApp`'s `form` field is private to its
-/// module: an integration test, being a separate crate, cannot reach it
-/// through `Harness::state()`, and adding an accessor would touch `src/`
-/// beyond what this task allows. The typing-round-trips-through-the-UI half
-/// of "editing" is already covered for the shared TextEdit machinery by
-/// `typing_round_trips_including_cyrillic` above and by
-/// `settings_app_editing_a_field_round_trips_through_the_ui` below.
 #[test]
 fn settings_form_editing_marks_it_dirty() {
     let mut form = SettingsForm::from_config(cfg("Ctrl+Shift+Space", 10.0, false));
@@ -498,7 +438,7 @@ fn settings_app_editing_a_field_round_trips_through_the_ui() {
             .unwrap()
             .value()
             .as_deref(),
-        Some("75"), // "7" with "5" inserted at the caret (index 0)
+        Some("75"),
     );
 }
 
@@ -551,8 +491,6 @@ fn toggling_autostart_goes_through_the_injected_provider_not_the_os() {
     );
 }
 
-/// §9: an enabled sprite must pass the §10 PNG check or Save refuses it,
-/// naming the reason on the window's message line and writing nothing.
 #[test]
 fn settings_save_with_a_bad_sprite_shows_the_reason_and_persists_nothing() {
     const REASON: &str = "Sprite PNG has no transparent pixels — it needs a transparent background";
@@ -580,7 +518,6 @@ fn settings_save_with_a_bad_sprite_shows_the_reason_and_persists_nothing() {
     });
     harness.run();
 
-    // Type a path into the sprite row's third input, tick Sprite, Save.
     harness
         .get_all_by_role(Role::TextInput)
         .nth(2)
@@ -606,22 +543,12 @@ fn settings_save_with_a_bad_sprite_shows_the_reason_and_persists_nothing() {
         persisted.lock().unwrap().is_empty(),
         "a refused save writes nothing"
     );
-    // §9 Saving: only "a save that reached the file says so".
     assert!(
         harness.query_by_label("Saved").is_none(),
         "a refused save must not say Saved"
     );
 }
 
-// -----------------------------------------------------------------------------
-// §9 Saving — Return, the `Saved` note, and a Save that is live only while
-// the form differs from the file.
-// -----------------------------------------------------------------------------
-
-/// A settings window over a recording persist closure: what Save wrote, in
-/// order, so a case can assert on the write rather than on the window alone.
-/// The harness is the window's own size, so what the layout cases measure is
-/// the form as the window shows it.
 fn settings_harness<'a>(
     config: Config,
 ) -> (
@@ -652,8 +579,6 @@ fn settings_harness<'a>(
     (harness, persisted)
 }
 
-/// A key source with no platform behind it: edges are whatever a test queues,
-/// every one of them refused by name, and `armed` is what the row last said.
 #[derive(Clone, Default)]
 struct FakeEdgeSource {
     edges: std::sync::Arc<std::sync::Mutex<Vec<PressEdge>>>,
@@ -674,7 +599,6 @@ impl EdgeSource for FakeEdgeSource {
     }
 }
 
-/// [`settings_harness`] with a recorder that can arm.
 fn settings_harness_with_source<'a>(
     config: Config,
     source: FakeEdgeSource,
@@ -706,7 +630,6 @@ fn settings_harness_with_source<'a>(
     (harness, persisted)
 }
 
-/// Put the caret in the n-th text input and type into it.
 fn type_into(harness: &mut Harness<'_, SettingsApp>, nth: usize, text: &str) {
     harness
         .get_all_by_role(Role::TextInput)
@@ -730,13 +653,10 @@ fn says_saved(harness: &Harness<'_, SettingsApp>) -> bool {
     harness.query_by_label("Saved").is_some()
 }
 
-/// §9 Saving: "Return anywhere in the form is `Save`: the same checks, the
-/// same write, the same messages as the button."
 #[test]
 fn settings_return_in_a_field_saves() {
     let (mut harness, persisted) = settings_harness(cfg("Alt+J", 7.0, false));
 
-    // The interval field: "7" becomes "75" (the caret lands at the end).
     type_into(&mut harness, 1, "5");
     harness.key_press(egui::Key::Enter);
     harness.run();
@@ -751,7 +671,6 @@ fn settings_return_in_a_field_saves() {
     );
     assert!(says_saved(&harness), "a save from Return says Saved too");
 
-    // A sprite field: the same key, the same write.
     type_into(&mut harness, 3, "4");
     harness.key_press(egui::Key::Enter);
     harness.run();
@@ -762,9 +681,6 @@ fn settings_return_in_a_field_saves() {
     );
 }
 
-/// §9 Saving: "the same checks, the same write, the same messages as the
-/// button" — a Return that fails the checks shows the button's message and
-/// writes nothing.
 #[test]
 fn settings_return_runs_the_same_checks_and_shows_the_same_message() {
     let (mut harness, persisted) = settings_harness(cfg("Alt+J", 7.0, false));
@@ -788,9 +704,6 @@ fn settings_return_runs_the_same_checks_and_shows_the_same_message() {
     assert!(!says_saved(&harness), "a refused save must not say Saved");
 }
 
-/// §9: the Default interval field holds the popup's rule, so an interval
-/// too large to arm is refused with the rule's message and never reaches
-/// the file the next launch reads.
 #[test]
 fn settings_refuses_an_interval_too_large_to_arm() {
     let (mut harness, persisted) = settings_harness(cfg("Alt+J", 1.0, false));
@@ -813,8 +726,6 @@ fn settings_refuses_an_interval_too_large_to_arm() {
     );
 }
 
-/// §9 Saving: "`Save` is live only while the form differs from the file" —
-/// so Return on a form that matches the file has nothing to do.
 #[test]
 fn settings_return_on_a_clean_form_does_nothing() {
     let (mut harness, persisted) = settings_harness(cfg("Alt+J", 7.0, false));
@@ -835,9 +746,6 @@ fn settings_return_on_a_clean_form_does_nothing() {
     assert!(!says_saved(&harness));
 }
 
-/// §9 Saving: "While the recorder is armed the key is the recorder's — a
-/// press, not a save." The source swallows Return on a real desktop; here
-/// egui sees it too, and the window must still not save.
 #[test]
 fn settings_return_while_the_recorder_is_armed_is_a_press_not_a_save() {
     let source = FakeEdgeSource::default();
@@ -853,7 +761,6 @@ fn settings_return_while_the_recorder_is_armed_is_a_press_not_a_save() {
     );
     assert!(source.armed.load(std::sync::atomic::Ordering::SeqCst));
 
-    // The press edge the monitor would report, and the key egui would see.
     source.edges.lock().unwrap().push(PressEdge {
         key: PhysicalKey(36),
         modifiers: nudge_web::hotkey::Modifiers::NONE,
@@ -881,9 +788,6 @@ fn settings_return_while_the_recorder_is_armed_is_a_press_not_a_save() {
     );
 }
 
-/// §9 Saving: "A focused button or checkbox keeps its own Return" — on the
-/// autostart checkbox the key is the checkbox's click, and the edited
-/// interval stays unsaved.
 #[test]
 fn settings_return_on_a_focused_checkbox_is_the_checkbox_s() {
     let (mut harness, persisted) = settings_harness(cfg("Alt+J", 7.0, false));
@@ -906,8 +810,6 @@ fn settings_return_on_a_focused_checkbox_is_the_checkbox_s() {
     assert!(!save_is_disabled(&harness), "the edit is still unsaved");
 }
 
-/// §9 Saving: "A save that reached the file says so — `Saved`, beside the
-/// buttons — and the first edit after it takes the note away."
 #[test]
 fn settings_says_saved_after_a_save_until_the_first_edit() {
     let (mut harness, _persisted) = settings_harness(cfg("Alt+J", 7.0, false));
@@ -925,8 +827,6 @@ fn settings_says_saved_after_a_save_until_the_first_edit() {
     );
 }
 
-/// §9 Saving: "The note is the button's: an autostart click, committed on
-/// its own, takes it away like any other edit and raises none."
 #[test]
 fn settings_autostart_click_after_a_save_takes_the_note_away_and_raises_none() {
     let (mut harness, persisted) = settings_harness(cfg("Alt+J", 7.0, false));
@@ -953,8 +853,6 @@ fn settings_autostart_click_after_a_save_takes_the_note_away_and_raises_none() {
     );
 }
 
-/// §9 Saving: "`Save` is live only while the form differs from the file, so
-/// a form that reads as unedited is one whose content is on disk."
 #[test]
 fn settings_save_is_greyed_while_the_form_matches_the_file() {
     let (mut harness, persisted) = settings_harness(cfg("Alt+J", 7.0, false));
@@ -963,11 +861,9 @@ fn settings_save_is_greyed_while_the_form_matches_the_file() {
         "a freshly-loaded form has nothing to save"
     );
 
-    // "7" -> "75": differs from the file.
     type_into(&mut harness, 1, "5");
     assert!(!save_is_disabled(&harness), "an edit makes Save live");
 
-    // Backspace over the "5": the stored value is back, so nothing differs.
     harness.key_press(egui::Key::Backspace);
     harness.run();
     assert_eq!(
@@ -993,33 +889,18 @@ fn settings_save_is_greyed_while_the_form_matches_the_file() {
         "a just-saved form reads as unedited, and its content is on disk"
     );
 
-    // A greyed button is not a button: a click on it writes nothing.
     harness.get_by_label("Save").click();
     harness.run();
     assert_eq!(persisted.lock().unwrap().len(), 1);
 }
 
-// -----------------------------------------------------------------------------
-// §9 Window chrome and layout.
-//
-// One case per sentence of the subsection, against the Rust settings window;
-// their Electron twins, on the same sentences, are
-// electron/tests/native/settings.test.js. One sentence has no case here:
-// "rows in rounded boxes, a hairline between rows" is paint, not a node —
-// AccessKit cannot see a box or a line — and this tier renders no pixels
-// (see egui_kittest in Cargo.toml). The boxes are judged by eye on a capture
-// of the window; the guest test looks only for the filled button.
-// -----------------------------------------------------------------------------
-
 use egui_kittest::kittest::By;
 
-/// The autostart row's text on this platform (§9 Fields).
 #[cfg(target_os = "macos")]
 const AUTOSTART_ROW: &str = "Open at login";
 #[cfg(not(target_os = "macos"))]
 const AUTOSTART_ROW: &str = "Launch with Windows";
 
-/// The rect of the widget labelled `label`, or a failure that names it.
 fn rect_of(harness: &Harness<'_, SettingsApp>, label: &str) -> egui::Rect {
     harness
         .query_by_label(label)
@@ -1027,8 +908,6 @@ fn rect_of(harness: &Harness<'_, SettingsApp>, label: &str) -> egui::Rect {
         .rect()
 }
 
-/// The rect of the row text `text` itself — the label, never the control it
-/// labels (kittest hides a labelling node from label queries by default).
 fn row_text_rect(harness: &Harness<'_, SettingsApp>, text: &str) -> egui::Rect {
     harness
         .query_all(By::new().role(Role::Label).label(text).include_labels())
@@ -1037,8 +916,6 @@ fn row_text_rect(harness: &Harness<'_, SettingsApp>, text: &str) -> egui::Rect {
         .rect()
 }
 
-/// The n-th text input in draw order: hotkey, interval, PNG path, X, Y,
-/// card width.
 fn input_rect(harness: &Harness<'_, SettingsApp>, nth: usize) -> egui::Rect {
     harness
         .get_all_by_role(Role::TextInput)
@@ -1047,7 +924,6 @@ fn input_rect(harness: &Harness<'_, SettingsApp>, nth: usize) -> egui::Rect {
         .rect()
 }
 
-/// The two checkboxes in draw order: autostart, sprite.
 fn checkbox_rects(harness: &Harness<'_, SettingsApp>) -> Vec<egui::Rect> {
     let rects: Vec<egui::Rect> = harness
         .get_all_by_role(Role::CheckBox)
@@ -1057,7 +933,6 @@ fn checkbox_rects(harness: &Harness<'_, SettingsApp>) -> Vec<egui::Rect> {
     rects
 }
 
-/// The texts of every label on screen.
 fn label_texts(harness: &Harness<'_, SettingsApp>) -> Vec<String> {
     harness
         .get_all_by_role(Role::Label)
@@ -1065,15 +940,63 @@ fn label_texts(harness: &Harness<'_, SettingsApp>) -> Vec<String> {
         .collect()
 }
 
-/// Whether all of `edges` lie within a point of each other.
 fn one_edge(edges: &[(&str, f32)]) -> bool {
     let min = edges.iter().map(|e| e.1).fold(f32::MAX, f32::min);
     let max = edges.iter().map(|e| e.1).fold(f32::MIN, f32::max);
     max - min <= 1.0
 }
 
-/// §9: "Nothing inside the window repeats the title: the title bar carries
-/// it."
+fn focused_widget(harness: &Harness<'_, SettingsApp>) -> (String, egui::Rect) {
+    let node = harness
+        .query_all(By::new().predicate(|n| n.is_focused()))
+        .next()
+        .expect("a widget has keyboard focus");
+    let name = format!(
+        "{:?} {:?}",
+        node.accesskit_node().role(),
+        node.accesskit_node().label().or(node.value())
+    );
+    (name, node.rect())
+}
+
+#[test]
+fn settings_tab_visits_controls_in_reading_order() {
+    let (mut harness, _) =
+        settings_harness_with_source(cfg("Alt+J", 10.0, false), FakeEdgeSource::default());
+    harness
+        .get_all_by_role(Role::TextInput)
+        .next()
+        .unwrap()
+        .focus();
+    harness.run();
+
+    let mut visited = vec![focused_widget(&harness)];
+    for _ in 0..30 {
+        harness.key_press(egui::Key::Tab);
+        harness.run();
+        let next = focused_widget(&harness);
+        if next.1 == visited[0].1 {
+            break;
+        }
+        visited.push(next);
+    }
+    assert!(
+        visited.len() >= 8,
+        "Tab reached too few controls: {visited:?}"
+    );
+
+    for pair in visited.windows(2) {
+        let (a, b) = (&pair[0], &pair[1]);
+        let same_row = (a.1.center().y - b.1.center().y).abs() < 1.0;
+        let in_order = if same_row {
+            b.1.left() > a.1.left()
+        } else {
+            b.1.center().y > a.1.center().y
+        };
+        assert!(in_order, "Tab went from {} to {}", a.0, b.0);
+    }
+}
+
 #[test]
 fn settings_has_no_heading_repeating_the_title() {
     let (harness, _persisted) = settings_harness(cfg("Alt+J", 7.0, false));
@@ -1089,9 +1012,6 @@ fn settings_has_no_heading_repeating_the_title() {
     );
 }
 
-/// §9: "`Cancel`, then `Save`, at the bottom right" — and, of the rows, "the
-/// buttons end where the boxes do": a box spans the form, so its right edge
-/// is one margin in from the window's.
 #[test]
 fn settings_cancel_then_save_at_the_bottom_right() {
     let (harness, _persisted) = settings_harness(cfg("Alt+J", 7.0, false));
@@ -1110,7 +1030,6 @@ fn settings_cancel_then_save_at_the_bottom_right() {
         "Cancel and Save are not on one line"
     );
 
-    // At the bottom right: nothing of the form ends further right or lower.
     let mut right = f32::MIN;
     let mut bottom = f32::MIN;
     for role in [Role::TextInput, Role::Button, Role::CheckBox, Role::Label] {
@@ -1137,7 +1056,6 @@ fn settings_cancel_then_save_at_the_bottom_right() {
     );
 }
 
-/// §9: "The `Saved` note sits to their left after a save."
 #[test]
 fn settings_saved_note_sits_left_of_cancel() {
     let (mut harness, _persisted) = settings_harness(cfg("Alt+J", 7.0, false));
@@ -1162,11 +1080,6 @@ fn settings_saved_note_sits_left_of_cancel() {
     );
 }
 
-/// §9: "In every row the label sits at the left and the control at the right
-/// edge — one left edge for every row's text and one right edge for every
-/// row's last control, so the groups read as one form". Six rows. The row
-/// texts are §9's Fields names; the PNG and position rows read `PNG` and
-/// `Position (pt)` (§10: "labelled in points").
 #[test]
 fn settings_row_texts_share_a_left_edge_and_controls_a_right_edge() {
     let (harness, _persisted) = settings_harness(cfg("Alt+J", 7.0, false));
@@ -1184,9 +1097,6 @@ fn settings_row_texts_share_a_left_edge_and_controls_a_right_edge() {
         .map(|t| (*t, row_text_rect(&harness, t).min.x))
         .collect();
 
-    // The last control of each row. The hotkey row ends with Record where a
-    // recorder exists, the PNG row with Browse… where a file dialog does;
-    // otherwise with the field itself.
     let checkboxes = checkbox_rects(&harness);
     let hotkey_end = harness
         .query_by_label("Record")
@@ -1215,14 +1125,10 @@ fn settings_row_texts_share_a_left_edge_and_controls_a_right_edge() {
     );
 }
 
-/// §9: "A checkbox sits at the right of its row; the row's text is its label."
 #[test]
 fn settings_checkboxes_sit_at_the_right_of_their_rows() {
     let (harness, _persisted) = settings_harness(cfg("Alt+J", 7.0, false));
     let checkboxes = checkbox_rects(&harness);
-    // The right edge every row's control ends at: the hotkey row's last one.
-    // (Not Save's — the buttons sit at the window's margin, the rows inside
-    // their boxes.)
     let right_edge = harness
         .query_by_label("Record")
         .map(|n| n.rect())
@@ -1245,7 +1151,6 @@ fn settings_checkboxes_sit_at_the_right_of_their_rows() {
     }
 }
 
-/// §9: "The hotkey vocabulary is a footnote under its group."
 #[test]
 fn settings_vocabulary_is_a_footnote_under_the_hotkey_group() {
     let (harness, _persisted) = settings_harness(cfg("Alt+J", 7.0, false));
@@ -1270,15 +1175,12 @@ fn settings_vocabulary_is_a_footnote_under_the_hotkey_group() {
     );
 }
 
-/// §9: "The banner has its line above the buttons whether or not it has
-/// anything to say, so the window never changes size."
 #[test]
 fn settings_banner_line_keeps_its_height_when_empty() {
     let (mut harness, persisted) = settings_harness(cfg("Alt+J", 7.0, false));
     let quiet_save = rect_of(&harness, "Save");
     let quiet_labels = label_texts(&harness);
 
-    // "7" -> "7x": refused, so the banner has something to say.
     type_into(&mut harness, 1, "x");
     harness.key_press(egui::Key::Enter);
     harness.run();
@@ -1310,12 +1212,6 @@ fn settings_banner_line_keeps_its_height_when_empty() {
     );
 }
 
-/// §9: "The window is sized to the form" — "on the native build the content
-/// is 560 × 625 pt". The form, laid out at that width, ends one margin above
-/// the window's bottom and one margin short of its right edge: the number in
-/// the spec is what the form adds up to, not a guess the window asks for.
-/// The native build is the macOS one — the footnote's wrap, and so the sum,
-/// is this platform's vocabulary in this platform's spelling.
 #[cfg(target_os = "macos")]
 #[test]
 fn settings_form_adds_up_to_the_window() {
@@ -1343,13 +1239,6 @@ fn settings_form_adds_up_to_the_window() {
     );
 }
 
-/// §9: "The banner has its line above the buttons whether or not it has
-/// anything to say, so the window never changes size." A refused hotkey
-/// echoes what was typed, and what was typed can be anything: the message
-/// has to stay on its line whatever it quotes, and the form has to keep its
-/// shape under it — the buttons where they were, nothing past the margin.
-/// Two shapes of anything: one word that no line can hold, which pushes
-/// sideways, and a run of words, which wraps and pushes up.
 #[test]
 fn settings_long_hotkey_token_stays_on_the_message_line() {
     let one_word: String = std::iter::repeat_n("abcdefghij", 15).collect();
@@ -1404,17 +1293,10 @@ fn long_token_stays_on_the_message_line(token: &str) {
     );
 }
 
-// -----------------------------------------------------------------------------
-// §9 Fields — an off sprite's rows are dimmed, and stay editable.
-// -----------------------------------------------------------------------------
-
-/// The alpha each text in `texts` was last painted with, 0 to 1, in that
-/// order — a row's text, or what a field holds. `None` for one not painted.
 fn painted_alpha(harness: &Harness<'_, SettingsApp>, texts: &[&str]) -> Vec<Option<f32>> {
     fn walk(shape: &egui::Shape, found: &mut Vec<(String, f32)>) {
         match shape {
             egui::Shape::Text(t) => {
-                // A glyph's own colour, unless it left it to the shape's.
                 let glyph = t
                     .galley
                     .rows
@@ -1439,9 +1321,6 @@ fn painted_alpha(harness: &Harness<'_, SettingsApp>, texts: &[&str]) -> Vec<Opti
         .collect()
 }
 
-/// §9: "While the `Sprite` checkbox is off, the PNG and Position rows are
-/// drawn at half opacity, the way a disabled control is … They stay
-/// editable".
 #[test]
 fn settings_dims_the_sprite_rows_while_the_sprite_is_off() {
     const TEXTS: [&str; 6] = [
@@ -1468,8 +1347,6 @@ fn settings_dims_the_sprite_rows_while_the_sprite_is_off() {
         "every text painted: on {on_alpha:?}, off {off_alpha:?}"
     );
 
-    // Against the same text with the sprite on: the checkbox row as it was,
-    // the two rows under it at the disabled alpha.
     let dim = egui::Visuals::dark().disabled_alpha();
     let ratios: Vec<f32> = on_alpha
         .iter()
@@ -1482,7 +1359,6 @@ fn settings_dims_the_sprite_rows_while_the_sprite_is_off() {
         "off/on alpha of {TEXTS:?}: {ratios:?}, want {want:?}"
     );
 
-    // Dimmed is not disabled: the path still takes typing, and Save writes it.
     type_into(&mut off, 2, "x");
     off.get_by_label("Save").click();
     off.run();
@@ -1495,13 +1371,6 @@ fn settings_dims_the_sprite_rows_while_the_sprite_is_off() {
     );
 }
 
-// -----------------------------------------------------------------------------
-// §9 Updates — a button, never a background check; the result states; the
-// platform's action. The check and the install are fakes that record, so no
-// case reaches the network or touches an exe.
-// -----------------------------------------------------------------------------
-
-/// What the fakes behind the Updates row were asked to do.
 #[derive(Default)]
 struct UpdateCalls {
     checks: usize,
@@ -1519,8 +1388,6 @@ fn a_release(tag: &str) -> Release {
     }
 }
 
-/// A settings window whose check answers `answer` and whose install answers
-/// `installed`, both recorded, with `action` as this platform's.
 fn update_harness<'a>(
     answer: Result<Release, String>,
     installed: Result<(), String>,
@@ -1558,17 +1425,20 @@ fn update_harness<'a>(
     (harness, calls)
 }
 
-/// Run frames until `text` is on screen: the check and the install answer
-/// from a worker thread.
+const SETTLE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
 fn settle_on(harness: &mut Harness<'_, SettingsApp>, text: &str) {
-    for _ in 0..200 {
+    let deadline = std::time::Instant::now() + SETTLE_DEADLINE;
+    loop {
         harness.step();
         if harness.query_by_label(text).is_some() {
             return;
         }
+        if std::time::Instant::now() >= deadline {
+            panic!("{text:?} never appeared within {SETTLE_DEADLINE:?}");
+        }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    panic!("{text:?} never appeared");
 }
 
 #[test]

@@ -2,12 +2,6 @@ import { describe, it, expect, beforeAll, afterEach } from 'vitest';
 import { launchApp } from './fixtures/electron.js';
 import { macosInput } from './fixtures/macosInput.js';
 
-// The daisy as a macOS status item, measured where the user sees it: the
-// frame the menu bar gives it (Accessibility, fixtures/macos-input.swift
-// `extras`). The bar is 24 pt tall on a plain display, 33 pt under a notch,
-// and does not scale an oversized image down: an NSImage whose logical size
-// is the bitmap's pixel size overflows the bar both ways. A menu bar icon is
-// drawn at ~18 pt, so an item is about as wide as the bar is tall.
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 describe.skipIf(process.platform !== 'darwin')('macOS status item', () => {
@@ -25,8 +19,6 @@ describe.skipIf(process.platform !== 'darwin')('macOS status item', () => {
     ({ app } = await launchApp());
     const reps = await app.evaluate(() => globalThis.__nudgeTest.trayImageReps());
     console.log('[tray image]', JSON.stringify(reps));
-    // AppKit picks the representation whose scale matches the display, and
-    // resamples when none does. Two exact ones, no resample on either kind.
     expect(reps).toEqual([
       { scale: 1, points: 18, pixels: 18 },
       { scale: 2, points: 18, pixels: 36 },

@@ -101,7 +101,6 @@ describe("parseHotkey", () => {
     for (const [spelling, token] of Object.entries(arrows)) {
       expect(parseHotkey(`Ctrl+${spelling}`).hotkey?.key, spelling).toBe(token);
     }
-    // The task's own example, in the Mac spelling.
     expect(parseHotkey("⌥⌘←")).toEqual({
       ok: true,
       hotkey: { ctrl: false, alt: true, shift: false, win: true, key: "LEFT" },
@@ -137,7 +136,6 @@ describe("parseHotkey", () => {
       ok: true,
       hotkey: { ctrl: false, alt: false, shift: true, win: false, key: "/" },
     });
-    // The shifted twin is not a second name for the same cap.
     expect(parseHotkey("Ctrl+?")).toEqual({
       ok: false,
       error: { kind: "unknownToken", token: "?" },
@@ -163,14 +161,10 @@ describe("parseHotkey", () => {
   });
 
   it("reads the F-row's digits as a number, so F07 is F7", () => {
-    // The Rust side parses them (`rest.parse::<u8>()`), so a config written
-    // with a padded number must not come back as a second spelling of one key.
     expect(parseHotkey("Ctrl+F07").hotkey?.key).toBe("F7");
     expect(parseHotkey("Ctrl+F007").hotkey?.key).toBe("F7");
     const parsed = parseHotkey("Ctrl+F07");
     expect(parsed.ok && formatHotkey(parsed.hotkey, "windows")).toBe("Ctrl+F7");
-    // Past a byte there is no number at all — an unknown token, not an
-    // out-of-range F-key.
     expect(parseHotkey("Ctrl+F999")).toEqual({
       ok: false,
       error: { kind: "unknownToken", token: "F999" },
@@ -193,8 +187,6 @@ describe("parseHotkey", () => {
   });
 
   it("quotes a bounded head of what was typed in the message", () => {
-    // The error keeps the whole token — it is what was typed; the message
-    // shows ECHO_LIMIT characters of it and says there was more.
     const token = "abcdefghij".repeat(15);
     const result = parseHotkey(`Ctrl+${token}`);
     expect(result).toEqual({ ok: false, error: { kind: "unknownToken", token } });
@@ -202,10 +194,8 @@ describe("parseHotkey", () => {
     expect(describeParseError(result.error)).toBe(
       `unknown hotkey token: "${token.slice(0, ECHO_LIMIT)}…"`,
     );
-    // Short text is quoted whole, with nothing after it.
     expect(echoed("Numpad5")).toBe("Numpad5");
     expect(echoed("x".repeat(ECHO_LIMIT))).toBe("x".repeat(ECHO_LIMIT));
-    // Counted in characters, so an astral token is cut between them.
     expect([...echoed("😀".repeat(ECHO_LIMIT + 1))]).toHaveLength(ECHO_LIMIT + 1);
   });
 
@@ -226,8 +216,6 @@ describe("parseHotkey", () => {
   });
 
   it("rejects a key that types something when nothing is held", () => {
-    // Registration would take every one of these and then own the key on the
-    // whole machine (spec §5).
     for (const s of ["J", "5", "Space", "Enter", "Home", "←", "/"]) {
       const key = parseHotkey(`Ctrl+${s}`).hotkey?.key;
       expect(parseHotkey(s), s).toEqual({
@@ -258,8 +246,6 @@ describe("parseHotkey", () => {
     });
     expect(parseHotkey("⌘←→")).toEqual({
       ok: false,
-      // "←→" is one segment and neither arrow is a modifier glyph, so the
-      // token is unknown rather than two keys.
       error: { kind: "unknownToken", token: "←→" },
     });
   });

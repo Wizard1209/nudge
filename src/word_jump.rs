@@ -1,24 +1,9 @@
-//! Word boundaries for Ctrl/Alt+Arrow, Ctrl/Alt+Backspace and Ctrl/Alt+Delete
-//! in the popup's text fields. Indices are *char* indices (matching egui's
-//! `CCursor::index`), not byte indices.
-//!
-//! A word is a run of `is_alphanumeric()` characters or `_`, and a jump
-//! crosses the run the cursor is in plus the run after it: Ctrl+Right from
-//! inside `привет мир` lands at the start of `мир`, the way Windows moves.
-//! egui 0.34's own word jump is Unicode-aware as well, but it lands at the
-//! end of the word (the way macOS moves), stops at every `.`, and keeps
-//! `it's` as one word (Unicode word segmentation). Intercepting the keys is
-//! what keeps the behaviour described here instead.
-
 use eframe::egui;
 
-/// Returns the char index of the next word boundary at or after `cursor`,
-/// by the run rule in the module doc.
 pub fn next_word_boundary(text: &str, cursor: usize) -> usize {
     next_boundary_in_iter(text.chars(), cursor)
 }
 
-/// Returns the char index of the previous word boundary at or before `cursor`.
 pub fn previous_word_boundary(text: &str, cursor: usize) -> usize {
     let num_chars = text.chars().count();
     num_chars - next_boundary_in_iter(text.chars().rev(), num_chars - cursor)
@@ -59,17 +44,10 @@ fn delete_char_range(s: &mut String, start_char: usize, end_char: usize) {
     s.replace_range(start_byte..end_byte, "");
 }
 
-/// Intercept Ctrl+Arrow / Ctrl+Backspace / Ctrl+Delete on a focused TextEdit
-/// and apply the boundaries above instead of egui's own.
-///
-/// Call BEFORE drawing the TextEdit. Removes handled events from the input
-/// queue so TextEdit does not double-process them. Also mirrors the action on
-/// `Alt` to match egui's mac binding parity.
 pub fn intercept_ctrl_word_keys(ctx: &egui::Context, field_id: egui::Id, value: &mut String) {
     use egui::text::{CCursor, CCursorRange};
     use egui::{Event, Key};
 
-    // Cheap pre-check: any relevant event in the queue?
     let has_relevant = ctx.input(|i| {
         i.events.iter().any(|e| {
             matches!(
@@ -173,17 +151,13 @@ pub fn intercept_ctrl_word_keys(ctx: &egui::Context, field_id: egui::Id, value: 
 mod tests {
     use super::*;
 
-    // ---- next_word_boundary ----
-
     #[test]
     fn next_ascii_skips_word_then_stops_before_space() {
-        // "hello world" — from start, jump after "hello", leave the space
         assert_eq!(next_word_boundary("hello world", 0), 5);
     }
 
     #[test]
     fn next_ascii_from_space_consumes_space_and_word() {
-        // "hello world" — from the space, consume " world" to end
         assert_eq!(next_word_boundary("hello world", 5), 11);
     }
 
@@ -204,7 +178,6 @@ mod tests {
 
     #[test]
     fn next_cyrillic_stops_before_space() {
-        // "привет мир" — 6 char "привет", space, 3 char "мир"
         assert_eq!(next_word_boundary("привет мир", 0), 6);
     }
 
@@ -215,18 +188,12 @@ mod tests {
 
     #[test]
     fn next_mixed_stops_at_script_change_only_via_space() {
-        // "test тест" — "test" is word, space is not, "тест" is word.
-        // From 0: stop after "test" (before space).
         assert_eq!(next_word_boundary("test тест", 0), 4);
-        // From space: consume space + "тест" to end (9 chars total).
         assert_eq!(next_word_boundary("test тест", 4), 9);
     }
 
-    // ---- previous_word_boundary ----
-
     #[test]
     fn prev_ascii_jumps_to_word_start() {
-        // "hello world" — from end, back to start of "world"
         assert_eq!(previous_word_boundary("hello world", 11), 6);
     }
 
@@ -247,7 +214,6 @@ mod tests {
 
     #[test]
     fn prev_cyrillic_jumps_to_word_start() {
-        // "привет мир" — from end, back to start of "мир"
         assert_eq!(previous_word_boundary("привет мир", 10), 7);
     }
 
@@ -258,9 +224,7 @@ mod tests {
 
     #[test]
     fn prev_mixed() {
-        // "test тест" — from end (9), back to start of "тест" (5)
         assert_eq!(previous_word_boundary("test тест", 9), 5);
-        // From 5 (start of "тест"), back to start of "test" (0)
         assert_eq!(previous_word_boundary("test тест", 5), 0);
     }
 }

@@ -1,24 +1,3 @@
-//! Tray icon owned by a dedicated thread.
-//!
-//! Why a separate thread? `tray_icon::TrayIcon` is `!Send` (wraps
-//! `Rc<RefCell<…>>`), so the tray has to live entirely on one thread. The
-//! main thread runs eframe, which `SW_HIDE`s its window between nudges —
-//! and a hidden, layered, transparent window does not get `update()`
-//! callbacks. Driving icon animation from `update()` therefore drops most
-//! frames. Discord and similar apps avoid this by giving the tray its own
-//! thread with its own message pump; we do the same here.
-//!
-//! The tray thread:
-//!   - Owns the `TrayIcon` and the menu items.
-//!   - Runs a `MsgWaitForMultipleObjectsEx`-driven loop that interleaves
-//!     message dispatch with animation frames.
-//!   - Reads the armed timer and the popup's visibility out of
-//!     `platform::shared`, both written by the eframe thread.
-//!   - Wakes from a long wait via `PostThreadMessageW` whenever eframe
-//!     changes state.
-//!   - Fires the popup when the timer expires (raises the timer edge +
-//!     `ShowWindow(SW_RESTORE)` on eframe's HWND).
-
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 use std::thread;
@@ -43,27 +22,13 @@ use crate::hotkey::{self, Hotkey, Modifiers};
 use crate::nudge_state;
 use crate::platform::shared;
 
-// ---------- shared state ---------------------------------------------------
-
-/// Handle of the eframe popup window so we can `ShowWindow` it from the
-/// tray thread when the timer expires.
 static HWND_STORE: AtomicIsize = AtomicIsize::new(0);
 
-/// OS thread id of the tray thread — used by `PostThreadMessageW` to wake
-/// the pump when state changes from the eframe side.
 static TRAY_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 
-/// Custom message we post to the tray thread purely to wake the pump out
-/// of `MsgWaitForMultipleObjectsEx`. Value is opaque — we drain and ignore.
 const WM_TRAY_WAKE: u32 = WM_USER + 1;
 
-/// Posted by the settings window, from its own process, once an update is in
-/// place at this exe's path (spec §9 "Updates"): quit, exactly as the menu's
-/// `Quit` does, so the new exe can start and take the hotkey. The window
-/// learns this thread's id from its command line ([`settings_args`]).
 pub const WM_TRAY_QUIT: u32 = WM_USER + 2;
-
-// ---------- public API used by main / NudgeApp -----------------------------
 
 pub fn store_hwnd(hwnd: isize) {
     HWND_STORE.store(hwnd, Ordering::SeqCst);
@@ -74,17 +39,9 @@ pub fn load_hwnd() -> Option<isize> {
     if val != 0 { Some(val) } else { None }
 }
 
-/// Force `hwnd` to become the actual foreground window (visible AND focused).
-///
-/// `SetForegroundWindow` alone is restricted by Win32: it silently no-ops
-/// when the caller isn't already the foreground process or hasn't received
-/// recent input. For a timer-fired popup that's exactly the failure case —
-/// the window appears layered-on-top but gets no input focus, so click-outside
-/// and focus-loss detection never see anything to fire on.
-///
-/// Workaround: attach the window's owning thread's input queue to the
-/// current foreground thread's. While attached, Win32 treats SetForegroundWindow
-/// as if it came from the foreground process and grants the activation.
+// The system restricts which processes may set the foreground window, and SetForegroundWindow
+// cannot force a window forward while the user is working with another window.
+// proof: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setforegroundwindow
 pub fn force_foreground(hwnd: HWND) {
     crate::platform::choose_screen(hwnd);
     unsafe {
@@ -112,26 +69,12 @@ pub fn force_foreground(hwnd: HWND) {
     }
 }
 
-/// A manual summons — the tray's left click, its "Show Nudge" item, the
-/// global hotkey: mark the popup visible, raise the edge `NudgeApp::ui`
-/// turns into a Manual open, and bring the popup to the foreground so a
-/// frame runs to see it.
-///
-/// Marked visible here, not only by `show_popup` a frame later, for the
-/// reason macOS's `reveal` gives: these handlers run on the tray thread, and
-/// the loop's next pass would otherwise count down while `ui()` has not yet
-/// caught up. A deadline passing in that gap was disarmed and its edge
-/// dropped by the manual card, and a manual Esc does not re-arm, so the app
-/// stopped nudging. Now the loop parks, and an expiry that fell inside the
-/// manual open is still armed when the card closes, and fires then.
 pub fn request_manual_open() {
     shared::set_popup_visible(true);
     shared::raise_tray_clicked();
     wake_eframe();
 }
 
-/// Wake the pump out of `MsgWaitForMultipleObjectsEx`, so a write to the
-/// shared state is acted on now.
 pub(crate) fn wake_tray_thread() {
     let tid = TRAY_THREAD_ID.load(Ordering::SeqCst);
     if tid != 0 {
@@ -141,20 +84,9 @@ pub(crate) fn wake_tray_thread() {
     }
 }
 
-/// Spawn the long-lived tray thread. Call once at startup, before
-/// `eframe::run_native`. The thread creates the tray icon, sets the
-/// global tray / menu event handlers, and runs the animation loop.
-///
-/// `hotkey` (when present) is registered on the tray thread via
-/// `RegisterHotKey`. It must be registered on the same thread that pumps
-/// the message queue, otherwise WM_HOTKEY is delivered to a queue we
-/// aren't reading. None disables the hotkey for this run (e.g. an invalid
-/// config label).
-///
-/// `config_path` and `initial_config` are the launch-time snapshot: the
-/// baseline the tray thread reloads against when the watcher fires, read
-/// from the same file the settings process writes to — including any
-/// `--config` override.
+// RegisterHotKey with a null HWND posts WM_HOTKEY to the calling thread's message queue,
+// and the message must be processed in that thread's message loop.
+// proof: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerhotkey
 pub fn spawn_tray_thread(
     hotkey: Option<Hotkey>,
     config_path: PathBuf,
@@ -166,54 +98,45 @@ pub fn spawn_tray_thread(
         .expect("failed to spawn tray thread");
 }
 
-/// ID we pass to RegisterHotKey. Single hotkey for now; if we ever add more
-/// (e.g. "pause", "skip"), bump to distinct constants.
 const HOTKEY_ID_SHOW_POPUP: i32 = 1;
 
-/// Win32 VK code for a parsed key token. None means we don't know how to
-/// register this token globally (caller logs and skips).
 fn vk_for_key(key: &str) -> Option<u32> {
     if key.len() == 1 {
         let ch = key.as_bytes()[0];
         if ch.is_ascii_uppercase() || ch.is_ascii_digit() {
-            // VK_A..VK_Z and VK_0..VK_9 use the ASCII codes directly.
             return Some(ch as u32);
         }
     }
     if let Some(n) = hotkey::function_key_number(key) {
-        // VK_F1 = 0x70 … VK_F24 = 0x87
         return Some(0x70 + (n as u32) - 1);
     }
     match key {
-        "SPACE" => Some(0x20),     // VK_SPACE
-        "ENTER" => Some(0x0D),     // VK_RETURN
-        "TAB" => Some(0x09),       // VK_TAB
-        "ESCAPE" => Some(0x1B),    // VK_ESCAPE
-        "BACKSPACE" => Some(0x08), // VK_BACK
-        "LEFT" => Some(0x25),      // VK_LEFT
-        "UP" => Some(0x26),        // VK_UP
-        "RIGHT" => Some(0x27),     // VK_RIGHT
-        "DOWN" => Some(0x28),      // VK_DOWN
-        "PAGEUP" => Some(0x21),    // VK_PRIOR
-        "PAGEDOWN" => Some(0x22),  // VK_NEXT
-        "END" => Some(0x23),       // VK_END
-        "HOME" => Some(0x24),      // VK_HOME
-        "INSERT" => Some(0x2D),    // VK_INSERT
-        "DELETE" => Some(0x2E),    // VK_DELETE
-        // The symbol caps. Win32 names these by position on a US layout
-        // (`VK_OEM_*`), which is the same promise §5 makes: the binding
-        // follows the cap, not the character the active layout prints.
-        "-" => Some(0xBD),  // VK_OEM_MINUS
-        "=" => Some(0xBB),  // VK_OEM_PLUS
-        "[" => Some(0xDB),  // VK_OEM_4
-        "]" => Some(0xDD),  // VK_OEM_6
-        "\\" => Some(0xDC), // VK_OEM_5
-        ";" => Some(0xBA),  // VK_OEM_1
-        "'" => Some(0xDE),  // VK_OEM_7
-        "," => Some(0xBC),  // VK_OEM_COMMA
-        "." => Some(0xBE),  // VK_OEM_PERIOD
-        "/" => Some(0xBF),  // VK_OEM_2
-        "`" => Some(0xC0),  // VK_OEM_3
+        "SPACE" => Some(0x20),
+        "ENTER" => Some(0x0D),
+        "TAB" => Some(0x09),
+        "ESCAPE" => Some(0x1B),
+        "BACKSPACE" => Some(0x08),
+        "LEFT" => Some(0x25),
+        "UP" => Some(0x26),
+        "RIGHT" => Some(0x27),
+        "DOWN" => Some(0x28),
+        "PAGEUP" => Some(0x21),
+        "PAGEDOWN" => Some(0x22),
+        "END" => Some(0x23),
+        "HOME" => Some(0x24),
+        "INSERT" => Some(0x2D),
+        "DELETE" => Some(0x2E),
+        "-" => Some(0xBD),
+        "=" => Some(0xBB),
+        "[" => Some(0xDB),
+        "]" => Some(0xDD),
+        "\\" => Some(0xDC),
+        ";" => Some(0xBA),
+        "'" => Some(0xDE),
+        "," => Some(0xBC),
+        "." => Some(0xBE),
+        "/" => Some(0xBF),
+        "`" => Some(0xC0),
         _ => None,
     }
 }
@@ -235,9 +158,6 @@ fn modifiers_to_win32(m: Modifiers) -> HOT_KEY_MODIFIERS {
     out
 }
 
-/// Register the configured global hotkey on the current thread. Returns
-/// true on success. Failure (taken by another app, unknown key) is logged
-/// to stderr — we never abort startup over a hotkey.
 fn try_register_hotkey(hk: &Hotkey) -> bool {
     let Some(vk) = vk_for_key(hk.key.as_str()) else {
         eprintln!(
@@ -257,24 +177,15 @@ fn try_register_hotkey(hk: &Hotkey) -> bool {
     ok
 }
 
-// ---------- the tray thread itself -----------------------------------------
-
 fn tray_thread_main(hotkey: Option<Hotkey>, config_path: PathBuf, initial_config: config::Config) {
     unsafe {
         TRAY_THREAD_ID.store(GetCurrentThreadId(), Ordering::SeqCst);
     }
 
-    // Register global hotkey on this thread so WM_HOTKEY is posted into this
-    // message queue. None / failure both just leave the app hotkey-less for
-    // this run — the tray icon still works as the manual-open path.
-    // Failure is logged by try_register_hotkey and is non-fatal.
     if let Some(hk) = &hotkey {
         try_register_hotkey(hk);
     }
 
-    // Live-reload bookkeeping: the config as last applied, and whether the
-    // hotkey is currently registered (so we know whether to call
-    // UnregisterHotKey before re-registering).
     let mut live_config = LiveConfig::new(config_path, initial_config);
     let mut hotkey_registered = hotkey.is_some();
 
@@ -295,9 +206,6 @@ fn tray_thread_main(hotkey: Option<Hotkey>, config_path: PathBuf, initial_config
 
     let initial_icon =
         tray_icon_frame(daisy::PETAL_COUNT, None).expect("failed to create initial tray icon");
-    // Tooltip will be refreshed by the loop below as soon as eframe pushes
-    // a timer via set_timer_state, which its first frame does: the launch
-    // interval (spec §4). Until then this placeholder stands.
     let initial_tooltip = "Nudge";
 
     let tray = TrayIconBuilder::new()
@@ -308,8 +216,6 @@ fn tray_thread_main(hotkey: Option<Hotkey>, config_path: PathBuf, initial_config
         .build()
         .expect("failed to build tray icon");
 
-    // tray-icon installs ONE global event handler. We register both here so
-    // they fire on this thread's message pump.
     tray_icon::TrayIconEvent::set_event_handler(Some(|event| {
         if matches!(
             event,
@@ -332,35 +238,23 @@ fn tray_thread_main(hotkey: Option<Hotkey>, config_path: PathBuf, initial_config
                 request_manual_open();
             }
             if event.id == settings_id {
-                // Dropping the `Child` closes its handle; nothing to reap.
                 drop(shared::spawn_settings_process(&settings_args()));
             }
         },
     ));
 
-    // Hold these so they aren't dropped — menu only keeps weak refs.
     let _menu_items = (show_item, settings_item, quit_item);
 
-    // Dedupe keys, so `set_icon` / `set_tooltip` are only called when what
-    // they would display actually changes. `None` forces a refresh on the
-    // first pass after a new timer.
     let mut last_icon_key: Option<shared::IconKey> = None;
     let mut last_tooltip_minutes: Option<u64> = None;
     loop {
         drain_messages();
 
-        // Apply pending config-file reloads before we either park
-        // (popup visible) or animate. Doing it here means a reload that
-        // arrives mid-popup gets applied as soon as the popup closes —
-        // we never silently drop a request, even though we don't fight
-        // the popup for attention while it's up.
         if shared::take_config_reload_requested() {
             apply_config_reload(&mut live_config, &mut hotkey_registered);
         }
 
         if shared::popup_visible() {
-            // Popup is up. Don't fight it for attention; idle until eframe
-            // tells us things have changed.
             wait_for_message(u32::MAX);
             continue;
         }
@@ -373,7 +267,6 @@ fn tray_thread_main(hotkey: Option<Hotkey>, config_path: PathBuf, initial_config
             }
         };
 
-        // The timeline is `shared`'s; what is this thread's is the Win32 I/O.
         let countdown = timer.observe(Instant::now());
 
         let icon_key = countdown.icon_key();
@@ -391,18 +284,12 @@ fn tray_thread_main(hotkey: Option<Hotkey>, config_path: PathBuf, initial_config
             last_tooltip_minutes = Some(minutes);
         }
 
-        // Time to fire the popup? `should_fire` waits for the very last
-        // drift to finish so the user actually sees the final petal fall
-        // before the popup takes focus.
         if countdown.frame.should_fire {
-            // Disarm so one deadline fires once; the close that follows
-            // re-arms through `set_timer_state`.
             shared::disarm_timer(timer);
             shared::raise_timer_fired();
             if let Some(hwnd_val) = load_hwnd() {
                 force_foreground(HWND(hwnd_val as *mut _));
             }
-            // Park; eframe will mark the popup hidden shortly and wake us.
             wait_for_message(u32::MAX);
             continue;
         }
@@ -411,18 +298,10 @@ fn tray_thread_main(hotkey: Option<Hotkey>, config_path: PathBuf, initial_config
     }
 }
 
-/// Re-read `config.json` and act on what changed — the re-read, the diff and
-/// the logging are [`LiveConfig::reload`]'s, shared with the macOS backend;
-/// what is this thread's is how the Win32 hotkey is rebound and where a
-/// sprite change is parked.
 fn apply_config_reload(live_config: &mut LiveConfig, hotkey_registered: &mut bool) {
     for change in live_config.reload() {
         match change {
             LiveChange::Hotkey(hk) => {
-                // Unregister the previous binding (best-effort — if it
-                // wasn't actually registered, Win32 returns FALSE and
-                // we ignore it; the next try_register_hotkey is the
-                // operative call).
                 if *hotkey_registered {
                     unsafe {
                         let _ = UnregisterHotKey(None, HOTKEY_ID_SHOW_POPUP);
@@ -431,12 +310,6 @@ fn apply_config_reload(live_config: &mut LiveConfig, hotkey_registered: &mut boo
                 }
                 *hotkey_registered = hk.is_some_and(|hk| try_register_hotkey(&hk));
             }
-            // Drained by `NudgeApp::logic` on the next frame — the reveal's,
-            // when the popup is hidden, which is where it has to be applied
-            // anyway. The window itself is still the 520×320 box here: the
-            // Windows port of the shield (spec §1) is pending.
-            // TODO: wake eframe here without `force_foreground` once the
-            // Windows shield lands.
             LiveChange::Sprite(to) => {
                 shared::park_sprite(to);
             }
@@ -444,8 +317,6 @@ fn apply_config_reload(live_config: &mut LiveConfig, hotkey_registered: &mut boo
     }
 }
 
-/// One frame of the daisy as the notification-area icon, drawn at the size
-/// the shell shows it (spec §5) so the shell does not resample it.
 fn tray_icon_frame(
     petals_remaining: u8,
     drift: Option<daisy::DriftState>,
@@ -455,14 +326,12 @@ fn tray_icon_frame(
     tray_icon::Icon::from_rgba(rgba.to_vec(), size, size)
 }
 
-/// The shell's small-icon size at the system DPI — 16 px at 100 %, 24 at
-/// 150 %, 32 at 200 % — which is what the notification area draws. Asked on
-/// every redraw: it is two cheap calls, and the answer moves when the
-/// process becomes DPI-aware, which winit does when the event loop starts.
+// GetDpiForSystem returns 96 while the calling thread is DPI-unaware and the actual system
+// DPI otherwise, so the system DPI is not to be cached.
+// proof: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getdpiforsystem
 fn tray_icon_pixels() -> u32 {
     use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetSystemMetricsForDpi};
     use windows::Win32::UI::WindowsAndMessaging::SM_CXSMICON;
-    // SAFETY: plain metric queries, no pointers.
     let px = unsafe { GetSystemMetricsForDpi(SM_CXSMICON, GetDpiForSystem()) };
     if px > 0 { px as u32 } else { 16 }
 }
@@ -473,8 +342,6 @@ fn wake_eframe() {
     }
 }
 
-/// What the settings window is told about this app: the tray thread an
-/// update's quit request goes to.
 fn settings_args() -> Vec<String> {
     let tid = TRAY_THREAD_ID.load(Ordering::SeqCst);
     vec![
@@ -490,10 +357,6 @@ fn drain_messages() {
             if msg.message == WM_TRAY_QUIT {
                 std::process::exit(0);
             }
-            // WM_HOTKEY is posted to the thread message queue (no hwnd), so
-            // we must handle it before DispatchMessageW — Dispatch would
-            // drop it for lack of a target window. Same UX path as a tray
-            // left-click: pop the popup as a Manual trigger.
             if msg.message == WM_HOTKEY && msg.wParam.0 == HOTKEY_ID_SHOW_POPUP as usize {
                 request_manual_open();
                 continue;
@@ -515,12 +378,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_manual_open_marks_the_popup_visible_before_the_next_frame() {
+        shared::set_popup_visible(false);
+        let _ = shared::take_tray_clicked();
+
+        request_manual_open();
+
+        assert!(shared::popup_visible(), "the popup is not marked visible");
+        assert!(
+            shared::take_tray_clicked(),
+            "the tray-clicked edge is not raised"
+        );
+    }
+
+    #[test]
     fn every_key_the_parser_accepts_has_a_vk() {
-        // The invariant that matters: `hotkey::parse` and `vk_for_key` share
-        // one key set. Anything the config file can legally name has to reach
-        // `RegisterHotKey`, or a hotkey saved on the Mac side of the same
-        // `config.json` silently stops working here. Enumerated from the
-        // grammar, so a key added there fails here until it has a VK.
         let tokens = hotkey::all_key_tokens();
         assert!(tokens.len() > 80, "the grammar enumerates its keys");
         for token in tokens {
@@ -530,8 +402,6 @@ mod tests {
 
     #[test]
     fn every_vk_is_distinct() {
-        // Two tokens on one VK would be two spellings of one binding that
-        // format differently — the grammar names each key once.
         let mut seen = std::collections::HashMap::new();
         for token in hotkey::all_key_tokens() {
             let vk = vk_for_key(&token).unwrap();
@@ -543,9 +413,6 @@ mod tests {
 
     #[test]
     fn the_symbol_caps_are_the_oem_position_codes() {
-        // Win32 names these by their place on a US layout, which is the same
-        // promise §5 makes — the binding follows the cap, not the character
-        // the active layout prints on it.
         assert_eq!(vk_for_key("-"), Some(0xBD));
         assert_eq!(vk_for_key("="), Some(0xBB));
         assert_eq!(vk_for_key("/"), Some(0xBF));

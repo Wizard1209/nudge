@@ -8,79 +8,29 @@ use crate::nudge_state::{self, Action, TriggerSource};
 use crate::timer::Timer;
 use crate::word_jump;
 
-/// Framebuffer clear color for the transparent spotlight window. Using an
-/// opaque value (even dark grey) breaks native transparency — Windows DWM
-/// composites the alpha channel straight from the framebuffer, so anything
-/// non-zero produces the grey box halo seen in early builds.
 pub const CLEAR_COLOR_TRANSPARENT: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
 
-/// Placeholder / hint text colour. egui's dark default is ~gray(120), which
-/// washes out against the translucent card. Bumped to gray(170) so hints
-/// like "Что я делаю?" (the popup's question copy — kept Russian as the
-/// product placeholders) are comfortably legible. Must be applied via
-/// `visuals.weak_text_color`: egui 0.34's TextEdit overwrites any per-hint
-/// RichText color with `visuals.weak_text_color()` (widgets/text_edit/
-/// builder.rs:586), and the computed default — text color gamma-multiplied
-/// by `weak_text_alpha` — renders the hints nearly invisible (~peak 58)
-/// over the dark card.
+// egui's TextEdit recolours every hint atom with visuals.weak_text_color(), so a colour set on
+// the hint's RichText is overridden and the hint colour can only be set through that visual.
+// proof: https://docs.rs/crate/egui/0.34.2/source/src/widgets/text_edit/builder.rs#586
 const HINT_TEXT_COLOR: egui::Color32 = egui::Color32::from_gray(170);
 
-/// Card corner radius, in points. Shared by the card frame and the contour so
-/// the two curves are concentric by construction.
 pub(crate) const CARD_RADIUS: u8 = 16;
 
-/// The focused row's tint (spec §3): a rounded field drawn around the text,
-/// inset from the row's band by this much sideways and vertically. The inset
-/// is what keeps it from reading as a second card outline: a plate that hugs
-/// the contour at a different radius shows up as a misaligned double edge at
-/// the corners, while a field well inside the row is its own shape.
 const FOCUS_FIELD_INSET: egui::Vec2 = egui::vec2(10.0, 5.0);
 const FOCUS_FIELD_RADIUS: u8 = 8;
 
-/// How long an open keeps re-asking for activation before it settles for not
-/// having the keyboard. See `NudgeApp::retry_focus_until_armed`.
 #[cfg(target_os = "macos")]
 const FOCUS_RETRY_WINDOW: std::time::Duration = std::time::Duration::from_millis(500);
 
-/// The hidden window's size, points (`NudgeApp::hide_popup`). egui-winit
-/// clamps an `InnerSize` to at least one point a side.
 #[cfg(target_os = "macos")]
 const HIDDEN_WINDOW_SIZE: egui::Vec2 = egui::vec2(1.0, 1.0);
 
-/// Opacity of the card's fill. Two values, because the fill has two different
-/// jobs depending on whether the platform can put a frosted backdrop behind
-/// the window (spec §2).
-///
-/// With one — `platform::sync_card_backdrop` on macOS — the desktop reaching
-/// the card is already blurred, and the fill's job is only to tint it; at the
-/// near-opaque value the frost was measurably present and visually absent —
-/// over a bright checkerboard the card read one luminance level above what a
-/// fully opaque card would. Without a backdrop the fill *is* the surface, and
-/// the low value would leave whatever is behind the window legible straight
-/// through the card.
-///
-/// This is the one place the card's appearance depends on the OS, so it is a
-/// `cfg` rather than a question routed through the platform seam: the seam
-/// dispatches behaviour, and there is no behaviour here to dispatch. The
-/// browser build takes the no-backdrop value — it is the same egui code, and
-/// nothing draws a CSS filter behind its canvas.
 #[cfg(target_os = "macos")]
 const CARD_FILL_ALPHA: u8 = 120;
 #[cfg(not(target_os = "macos"))]
 const CARD_FILL_ALPHA: u8 = 220;
 
-/// The card's shadow, and which layer draws it.
-///
-/// macOS draws its own. Once egui paints none, the only thing in the window's
-/// alpha mask is the card, so AppKit's window shadow traces the card itself —
-/// the platform's shadow, with the falloff every other floating panel has.
-/// Keeping both is what laid a hard rim just outside the contour: AppKit
-/// shadows the alpha silhouette, and with egui's soft shadow in that alpha the
-/// silhouette is larger than the card and its edge lands away from the
-/// contour. One layer or the other, never both — see
-/// `card_casts_one_soft_shadow_and_no_hard_rim`.
-///
-/// Elsewhere egui draws it, because nothing else will.
 #[cfg(target_os = "macos")]
 const CARD_SHADOW: egui::epaint::Shadow = egui::epaint::Shadow::NONE;
 #[cfg(not(target_os = "macos"))]
@@ -88,27 +38,14 @@ const CARD_SHADOW: egui::epaint::Shadow = egui::epaint::Shadow {
     offset: [0, 12],
     blur: 40,
     spread: 0,
-    // `Color32::from_black_alpha` is not const; this is its expansion.
     color: egui::Color32::from_rgba_premultiplied(0, 0, 0, 160),
 };
 
-/// The card's contour. Separation from the desktop cannot come from the
-/// shadow alone: the shadow is black, so over a dark background behind the
-/// window it contributes nothing and the card loses its boundary entirely.
-/// A light hairline is the only cue that survives both a bright and a dark
-/// backdrop, so it is load-bearing rather than decorative — see the
-/// `card_contour_*` assertions in `tests/macos_native.rs`.
 const CARD_STROKE: egui::Stroke = egui::Stroke {
     width: 1.0,
-    // `Color32::from_white_alpha` is not const; this is its expansion —
-    // white premultiplied by the same alpha.
     color: egui::Color32::from_rgba_premultiplied(60, 60, 60, 60),
 };
 
-/// The sprite as drawn (spec §10): its pixels, its size and the config block
-/// that places it. The GPU texture is made on a frame eframe paints: it drops
-/// the texture uploads of frames it does not, and the popup is hidden when a
-/// change arrives.
 pub struct LoadedSprite {
     image: Option<egui::ColorImage>,
     tex: Option<egui::TextureHandle>,
@@ -118,8 +55,6 @@ pub struct LoadedSprite {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl LoadedSprite {
-    /// The sprite a config asks for, decoded; `None` while it is off. A PNG
-    /// that fails the check counts as off (§10): say why, show the plain card.
     fn from_config(cfg: &SpriteConfig) -> Option<Self> {
         match crate::sprite_png::load_sprite(cfg)? {
             Ok(decoded) => Some(Self::decoded(decoded, cfg.clone())),
@@ -145,7 +80,6 @@ impl LoadedSprite {
 }
 
 impl LoadedSprite {
-    /// The texture to draw, uploaded on the first frame that will be painted.
     fn texture(&mut self, ctx: &egui::Context) -> Option<egui::TextureId> {
         if self.tex.is_none()
             && ctx.input(|i| i.viewport().visible().unwrap_or(true))
@@ -157,10 +91,6 @@ impl LoadedSprite {
     }
 }
 
-/// Everything the window's geometry was last derived from: the screen it is
-/// on, that screen's scale, and the sprite's pixel size, offset and card
-/// width. The window is laid out again when any of it changes — a display
-/// change under a visible popup included (§10).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Placement {
     pub geometry: ScreenGeometry,
@@ -172,91 +102,40 @@ pub fn placement_is_stale(placed: Option<&Placement>, now: &Placement) -> bool {
     placed != Some(now)
 }
 
-/// Spec §10 "Applying a change": a sprite change is applied while the popup
-/// is hidden, never under the user's hands. One that arrives while the popup
-/// is visible waits for the next close.
 pub fn sprite_apply(pending: Option<&SpriteConfig>, popup_visible: bool) -> Option<&SpriteConfig> {
     pending.filter(|_| !popup_visible)
 }
 
 pub struct NudgeApp {
-    // Form fields
     doing: String,
     bullshit: String,
     next_minutes: String,
     focus_first: bool,
-    /// `true` until the first `ui()` has adopted the native window and put
-    /// the app in Waiting.
     first_frame: bool,
 
-    // Shared state
-    /// The browser's countdown, polled by `ui`. Native has none here: the
-    /// platform runs the countdown there (`arm_timer`).
     #[cfg(target_arch = "wasm32")]
     timer: Timer,
-    /// Where a Submit's event goes. The real store for this build unless the
-    /// kittest tier hands in a recorder (`with_journal_sink`).
     journal: JournalSink,
     trigger_source: TriggerSource,
     popup_visible: bool,
     error_message: Option<String>,
-    /// Last known card bounding rect, used to detect clicks outside the card.
-    /// Populated by `draw_card` once per frame.
     card_rect: Option<egui::Rect>,
-    /// The sprite painted over the card, when the config asks for one and
-    /// its PNG passed the check (spec §10).
     sprite: Option<LoadedSprite>,
-    /// Textures of sprites replaced while the popup was hidden, dropped by
-    /// the first `ui()` that starts with the popup up. eframe applies a
-    /// frame's texture frees only when it paints that frame, and it paints
-    /// no hidden one.
     retired_textures: Vec<egui::TextureHandle>,
-    /// A sprite change waiting for the popup to be hidden (spec §10). The
-    /// config watcher parks it on the platform seam; the kittest tier sets
-    /// it directly (`set_pending_sprite`).
     #[cfg(not(target_arch = "wasm32"))]
     pending_sprite: Option<SpriteConfig>,
-    /// A Deadline handed to this app alone (`deliver_deadline`), taken by the
-    /// next `ui()` like the platform's timer edge.
     #[cfg(not(target_arch = "wasm32"))]
     deadline_delivered: bool,
-    /// The screen the popup is laid out on, injected by the kittest tier,
-    /// which has no OS window; the real window reads its own screen
-    /// (`platform::screen_geometry`).
     geometry_override: Option<ScreenGeometry>,
-    /// What the window was last placed for (`place_window`).
     placed: Option<Placement>,
-    /// The hidden window has been shrunk to [`HIDDEN_WINDOW_SIZE`]
-    /// (`hide_popup`) and `place_window` leaves it alone until
-    /// `restore_window`.
     #[cfg(target_os = "macos")]
     window_shrunk: bool,
-    /// The pass `hide_popup` shrank the window in; the first `logic` of a
-    /// later pass orders it out. One pass late, because AppKit releases the
-    /// work-area-sized presentation surfaces only while the window is on
-    /// screen. A reveal drops it (`restore_window`).
     #[cfg(target_os = "macos")]
     order_out_after_pass: Option<u64>,
-    /// Where the card and the sprite go, in window coordinates. `None`
-    /// while there is no screen to lay out on: then the card sits in the
-    /// window as a box (`layout::card_in_box`).
     layout: Option<PopupLayout>,
     #[cfg(target_arch = "wasm32")]
     pill_rect: Option<egui::Rect>,
-    /// Did this open of the popup ever actually get the keyboard? While true,
-    /// the per-frame focus-loss check is active. While false (e.g. a
-    /// fullscreen game refused to release foreground), focus-loss never closes
-    /// the popup — only Enter / Esc / click-outside can. See spec §4.
-    ///
-    /// Windows samples this once, in `show_popup`, because `GetForegroundWindow`
-    /// answers truthfully the instant `SetForegroundWindow` returns. macOS
-    /// cannot: `activateIgnoringOtherApps` is a request to the window server
-    /// that no same-call read reflects, so there it is a latch that closes on
-    /// the first frame the window is key. Both are "did this open get focus",
-    /// they just observe it at the only moment their OS can answer.
     armed: bool,
-    /// When the current open began, for the bounded re-activation in
-    /// `retry_focus_until_armed`.
     #[cfg(target_os = "macos")]
     shown_at: Option<std::time::Instant>,
 }
@@ -264,34 +143,17 @@ pub struct NudgeApp {
 impl NudgeApp {
     pub fn new(cc: &eframe::CreationContext<'_>, default_minutes: f64) -> Self {
         let mut visuals = egui::Visuals::dark();
-        // Transparent panel background so the card sits on top of wallpaper/desktop
         visuals.panel_fill = egui::Color32::TRANSPARENT;
         visuals.window_fill = egui::Color32::TRANSPARENT;
         visuals.widgets.noninteractive.fg_stroke.color = HINT_TEXT_COLOR;
         visuals.widgets.inactive.fg_stroke.color = HINT_TEXT_COLOR;
-        // The only place a hint color survives in egui 0.34 — TextEdit
-        // clobbers per-hint RichText colors with this (see HINT_TEXT_COLOR).
         visuals.weak_text_color = Some(HINT_TEXT_COLOR);
-        // Pin the theme BEFORE installing the visuals. set_visuals only
-        // writes into the currently-active theme's style, and with the
-        // default ThemePreference::System egui flips to the OS theme
-        // between construction and frame #1 — on a light-themed OS every
-        // override above would sit unused in the dark style while the
-        // popup renders with stock light visuals (observed in the browser
-        // build: theme=Dark in new(), theme=Light by the first frame).
-        // The spotlight card is dark by design, so the theme is not a
-        // user preference here.
+        // egui's set_visuals writes only the style of the active theme, and under
+        // ThemePreference::System the active theme is the OS theme from raw input.
+        // proof: https://docs.rs/crate/egui/0.34.2/source/src/context.rs#2235
         cc.egui_ctx.set_theme(egui::ThemePreference::Dark);
         cc.egui_ctx.set_visuals(visuals);
 
-        // Force frame #1 ourselves. When the process starts without window
-        // activation (autostart at logon, spawn from a background shell) the
-        // OS delivers no input events to the fresh window, and the event
-        // loop never paints on its own: `ui()` never runs, so the window is
-        // never adopted by the platform (its Show/hotkey wakeups need it)
-        // and the launch interval is never armed. Observed live on Windows:
-        // launch unfocused → no frame until the first real input event hits
-        // the window.
         cc.egui_ctx.request_repaint();
 
         Self {
@@ -300,13 +162,10 @@ impl NudgeApp {
             next_minutes: default_minutes.to_string(),
             focus_first: true,
             first_frame: true,
-            // The browser build opens on the popup (spec §4), so its timer
-            // stays frozen until the first close arms it.
             #[cfg(target_arch = "wasm32")]
             timer: Timer::frozen(),
             journal: journal::default_sink(),
             trigger_source: TriggerSource::Timer,
-            // Born hidden; the first frame makes it Waiting (see `ui`).
             popup_visible: false,
             error_message: None,
             card_rect: None,
@@ -331,25 +190,17 @@ impl NudgeApp {
         }
     }
 
-    /// Send submissions to `sink` instead of this build's journal. The
-    /// kittest tier's hook, so a Submit can be driven without writing into
-    /// the developer's own Documents folder.
     pub fn with_journal_sink(mut self, sink: JournalSink) -> Self {
         self.journal = sink;
         self
     }
 
-    /// Paint the sprite `cfg` asks for over the card, if it asks for one and
-    /// the file passes the §10 check. Drawn at its native pixel density, so
-    /// the texture is never filtered.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn with_sprite_config(mut self, cfg: &SpriteConfig) -> Self {
         self.sprite = LoadedSprite::from_config(cfg);
         self
     }
 
-    /// Paint already-decoded pixels over the card. The kittest tier's hook,
-    /// where the sprite comes from fixture bytes rather than a file.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn with_sprite(
         mut self,
@@ -360,25 +211,16 @@ impl NudgeApp {
         self
     }
 
-    /// Park a sprite change as the config watcher would. The kittest tier's
-    /// hook; the app's own changes arrive through the platform seam.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn set_pending_sprite(&mut self, cfg: SpriteConfig) {
         self.pending_sprite = Some(cfg);
     }
 
-    /// The interval elapsed (spec §4 Deadline), for this app alone. The
-    /// kittest tier's hook: what raises it in the running app is the
-    /// platform's countdown, which is process-wide and runs on a thread or a
-    /// tick the harness does not have.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn deliver_deadline(&mut self) {
         self.deadline_delivered = true;
     }
 
-    /// Apply the parked sprite change if the popup is hidden (spec §10
-    /// "Applying a change"). Decoding happens here, once per change; the
-    /// window is then laid out again by `place_window`, nothing is recreated.
     #[cfg(not(target_arch = "wasm32"))]
     fn apply_pending_sprite(&mut self) {
         if let Some(cfg) = crate::platform::take_pending_sprite() {
@@ -396,21 +238,11 @@ impl NudgeApp {
         self.placed = None;
     }
 
-    /// Lay the popup out on this screen instead of asking the window for
-    /// one. The kittest tier's hook; the app reads its own screen.
     pub fn with_screen_geometry(mut self, geometry: ScreenGeometry) -> Self {
         self.geometry_override = Some(geometry);
         self
     }
 
-    /// Make the window the work area of the monitor spec §1 chose for it
-    /// and lay the card and the sprite out in it. Runs every frame; it only
-    /// talks to the OS when something it was placed for has changed, and not
-    /// at all while the hidden window is shrunk — `restore_window` places it
-    /// again before it is ordered back in.
-    ///
-    /// With no screen to read — the kittest harness, the browser canvas —
-    /// the card stays in the window as a box.
     fn place_window(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
         #[cfg(target_os = "macos")]
         if self.window_shrunk {
@@ -443,9 +275,6 @@ impl NudgeApp {
             return;
         }
 
-        // TODO: a second monitor is not shielded.
-        // Size first: winit converts the position to AppKit's bottom-left
-        // origin with the window's current height.
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(geometry.work.size()));
         ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(geometry.work.min));
 
@@ -457,8 +286,6 @@ impl NudgeApp {
         self.placed = Some(now);
     }
 
-    /// Give a shrunk window its work-area frame back, before `logic` orders
-    /// it in. Only macOS shrinks the window; elsewhere this is `place_window`.
     #[cfg(not(target_arch = "wasm32"))]
     fn restore_window(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
         #[cfg(target_os = "macos")]
@@ -469,7 +296,6 @@ impl NudgeApp {
         self.place_window(ctx, frame);
     }
 
-    /// The order-out `hide_popup` left for a later pass, once one has come.
     #[cfg(target_os = "macos")]
     fn order_out_if_owed(&mut self, ctx: &egui::Context) {
         let Some(pass) = self.order_out_after_pass else {
@@ -491,7 +317,7 @@ impl NudgeApp {
     #[cfg(target_arch = "wasm32")]
     fn now_timestamp() -> String {
         let date = js_sys::Date::new_0();
-        let offset_total = -(date.get_timezone_offset() as i32); // minutes east of UTC
+        let offset_total = -(date.get_timezone_offset() as i32);
         let sign = if offset_total >= 0 { '+' } else { '-' };
         let offset_h = offset_total.abs() / 60;
         let offset_m = offset_total.abs() % 60;
@@ -515,31 +341,15 @@ impl NudgeApp {
         self.popup_visible = true;
         self.focus_first = true;
 
-        // Tell egui itself the viewport is visible again — without this
-        // counterpart to the hide_popup `Visible(false)` send, egui keeps
-        // believing the window is hidden and skips painting.
         #[cfg(not(target_arch = "wasm32"))]
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
 
-        // Park the countdown: with the popup on screen the timer shouldn't
-        // keep ticking down (nor the tray icon animate). Restarts on
-        // hide_popup.
         #[cfg(not(target_arch = "wasm32"))]
         crate::platform::set_popup_visible(true);
 
-        // Take the keyboard. The window being visible is not enough on
-        // either platform — Win32 refuses SetForegroundWindow to a
-        // background process, and macOS hands out no key window without an
-        // AppKit activation — and a popup without focus is one the user
-        // cannot answer or dismiss.
         #[cfg(not(target_arch = "wasm32"))]
         crate::platform::focus_popup(ctx);
 
-        // Spec §4: focus-loss closes only if the popup actually got focus at
-        // open-time. This is the first sample. On Windows and WASM it is also
-        // the last one — the answer is already true here. On macOS it is
-        // almost certainly false and the latch in `ui` is what arms us; see
-        // `current_foreground_matches`.
         self.armed = self.current_foreground_matches(ctx);
         #[cfg(target_os = "macos")]
         {
@@ -547,14 +357,6 @@ impl NudgeApp {
         }
     }
 
-    /// Source of truth for "is our popup the OS-foreground / page-focused
-    /// surface right now?" — used both at open-time to set `armed` and in
-    /// the per-frame loop to detect focus loss.
-    ///
-    /// Native asks the platform, whose backends each say which reading is
-    /// current enough there (`platform::popup_is_foreground`). The browser
-    /// reads `document.hasFocus()` rather than eframe's `viewport().focused`,
-    /// which is filled from a window event and lags a frame behind.
     fn current_foreground_matches(&self, ctx: &egui::Context) -> bool {
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -570,43 +372,7 @@ impl NudgeApp {
         }
     }
 
-    /// Arm the focus-loss check once the popup is observably focused, for the
-    /// platform whose activation call cannot answer synchronously.
-    ///
-    /// # Why a latch and not a snapshot, on macOS
-    ///
-    /// `show_popup` runs from `ui()`, and `ui()` cannot run in the same frame
-    /// as the reveal that preceded it: eframe samples `is_visible` at the top
-    /// of the frame, before `logic()` (and therefore before
-    /// `platform::macos::tick` reveals anything), then gates `app.ui` on that
-    /// sample. So by the time `show_popup` takes its snapshot, the
-    /// `activateIgnoringOtherApps` from the reveal is one or more frames old —
-    /// but `show_popup` has *also* just called `focus_popup` again, microseconds
-    /// earlier, and that call is a request to the window server which no read
-    /// on this thread reflects on return. `NSApplication::isActive` has the
-    /// same property; it is not a stronger reading of the same moment, it is
-    /// the same unanswerable question asked in objc.
-    ///
-    /// Whether the *earlier* activation has landed by then depends on the order
-    /// in which AppKit delivers the occlusion change that makes the window
-    /// visible and the key-window change that gives it the keyboard — which is
-    /// not something this code gets to decide, and not something a locked
-    /// screen can measure. A snapshot is therefore a coin flip, and a coin flip
-    /// that lands wrong reproduces the original bug with a plausible-looking
-    /// fix in place.
-    ///
-    /// A latch does not need the answer. Whichever frame the window becomes
-    /// key on — the one running `show_popup` or a later one — arms us then, and
-    /// the focus event that makes it key is itself a repaint, so the frame
-    /// exists. A window that never becomes key never arms, which is precisely
-    /// what spec §4 asks for.
-    ///
-    /// No-op everywhere else: Windows and WASM already had a true answer in
-    /// `show_popup`, and re-deciding it per frame would change shipped
-    /// behaviour on a platform this port cannot test.
     fn latch_arming(&mut self, focused_now: bool) {
-        // Named unconditionally so the parameter is not "unused" on the
-        // platforms whose arm below is compiled out.
         let _ = focused_now;
 
         #[cfg(target_os = "macos")]
@@ -615,15 +381,8 @@ impl NudgeApp {
         }
     }
 
-    /// Ask for activation again, every frame, for the first moments of an open
-    /// that has not got the keyboard yet. One request can lose to another app
-    /// activating at the same moment — the user switching apps while Nudge
-    /// starts — and nothing would ask again before the next open. Bounded so
-    /// a popup that really cannot have the focus (spec §4) stops asking.
     fn retry_focus_until_armed(&mut self, ctx: &egui::Context) {
         let _ = ctx;
-        // `focused == None` means no real window has reported yet (and never
-        // will, under kittest): there is nothing to activate.
         #[cfg(target_os = "macos")]
         if !self.armed
             && ctx.input(|i| i.viewport().focused).is_some()
@@ -636,13 +395,7 @@ impl NudgeApp {
         }
     }
 
-    /// Close the popup (spec §4): execute the close decision, take the
-    /// window off screen, start the next interval if the decision says so.
     fn hide_popup(&mut self, ctx: &egui::Context, action: Action) {
-        // The entire spec §4 close decision lives in `decide_close`; this
-        // method is its executor. The only thing we resolve here that the
-        // decision can't is the journal-write I/O, because that can fail at
-        // the OS / browser layer (and a failure must keep the popup open).
         let outcome = match nudge_state::decide_close(
             self.trigger_source,
             action,
@@ -652,8 +405,6 @@ impl NudgeApp {
         ) {
             Ok(o) => o,
             Err(e) => {
-                // Explicit Submit with an invalid interval: surface and keep
-                // the popup open (no outcome to execute).
                 self.error_message = Some(e.to_string());
                 return;
             }
@@ -669,39 +420,24 @@ impl NudgeApp {
             );
             if let Err(e) = (self.journal)(&event) {
                 self.error_message = Some(e.to_string());
-                return; // keep popup open, don't reset timer
+                return;
             }
         }
 
-        // Clear error on successful action
         self.error_message = None;
 
-        // Reset the form per the decision. Only Submit clears doing/bullshit;
-        // Esc and Switch preserve them so the next open resumes where the
-        // user left off.
         if outcome.clear_form {
             self.doing.clear();
             self.bullshit.clear();
         }
-        // `Some(interval)` ⇒ start the next interval; `None` ⇒ leave the live
-        // timer ticking (manual Esc / Switch).
         self.enter_waiting(ctx, outcome.reset_timer);
     }
 
-    /// Enter Waiting (spec §4): take the window off screen and, given an
-    /// interval, arm it. Every close ends here, and so does launch.
-    // `ctx` is only needed to hide the native window; the browser build has
-    // none.
     #[cfg_attr(target_arch = "wasm32", expect(unused_variables))]
     fn enter_waiting(&mut self, ctx: &egui::Context, interval: Option<std::time::Duration>) {
         self.focus_first = true;
         self.popup_visible = false;
         self.armed = false;
-        // Drop the cached card bounds. Without this, a stale rect from the
-        // previous show survives across hide/show — and the next click that
-        // reopens the popup (e.g. a pill click) is then mis-detected as
-        // "outside the card" on the very next frame, instantly switching us
-        // back away.
         self.card_rect = None;
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -711,22 +447,13 @@ impl NudgeApp {
             self.arm_timer(interval);
         }
 
-        // Native: tell the platform the popup is gone. Whatever owns the
-        // countdown there — the tray thread on Windows, `App::logic` on macOS
-        // — takes it from here and wakes the popup when it expires.
         #[cfg(not(target_arch = "wasm32"))]
         {
             crate::platform::set_popup_visible(false);
-            // Hidden now: a change that waited for this close goes in before
-            // the next reveal, which on Windows the tray thread may do
-            // before another frame runs.
             self.apply_pending_sprite();
         }
     }
 
-    /// Start the next interval. The countdown belongs to whoever runs it:
-    /// the platform on native, which wakes the popup on expiry; this app's
-    /// own `Timer` in the browser, which `ui` polls every frame.
     fn arm_timer(&mut self, interval: std::time::Duration) {
         #[cfg(not(target_arch = "wasm32"))]
         crate::platform::set_timer_state(crate::platform::ArmedTimer {
@@ -737,17 +464,8 @@ impl NudgeApp {
         self.timer.reset(interval);
     }
 
-    /// Take the native window off screen. On macOS a placed window is shrunk
-    /// to one point in this pass and ordered out in the next: AppKit resizes
-    /// the presentation surfaces only of a window that is still on screen,
-    /// and the pass in between paints one transparent 1×1 frame nobody sees.
     #[cfg(not(target_arch = "wasm32"))]
     fn withdraw_window(&mut self, ctx: &egui::Context) {
-        // macOS: shrink the hidden window to one point, so neither the GL
-        // drawable nor the window server keeps work-area-sized buffers for
-        // the whole interval. Only a window `place_window` placed: that is
-        // the one `restore_window` knows how to give its frame back. Its
-        // order-out then waits a pass (`order_out_after_pass`).
         #[cfg(target_os = "macos")]
         if self.placed.take().is_some() {
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(HIDDEN_WINDOW_SIZE));
@@ -757,11 +475,6 @@ impl NudgeApp {
             return;
         }
 
-        // Tell egui the viewport is hidden. Without this, egui's event
-        // loop keeps pumping/scheduling for the "visible" viewport even
-        // when the platform hides the native window directly — winit then
-        // burns a full core on the main thread despite update() never being
-        // called.
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
     }
 
@@ -774,18 +487,11 @@ impl NudgeApp {
                 CARD_FILL_ALPHA,
             ))
             .corner_radius(egui::CornerRadius::same(CARD_RADIUS))
-            // No `.stroke()` here on purpose: a Frame paints its stroke *before*
-            // its content, so the focus field (spec §3) would paint over it.
-            // `draw_card` paints the contour after the Area instead.
             .shadow(CARD_SHADOW)
-            // Zero inner margin so rows + dividers span full card width;
-            // row content gets its own horizontal/vertical padding via TextEdit::margin.
             .inner_margin(egui::Margin::ZERO)
     }
 
     fn draw_card(&mut self, ctx: &egui::Context) {
-        // egui 0.34 split screen_rect() into viewport_rect()/content_rect();
-        // content_rect() is the in-window content area the box is sized against.
         let card = self
             .layout
             .map_or_else(|| layout::card_in_box(ctx.content_rect()), |l| l.card);
@@ -793,9 +499,6 @@ impl NudgeApp {
 
         let inner = egui::Area::new(egui::Id::new("nudge_card"))
             .fixed_pos(card.min)
-            // Without this the Area itself registers a focusable click widget
-            // (Sense::click() implies FOCUSABLE) and shows up as a phantom
-            // 4th Tab stop between row_minutes and row_doing.
             .interactable(false)
             .show(ctx, |ui| {
                 ui.set_width(card_width);
@@ -808,7 +511,6 @@ impl NudgeApp {
                     .rect
             });
 
-        // Contour last: `Frame::stroke` would paint it under the content.
         ctx.layer_painter(inner.response.layer_id).rect_stroke(
             inner.inner,
             egui::CornerRadius::same(CARD_RADIUS),
@@ -818,8 +520,6 @@ impl NudgeApp {
 
         self.card_rect = Some(inner.inner);
 
-        // The sprite is a painting, not a widget (§10): a click on it goes to
-        // the field beneath, or past the card to the "outside" branch.
         let sprite_rect = self.layout.and_then(|l| l.sprite);
         if let (Some(sprite), Some(rect)) = (&mut self.sprite, sprite_rect)
             && let Some(tex) = sprite.texture(ctx)
@@ -842,9 +542,6 @@ impl NudgeApp {
         let field_id = egui::Id::new(key);
         let width = ui.available_width();
 
-        // Reserve the background's slot before laying the field out. It has to
-        // be painted *under* the text, but its rect is not known until after —
-        // see below for why the row is not the height it asks for.
         let background = ui.painter().add(egui::Shape::Noop);
         let row_top = ui.cursor().top();
 
@@ -852,31 +549,17 @@ impl NudgeApp {
             ui.allocate_exact_size(egui::vec2(width, ROW_HEIGHT), egui::Sense::hover());
         let is_focused = ui.ctx().memory(|m| m.has_focus(field_id));
         if is_focused {
-            // Replace egui's ASCII-only word jump with a Unicode-aware one
-            // so Ctrl+Arrow / Ctrl+Backspace / Ctrl+Delete behave correctly
-            // on Cyrillic text. Must run BEFORE TextEdit drains the events.
             word_jump::intercept_ctrl_word_keys(ui.ctx(), field_id, value);
-
-            // egui 0.34 corrected its alpha compositing (0.31 over-brightened
-            // low alphas — `2` there rendered like a +20 brightness jump); on
-            // 0.34 the same value is nearly invisible, so alpha 20 is what
-            // lands a clearly-visible but still-subtle highlight.
         }
 
         let response = ui.put(
             row_rect,
             egui::TextEdit::singleline(value)
                 .id(field_id)
-                // No .color() on the hint: egui 0.34 overwrites it with
-                // visuals.weak_text_color(), which new() sets to
-                // HINT_TEXT_COLOR. Only the size survives here.
                 .hint_text(egui::RichText::new(hint).size(16.0))
-                // egui 0.34: a custom `.frame(..)` is used verbatim, so its
-                // inner_margin — NOT `.margin(..)` — is what insets the text.
-                // `.margin()` alone (as in 0.31's `.frame(false)`) leaves the
-                // text jammed in the field's top-left corner. Put the 20/12
-                // inset on the frame; keep `.margin()` matching so the galley's
-                // available width agrees with the frame's content area.
+                // A TextEdit with a custom frame is inset only by that frame's inner_margin;
+                // .margin() still sets the galley width of an empty field (the hint's).
+                // proof: https://docs.rs/crate/egui/0.34.2/source/src/widgets/text_edit/builder.rs
                 .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(20, 12)))
                 .margin(egui::Margin::symmetric(20, 12))
                 .font(egui::FontId::proportional(16.0))
@@ -884,15 +567,6 @@ impl NudgeApp {
         );
 
         if is_focused {
-            // The row is taller than `ROW_HEIGHT`: the TextEdit's own height is
-            // its 16pt line plus 12pt of margin top and bottom, and `put`
-            // advances the cursor by what the widget actually took, not by what
-            // was allocated for it. The divider therefore sits ~3pt below
-            // `row_rect`'s bottom edge, and a tint painted on `row_rect` stops
-            // short of it and the field sits crooked in its row — closer to
-            // the top than to the divider. So the field is inset from the band
-            // the row really consumed, measured from the cursor rather than
-            // declared.
             let row = egui::Rect::from_x_y_ranges(row_rect.x_range(), row_top..=ui.cursor().top());
             ui.painter().set(
                 background,
@@ -918,7 +592,6 @@ impl NudgeApp {
     }
 
     fn draw_form(&mut self, ui: &mut egui::Ui) {
-        // Reset spacing so dividers sit flush against rows
         ui.style_mut().spacing.item_spacing = egui::vec2(0.0, 0.0);
 
         let doing_response = Self::row_field(ui, &mut self.doing, "Что я делаю?", "row_doing");
@@ -937,10 +610,6 @@ impl NudgeApp {
             "row_minutes",
         );
 
-        // A failed submit (spec §4): the popup stays and says why. The line
-        // takes the rows' own 20pt text inset and a margin below, so it sits
-        // inside the card like a fourth row rather than flush against the
-        // card's edge and on top of its contour.
         if let Some(err) = &self.error_message {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
@@ -985,7 +654,6 @@ impl NudgeApp {
         let secs = remaining.as_secs() % 60;
         let label = format!("{}:{:02}", mins, secs);
 
-        // Check hover based on previous frame's rect; first frame has no rect → no hover.
         let is_hovered = match (self.pill_rect, ctx.input(|i| i.pointer.latest_pos())) {
             (Some(rect), Some(pos)) => rect.contains(pos),
             _ => false,
@@ -1020,25 +688,13 @@ impl eframe::App for NudgeApp {
         CLEAR_COLOR_TRANSPARENT
     }
 
-    /// Everything that has to keep running while the popup is hidden.
-    ///
-    /// eframe 0.34 calls `logic()` on every tick but `ui()` only while the
-    /// window is visible (`native/epi_integration.rs`). A hidden popup is the
-    /// normal state of this app — it is hidden for the whole interval — so
-    /// anything that has to notice the interval elapsing belongs here.
-    /// Drawing, and the state transitions that depend on what was drawn,
-    /// stay in `ui()`.
-    ///
-    /// A reveal (macOS: the timer, the status item, the hotkey) is ordered in
-    /// here, because `ui()` does not run until the window is visible: placed
-    /// first, then shown and given the keyboard. `ui()` makes the
-    /// `show_popup` transition on the next frame.
+    // eframe calls App::logic on every frame but App::ui only while the viewport is visible.
+    // proof: https://docs.rs/crate/eframe/0.34.2/source/src/native/epi_integration.rs#285
     #[cfg(not(target_arch = "wasm32"))]
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let revealing = crate::platform::tick(ctx);
         self.apply_pending_sprite();
         if revealing {
-            // Drops an order-out `hide_popup` still owes.
             self.restore_window(ctx, frame);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             crate::platform::focus_popup(ctx);
@@ -1050,45 +706,25 @@ impl eframe::App for NudgeApp {
     }
 
     fn ui(&mut self, root_ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        // eframe 0.34 replaced `App::update(ctx)` with `App::ui(ui)`. The
-        // `ui` we're handed is the central panel (transparent, no margin); we
-        // drive everything off its context exactly as the old `update` did.
         let ctx_owned = root_ui.ctx().clone();
         let ctx = &ctx_owned;
 
-        // A frame that starts with the popup up is painted, so the frees in
-        // it are applied (`retired_textures`).
         if self.popup_visible {
             self.retired_textures.clear();
         }
 
-        // === First frame setup ===
         if self.first_frame {
-            // Position is set at launch from primary monitor dimensions (see
-            // main.rs). Here the platform takes whatever it needs from the
-            // native window before the first show.
             #[cfg(not(target_arch = "wasm32"))]
             crate::platform::adopt_window(frame);
 
-            // Spec §4: the machine starts in Waiting, armed for the default
-            // interval, on every launch. eframe puts the window on screen
-            // after this first frame; `enter_waiting` takes it off again.
-            // Runs after `adopt_window`, whose handle the Windows hide needs.
             #[cfg(not(target_arch = "wasm32"))]
             self.enter_waiting(ctx, Some(nudge_state::launch_interval(&self.next_minutes)));
-            // The browser build is a harness for the card, with no OS that
-            // launches it: it opens on the popup as if the interval had
-            // elapsed.
             #[cfg(target_arch = "wasm32")]
             self.show_popup(ctx, TriggerSource::Timer);
 
             self.first_frame = false;
         }
 
-        // === Native-only: check platform event flags ===
-        // Whoever noticed the event — the Windows tray thread, or `logic()`
-        // on macOS — has already made the window visible and raised a flag.
-        // The state transition itself happens here, once, for both.
         #[cfg(not(target_arch = "wasm32"))]
         {
             if crate::platform::take_tray_clicked() && !self.popup_visible {
@@ -1102,16 +738,11 @@ impl eframe::App for NudgeApp {
             }
         }
 
-        // === WASM-only: timer check (update() always runs on WASM) ===
         #[cfg(target_arch = "wasm32")]
         if !self.popup_visible && self.timer.is_expired() {
             self.show_popup(ctx, TriggerSource::Timer);
         }
 
-        // === Periodic repaint ===
-        // WASM: always repaint — update() polls timer expiry here (no
-        // background thread to ShowWindow us awake).
-        // Native: only while popup is visible (see `repaint_interval`).
         #[cfg(target_arch = "wasm32")]
         ctx.request_repaint_after(std::time::Duration::from_secs(1));
         #[cfg(not(target_arch = "wasm32"))]
@@ -1119,7 +750,6 @@ impl eframe::App for NudgeApp {
             ctx.request_repaint_after(d);
         }
 
-        // === Shared: keyboard handling ===
         if self.popup_visible {
             let enter_pressed = ctx.input(|i| i.key_pressed(egui::Key::Enter));
             let esc_pressed = ctx.input(|i| i.key_pressed(egui::Key::Escape));
@@ -1133,8 +763,6 @@ impl eframe::App for NudgeApp {
                 return;
             }
 
-            // Click outside card → switch away (spec §4): hide popup, reset
-            // timer, but KEEP doing/bullshit so the next open resumes here.
             if let Some(rect) = self.card_rect {
                 let clicked_outside = ctx.input(|i| {
                     i.pointer.any_click()
@@ -1146,12 +774,6 @@ impl eframe::App for NudgeApp {
                 }
             }
 
-            // Window focus-loss → switch away (spec §4).
-            // `armed` means this open of the popup did get the keyboard at
-            // some point — sampled in show_popup on Windows / WASM, latched
-            // here on macOS (see `latch_arming`). If it never did, focus-loss
-            // never fires and Esc / Enter / click-outside remain the only ways
-            // out.
             let focused_now = self.current_foreground_matches(ctx);
             self.latch_arming(focused_now);
             self.retry_focus_until_armed(ctx);
@@ -1161,25 +783,14 @@ impl eframe::App for NudgeApp {
             }
         }
 
-        // === Shared: render UI ===
-        // `root_ui` (handed to us by eframe) is the transparent, margin-less
-        // central panel — wallpaper/desktop shows through around the card.
-        // We paint only the floating card Area on top of it.
         if self.popup_visible {
-            // `logic` placed the window already on native; here for the
-            // builds that have no `logic` frame: the harness and the browser.
             self.place_window(ctx, frame);
             self.draw_card(ctx);
-            // The blur behind the card is an OS-side panel, so it has to be
-            // told where the card ended up — every frame, because the card's
-            // width tracks the screen and its height tracks its content.
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(card) = self.card_rect {
                 crate::platform::sync_card_backdrop(ctx, frame, card);
             }
         } else {
-            // WASM: show pill with countdown at bottom-right
-            // Native: window is SW_HIDE'd, nothing to render
             #[cfg(target_arch = "wasm32")]
             self.draw_pill(ctx);
         }
@@ -1200,7 +811,6 @@ mod tests {
         Rect::from_min_size(pos2(x, y), vec2(w, h))
     }
 
-    /// This host, 2x, with our sprite on a 679 pt card.
     fn placement() -> Placement {
         Placement {
             geometry: ScreenGeometry {
@@ -1212,8 +822,6 @@ mod tests {
         }
     }
 
-    /// Spec §10 "Applying a change": a sprite change is applied while the
-    /// popup is hidden, never under the user's hands.
     #[test]
     fn a_pending_sprite_is_applied_only_while_hidden() {
         let cfg = SpriteConfig {
@@ -1246,11 +854,9 @@ mod tests {
     fn any_changed_input_makes_the_placement_stale() {
         let base = placement();
         let mut cases = Vec::new();
-        // The Dock came back: the work area shrank.
         let mut c = base;
         c.geometry.work = rect(0.0, 33.0, 1470.0, 760.0);
         cases.push(("work area", c));
-        // The window is on another display now.
         let mut c = base;
         c.geometry.monitor = rect(1470.0, 0.0, 1920.0, 1080.0);
         cases.push(("monitor", c));

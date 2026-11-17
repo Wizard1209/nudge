@@ -1,6 +1,3 @@
-// One-shot calibration: launch the app, capture both states, print the
-// CARD_REGION brightness for each. Use the spread to pick assertCardHidden /
-// assertCardVisible thresholds.
 import puppeteer from "puppeteer"
 import { decode, avgBrightness } from "./fixtures/pixels"
 import { CARD_REGION } from "./fixtures/judge"

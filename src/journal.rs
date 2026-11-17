@@ -3,20 +3,10 @@ use std::fmt;
 
 use crate::nudge_state::TriggerSource;
 
-/// The `implementation` this binary writes into every event — and the name
-/// of its journal file, `journal-<implementation>.ndjson`.
 const IMPLEMENTATION: &str = "rust";
 
-/// Where the popup's submissions go: one call per event, `Err` when the
-/// event did not reach storage. The popup holds one of these and knows
-/// nothing about files or browser storage — [`default_sink`] is the real
-/// store for this build, and a test hands in a recorder.
 pub type JournalSink = Box<dyn FnMut(&JournalEvent) -> Result<(), JournalError>>;
 
-/// This build's journal: the NDJSON file under Documents natively, the
-/// browser's localStorage on wasm. The Documents folder is looked up on
-/// every write, not once, so one the OS moves while the app runs (a
-/// OneDrive redirect on Windows) is followed.
 pub fn default_sink() -> JournalSink {
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -28,7 +18,6 @@ pub fn default_sink() -> JournalSink {
     }
 }
 
-/// A single journal event in NDJSON format per the journal spec.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JournalEvent {
     pub schema_version: u32,
@@ -40,7 +29,6 @@ pub struct JournalEvent {
     pub doing: String,
     pub bullshit: String,
     pub next_interval_minutes: f64,
-    // TODO: optional fields (prompt_version, input_method, metadata)
 }
 
 #[derive(Debug, Clone)]
@@ -58,7 +46,6 @@ impl fmt::Display for JournalError {
     }
 }
 
-/// Validate required fields before write per spec.
 fn validate_event(event: &JournalEvent) -> Result<(), JournalError> {
     let invalid = |detail: String| Err(JournalError::Validation { detail });
 
@@ -96,16 +83,12 @@ fn validate_event(event: &JournalEvent) -> Result<(), JournalError> {
     Ok(())
 }
 
-/// Serialize event as a single JSON line (no trailing newline).
 pub fn serialize_event(event: &JournalEvent) -> Result<String, JournalError> {
     serde_json::to_string(event).map_err(|e| JournalError::Validation {
         detail: e.to_string(),
     })
 }
 
-/// Build the journal file path under a Documents-style root per spec §File location:
-/// `<documents>/Nudge/journal-<impl>.ndjson`. Pure — caller resolves the
-/// Documents directory via `resolve_default_journal_path` (or a test stub).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn journal_path(documents_dir: &std::path::Path, implementation: &str) -> std::path::PathBuf {
     documents_dir
@@ -113,18 +96,12 @@ pub fn journal_path(documents_dir: &std::path::Path, implementation: &str) -> st
         .join(format!("journal-{implementation}.ndjson"))
 }
 
-/// Resolve the default Rust-implementation journal path for the current host.
-/// Uses the OS-provided Documents folder (on Windows this calls the Known
-/// Folder API internally via the `dirs` crate). Falls back to the current
-/// working directory if the OS can't report a Documents folder.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn resolve_default_journal_path() -> std::path::PathBuf {
     let docs = dirs::document_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
     journal_path(&docs, IMPLEMENTATION)
 }
 
-/// Append a journal event to an NDJSON file.
-/// Creates parent directories if needed. Validates before write.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn write_event(path: &std::path::Path, event: &JournalEvent) -> Result<(), JournalError> {
     use std::fs::{self, OpenOptions};
@@ -134,7 +111,6 @@ pub fn write_event(path: &std::path::Path, event: &JournalEvent) -> Result<(), J
 
     validate_event(event)?;
 
-    // Ensure parent dir exists
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
@@ -163,9 +139,6 @@ pub fn write_event(path: &std::path::Path, event: &JournalEvent) -> Result<(), J
     Ok(())
 }
 
-/// Append a journal event to localStorage (WASM).
-/// Returns `JournalError::Io` on any browser-side failure (no `window`, no
-/// localStorage, JS exception during read/write — e.g. `QuotaExceededError`).
 #[cfg(target_arch = "wasm32")]
 pub fn write_event_to_localstorage(event: &JournalEvent) -> Result<(), JournalError> {
     fn io(detail: impl Into<String>) -> JournalError {
@@ -202,8 +175,6 @@ pub fn write_event_to_localstorage(event: &JournalEvent) -> Result<(), JournalEr
     Ok(())
 }
 
-/// How the journal spells each way a popup can open — the `trigger_source`
-/// vocabulary of the on-disk contract, which [`validate_event`] checks.
 fn trigger_source_name(source: TriggerSource) -> &'static str {
     match source {
         TriggerSource::Timer => "timer",
@@ -211,7 +182,6 @@ fn trigger_source_name(source: TriggerSource) -> &'static str {
     }
 }
 
-/// Create a new JournalEvent with all required fields for a v1 submission.
 pub fn new_submitted_event(
     captured_at: String,
     trigger_source: TriggerSource,
@@ -245,8 +215,6 @@ mod tests {
             10.0,
         )
     }
-
-    // === Validation tests ===
 
     #[test]
     fn valid_event_passes() {
@@ -321,8 +289,6 @@ mod tests {
         );
     }
 
-    // === Serialization tests ===
-
     #[test]
     fn serialize_produces_valid_json() {
         let e = test_event();
@@ -385,8 +351,6 @@ mod tests {
         assert!(parsed.is_ok(), "should tolerate unknown fields");
     }
 
-    // === Path resolution tests ===
-
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn journal_path_joins_documents_and_nudge_subdir() {
@@ -408,8 +372,6 @@ mod tests {
             PathBuf::from("/d/Nudge/journal-electron.ndjson"),
         );
     }
-
-    // === File tests ===
 
     #[cfg(not(target_arch = "wasm32"))]
     mod file_tests {
@@ -479,7 +441,6 @@ mod tests {
 
             let result = write_event(&path, &e);
             assert!(result.is_err());
-            // File should not exist
             assert!(!path.exists());
         }
 

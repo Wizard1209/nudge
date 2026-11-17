@@ -1,11 +1,3 @@
-//! A sprite change applied only while the popup is hidden (spec §10
-//! "Applying a change"), headless through the real `NudgeApp`.
-//!
-//! Its own test binary for the same reason `macos_manual_open.rs` is: the
-//! reopen goes through the platform seam's process-global flags, which a
-//! second harness in the same process could consume. The tests here take
-//! [`SEAM`] for the same reason.
-
 #![cfg(any(target_os = "macos", target_os = "windows"))]
 
 use std::sync::{Mutex, MutexGuard};
@@ -21,7 +13,6 @@ use nudge_web::layout::ScreenGeometry;
 
 const PPP: f32 = 2.0;
 
-/// Held for a whole test: the platform seam's flags are per process.
 static SEAM: Mutex<()> = Mutex::new(());
 
 fn seam() -> MutexGuard<'static, ()> {
@@ -33,14 +24,10 @@ const GREEN_PATH: &str = concat!(
     "/electron/tests/e2e/fixtures/sprite-green.png"
 );
 
-/// A status-item click or the hotkey, raised where the OS raises it: on
-/// macOS the flag `tick` turns into a reveal, on Windows the tray thread's
-/// edge.
 fn manual_open() {
     nudge_web::platform::request_manual_open();
 }
 
-/// This host: 1470×956 with a 33 pt menu bar.
 fn g1() -> ScreenGeometry {
     ScreenGeometry {
         monitor: Rect::from_min_size(pos2(0.0, 0.0), vec2(1470.0, 956.0)),
@@ -87,7 +74,6 @@ fn green(x: i32) -> SpriteConfig {
     }
 }
 
-/// Run exactly one frame and return the textures it freed.
 fn freed_by_one_frame(harness: &mut Harness<'_, NudgeApp>) -> Vec<TextureId> {
     harness.step();
     harness.output().textures_delta.free.clone()
@@ -101,13 +87,11 @@ fn a_sprite_change_while_visible_waits_for_hide() {
         .with_pixels_per_point(PPP)
         .build_eframe(|cc| NudgeApp::new(cc, 10.0).with_screen_geometry(g1()));
     harness.run();
-    // Launch is Waiting (spec §4): open the card first.
     manual_open();
     harness.run();
     assert_eq!(first_field(&harness).min, pos2(495.0, 286.0));
     assert_eq!(sprite_textures(&harness), vec![]);
 
-    // The change arrives while the card is up: nothing moves.
     harness.state_mut().set_pending_sprite(SpriteConfig {
         enabled: true,
         path: GREEN_PATH.to_string(),
@@ -123,14 +107,10 @@ fn a_sprite_change_while_visible_waits_for_hide() {
     );
     assert_eq!(first_field(&harness).min, pos2(495.0, 286.0));
 
-    // Esc closes it: the change is applied now. The texture waits for a
-    // frame that is painted — eframe drops uploads from hidden ones.
     harness.key_press(egui::Key::Escape);
     harness.run();
     assert_eq!(sprite_textures(&harness), vec![]);
 
-    // The next open draws the re-laid-out card, 679 wide and re-centred,
-    // and the sprite over it.
     manual_open();
     harness.run();
     let field = first_field(&harness);
@@ -142,13 +122,9 @@ fn a_sprite_change_while_visible_waits_for_hide() {
     );
 }
 
-/// eframe applies a frame's texture changes only on a frame it paints, and it
-/// paints none while the popup is hidden. A sprite replaced then must not free
-/// its old texture on that frame — the free would be dropped with it and the
-/// texture would stay on the GPU for the life of the process. The harness
-/// paints every frame, so what it can check is the frame the free is on: not
-/// a hidden one, and not the reveal frame either — eframe runs only `logic`
-/// there, the window being hidden when the frame began.
+// eframe's glow loop applies a frame's textures_delta only if the window was visible when
+// the frame began, so a texture freed on a hidden frame stays allocated.
+// proof: https://docs.rs/crate/eframe/0.34.2/source/src/native/glow_integration.rs#675
 #[test]
 fn a_sprite_replaced_while_hidden_is_freed_on_a_painted_frame() {
     let _seam = seam();
@@ -158,11 +134,9 @@ fn a_sprite_replaced_while_hidden_is_freed_on_a_painted_frame() {
         .with_step_dt(1.0 / 60.0)
         .build_eframe(|cc| NudgeApp::new(cc, 10.0).with_screen_geometry(g1()));
     harness.run();
-    // Launch is Waiting (spec §4): open the card first.
     manual_open();
     harness.run();
 
-    // A sprite applied at a close, and uploaded by the next open.
     harness.state_mut().set_pending_sprite(green(-41));
     harness.key_press(egui::Key::Escape);
     harness.run();
@@ -171,7 +145,6 @@ fn a_sprite_replaced_while_hidden_is_freed_on_a_painted_frame() {
     let old = sprite_ids(&harness);
     assert_eq!(old.len(), 1, "the first sprite is on the GPU");
 
-    // Closed again, and the sprite moves while nobody is looking.
     harness.key_press(egui::Key::Escape);
     harness.run();
     harness.state_mut().set_pending_sprite(green(-40));
@@ -183,7 +156,6 @@ fn a_sprite_replaced_while_hidden_is_freed_on_a_painted_frame() {
         );
     }
 
-    // The next open paints, and that is where the old texture goes.
     manual_open();
     assert_eq!(freed_by_one_frame(&mut harness), vec![], "the reveal frame");
     assert_eq!(
@@ -197,10 +169,6 @@ fn a_sprite_replaced_while_hidden_is_freed_on_a_painted_frame() {
     assert_ne!(new, old);
 }
 
-/// A PNG that fails the check counts as off (§10): the texture goes and the
-/// card is laid out plain again. The change is applied on close; its texture
-/// is still allocated after that hidden close and gone after the next open,
-/// the first frame eframe paints.
 #[test]
 fn a_sprite_change_that_fails_the_check_turns_the_sprite_off() {
     let _seam = seam();
@@ -209,7 +177,6 @@ fn a_sprite_change_that_fails_the_check_turns_the_sprite_off() {
         .with_pixels_per_point(PPP)
         .build_eframe(|cc| NudgeApp::new(cc, 10.0).with_screen_geometry(g1()));
     harness.run();
-    // Launch is Waiting (spec §4): open the card first.
     manual_open();
     harness.run();
     harness.state_mut().set_pending_sprite(green(-41));

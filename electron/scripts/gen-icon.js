@@ -1,7 +1,3 @@
-/**
- * Generates build/icon.png — 256x256 static app/installer icon.
- * Tray icon is generated dynamically at runtime (see src/electron/trayIcon.ts).
- */
 import { deflateSync } from "node:zlib";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";

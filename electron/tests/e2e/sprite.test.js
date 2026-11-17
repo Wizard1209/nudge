@@ -2,12 +2,6 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { launchBrowser, createPage } from './fixtures/browser.js';
 import { SPRITE_FIXTURE_PATH, SPRITE_URL, SPRITE_VIEWPORT, pixelAt, isGreen } from './fixtures/sprite.js';
 
-// The sprite is placed relative to the card by `x`/`y` (its top-left from the
-// card's top-left). At (-41, -277) sprite row 277 lands on the card's top edge
-// (the body ends right above it, the fingers hang over it) and sprite column 41
-// on the card's left edge (the hair tail hangs down just outside it). The
-// fixture is the real sprite's silhouette in flat #00FF00 with binary alpha,
-// so every probe point below is either green or not.
 describe('sprite over the card', () => {
     let browser;
     let page;
@@ -43,14 +37,12 @@ describe('sprite over the card', () => {
     it('makes the card cardWidth wide and keeps it at its spec spot', async () => {
         const { card } = await rects();
         expect(card.width).toBe(679);
-        // Spec §1: centred, top edge at 25vh + 80px.
         expect(card.left + card.width / 2).toBe(SPRITE_VIEWPORT.width / 2);
         expect(card.top).toBe(SPRITE_VIEWPORT.height * 0.25 + 80);
     });
 
     it('keeps the hair tail outside the card', async () => {
         const { sprite, card } = await rects();
-        // Rightmost tail pixel below the grip is column 40.
         expect(sprite.left + 40).toBeLessThan(card.left);
     });
 
@@ -75,7 +67,6 @@ describe('sprite over the card', () => {
     });
 });
 
-// Any placement works: here the sprite hangs below-right of a default card.
 describe('sprite at another placement', () => {
     let browser;
     let page;
@@ -101,8 +92,6 @@ describe('sprite at another placement', () => {
     });
 });
 
-// The PNG's pixels are the device's: on a 2x display the same file covers
-// half as many CSS px in each direction, never stretched.
 describe('sprite on a 2x display', () => {
     let browser;
     let page;
