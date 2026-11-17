@@ -30,6 +30,12 @@ export const DEFAULT_CONFIG: Config = {
   sprite: DEFAULT_SPRITE,
 };
 
+export const MAX_INTERVAL_MINUTES = 1_000_000;
+
+export function validIntervalMinutes(minutes: number): boolean {
+  return minutes > 0 && minutes <= MAX_INTERVAL_MINUTES;
+}
+
 function roundedInt(value: unknown): number | null {
   if (typeof value !== "number" || !Number.isFinite(value)) return null;
   return Math.round(value) + 0;
@@ -59,8 +65,7 @@ export function normalize(raw: unknown): Config {
         : DEFAULT_CONFIG.hotkey,
     default_interval_minutes:
       typeof obj.default_interval_minutes === "number" &&
-      Number.isFinite(obj.default_interval_minutes) &&
-      obj.default_interval_minutes > 0
+      validIntervalMinutes(obj.default_interval_minutes)
         ? obj.default_interval_minutes
         : DEFAULT_CONFIG.default_interval_minutes,
     autostart:

@@ -32,7 +32,7 @@ import {
   type Config,
   type SpriteConfig,
 } from "./config";
-import { normalizeSprite } from "../shared/config";
+import { normalizeSprite, validIntervalMinutes } from "../shared/config";
 import { displayFor } from "../shared/display";
 import { parseHotkey, hotkeyToAccelerator } from "../shared/hotkey";
 import {
@@ -232,7 +232,7 @@ function hideNudge() {
 
 function parseMinutes(value: unknown): number {
   const n = Number(value);
-  if (!Number.isFinite(n) || n <= 0) return DEFAULT_MINUTES;
+  if (!validIntervalMinutes(n)) return DEFAULT_MINUTES;
   return n;
 }
 

@@ -88,6 +88,13 @@ describe("saveConfig / loadConfig", () => {
       expect(loadConfig(path).config.default_interval_minutes).toBe(10);
     }
   });
+
+  it("keeps an interval of exactly 1 000 000 minutes and refuses anything longer", () => {
+    expect(normalize({ default_interval_minutes: 1_000_000 }).default_interval_minutes).toBe(1_000_000);
+    for (const bad of [1_000_000 + 2 ** -33, 1_000_001, 1e12]) {
+      expect(normalize({ default_interval_minutes: bad }).default_interval_minutes).toBe(10);
+    }
+  });
 });
 
 describe("normalize: sprite block", () => {

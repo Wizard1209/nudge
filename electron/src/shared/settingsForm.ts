@@ -1,4 +1,4 @@
-import type { Config, SpriteConfig } from "./config";
+import { validIntervalMinutes, type Config, type SpriteConfig } from "./config";
 import {
   formatHotkeyNative,
   parseHotkey,
@@ -32,7 +32,7 @@ export function parseIntervalMinutes(text: string): IntervalResult {
   const trimmed = text.trim();
   if (trimmed === "") return { ok: false, input: trimmed };
   const n = Number(trimmed);
-  if (!Number.isFinite(n) || n <= 0) return { ok: false, input: trimmed };
+  if (!validIntervalMinutes(n)) return { ok: false, input: trimmed };
   return { ok: true, value: n };
 }
 

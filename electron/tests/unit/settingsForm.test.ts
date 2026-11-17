@@ -74,6 +74,16 @@ describe("SettingsForm.parsedInterval", () => {
       expect(f.parsedInterval().ok).toBe(false);
     }
   });
+
+  it("accepts exactly 1 000 000 minutes and refuses anything longer", () => {
+    const f = form();
+    f.intervalText = "1000000";
+    expect(f.parsedInterval()).toEqual({ ok: true, value: 1_000_000 });
+    for (const bad of ["1000000.0000000001", "1000001", "1e12", "Infinity"]) {
+      f.intervalText = bad;
+      expect(f.parsedInterval()).toEqual({ ok: false, input: bad });
+    }
+  });
 });
 
 describe("SettingsForm.toConfig", () => {
