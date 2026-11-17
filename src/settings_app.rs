@@ -1155,7 +1155,9 @@ mod tests {
     #[test]
     fn toggle_autostart_persists_only_autostart_over_the_saved_config() {
         let provider = FakeProvider::new(false);
-        let baseline = Config::default();
+        let baseline = SettingsForm::from_config(Config::default())
+            .to_config()
+            .unwrap();
         let mut f = SettingsForm::from_config(baseline.clone());
         f.hotkey = "Alt+J".to_string();
         f.interval_text = "25".to_string();
