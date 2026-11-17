@@ -1,8 +1,3 @@
-//! Frosted glass behind the card (spec §2): an `NSVisualEffectView` kept
-//! under the card while the popup is up and hidden with it. The panel is
-//! this module's alone; the backend reaches it through
-//! [`sync_card_backdrop`] each frame and [`hide_card_backdrop`] on close.
-
 use std::cell::RefCell;
 
 use eframe::egui;
@@ -16,9 +11,6 @@ use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 thread_local! {
-    /// The one backdrop panel, kept across frames. `Retained` is `!Send`, and
-    /// AppKit views are main-thread-only anyway — the same reason the
-    /// backend's `UI` state is thread-local.
     static CARD_BACKDROP: RefCell<Option<Retained<NSVisualEffectView>>> =
         const { RefCell::new(None) };
 }
@@ -59,8 +51,6 @@ const POPUP_COLLECTION_BEHAVIOR: NSWindowCollectionBehavior =
 /// documented contract, so a future layout that this code does not recognise
 /// must leave a working popup behind.
 pub fn sync_card_backdrop(ctx: &egui::Context, frame: &eframe::Frame, card: egui::Rect) {
-    // Off the main thread there is no AppKit to talk to. `tests/kittest_card.rs`
-    // drives the real `NudgeApp` from a libtest worker, and it must not crash.
     let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
@@ -70,19 +60,11 @@ pub fn sync_card_backdrop(ctx: &egui::Context, frame: &eframe::Frame, card: egui
     let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
         return;
     };
-    // SAFETY: the handle is winit's own content view, alive for as long as the
-    // window is, and we are on the thread that owns it.
     let content: &NSView = unsafe { &*appkit.ns_view.as_ptr().cast::<NSView>() };
     let Some(parent) = (unsafe { content.superview() }) else {
         return;
     };
 
-    // The shadow is AppKit's here, and egui draws none (`CARD_SHADOW`). The
-    // window's alpha mask is then the card and nothing else, so the system
-    // shadow traces the card's own shape. Enabled explicitly rather than left
-    // to the default, because the pairing is what makes it correct: with
-    // egui's shadow also in that alpha the silhouette is bigger than the card
-    // and AppKit outlines *it*, laying a hard rim beside the contour.
     if let Some(window) = content.window() {
         window.setHasShadow(true);
         if unsafe { window.collectionBehavior() } != POPUP_COLLECTION_BEHAVIOR {
@@ -118,17 +100,11 @@ pub fn sync_card_backdrop(ctx: &egui::Context, frame: &eframe::Frame, card: egui
             // window state would render the inactive, washed-out material
             // nearly every time the popup appears.
             view.setState(NSVisualEffectState::Active);
-            // The card is dark whatever the system theme is (`set_theme(Dark)`
-            // in `NudgeApp::new`), so the material behind it has to be too —
-            // otherwise a light-mode Mac frosts it pale under a dark card.
             view.setAppearance(
                 NSAppearance::appearanceNamed(NSAppearanceNameVibrantDark).as_deref(),
             );
             view.setWantsLayer(true);
             if let Some(layer) = view.layer() {
-                // Clip the material to the card. Circular, matching egui's
-                // `CornerRadius` — a continuous curve would visibly diverge
-                // from the contour drawn on top of it.
                 layer.setCornerRadius(f64::from(crate::app::CARD_RADIUS));
                 layer.setMasksToBounds(true);
             }
@@ -147,8 +123,6 @@ pub fn sync_card_backdrop(ctx: &egui::Context, frame: &eframe::Frame, card: egui
     });
 }
 
-/// Take the blur away with the popup. Called by `set_popup_visible(false)`,
-/// which is the app's single "the popup is going away" edge.
 pub(super) fn hide_card_backdrop() {
     if MainThreadMarker::new().is_none() {
         return;
